@@ -1,11 +1,5 @@
 using StaticArrays
 
-abstract type AbstractElement end 
-
-struct LinearTriangle <:AbstractElement end
-struct Quadratic <:AbstractElement end
-struct QuadraticBubble <:AbstractElement end
-
 abstract type AbstractShapeFunction end 
 
 struct ShapeFunction{T1,T2} <:AbstractShapeFunction
@@ -81,4 +75,3 @@ function ShapeFunction(r, s, ::Union{QuadraticBubble, Type{QuadraticBubble}})
     T1, T2 = typeof(N), typeof(∇N)
     return ShapeFunction{T1, T2}(N, ∇N)
 end 
-
