@@ -1,11 +1,3 @@
-using StaticArrays
-
-abstract type AbstractElement end 
-
-struct LinearTriangle <:AbstractElement end
-struct Quadratic <:AbstractElement end
-struct QuadraticBubble <:AbstractElement end
-
 abstract type AbstractShapeFunction end 
 
 struct ShapeFunction{T1,T2} <:AbstractShapeFunction
@@ -46,7 +38,7 @@ end
 #        |    \
 #        1 - 4 - 2
 #          r-axis
-function ShapeFunction(r, s, ::Union{Quadratic, Type{Quadratic}})
+function ShapeFunction(r, s, ::Union{QuadraticTriangle, Type{QuadraticTriangle}})
     t  = 1-r-s
     N  = SA[
         t*(2*t-1)+3*r*s*t, r*(2*r-1)+3*r*s*t, s*(2*s-1)+3*r*s*t, 4*r*t-12*r*s*t, 4*r*s-12*r*s*t, 4*s*t-12*r*s*t, 27*r*s*t
@@ -69,7 +61,7 @@ end
 #        | 7  \
 #        1 - 4 - 2
 #          r-axis
-function ShapeFunction(r, s, ::Union{QuadraticBubble, Type{QuadraticBubble}})
+function ShapeFunction(r, s, ::Union{QuadraticTriangleBubble, Type{QuadraticTriangleBubble}})
     t  = 1-r-s
     N  = SA[
         t*(2*t-1)  r*(2*r-1) s*(2*s-1) 4*r*t 4*r*s 4*s*t
@@ -81,4 +73,3 @@ function ShapeFunction(r, s, ::Union{QuadraticBubble, Type{QuadraticBubble}})
     T1, T2 = typeof(N), typeof(∇N)
     return ShapeFunction{T1, T2}(N, ∇N)
 end 
-

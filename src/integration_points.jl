@@ -23,7 +23,7 @@ function IntegrationPoints(::Union{LinearTriangle, Type{LinearTriangle}})
     IntegrationPoints{T}(η, ξ, vals)
 end
 
-function IntegrationPoints(::Union{Quadratic, Type{Quadratic}})
+function IntegrationPoints(::Union{QuadraticTriangle, Type{QuadraticTriangle}})
     # Integration points coordinates
     g1  = (8 - √10 + √(38 - 44 * √(2/5))) / 18
     g2  = (8 - √10 - √(38 - 44 * √(2/5))) / 18
@@ -45,7 +45,7 @@ function IntegrationPoints(::Union{Quadratic, Type{Quadratic}})
     IntegrationPoints{T}(η, ξ, vals)
 end
 
-function IntegrationPoints(::Union{QuadraticBubble, Type{QuadraticBubble}})
+function IntegrationPoints(::Union{QuadraticTriangleBubble, Type{QuadraticTriangleBubble}})
     # Integration points coordinates
     g1 = (6 - √15) / 21
     g2 = (6 + √15) / 21
