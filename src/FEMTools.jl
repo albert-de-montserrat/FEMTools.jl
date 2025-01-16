@@ -2,7 +2,7 @@ module FEMTools
 
 using StaticArrays
 
-include("triangular_elements.jl")
+include("elements/triangular_elements.jl")
 export 
     Element, 
     LinearTriangle,
@@ -11,7 +11,7 @@ export
     CruziexRaviart, 
     element_type
  
-include("shape_functions.jl")
-include("integration_points.jl")
+include("elements/shape_functions.jl")
+include("elements/integration_points.jl")
 
 end # module FEMTools
