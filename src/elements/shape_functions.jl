@@ -64,7 +64,7 @@ end
 function ShapeFunction(r, s, ::Union{QuadraticTriangleBubble, Type{QuadraticTriangleBubble}})
     t  = 1-r-s
     N  = SA[
-        t*(2*t-1)  r*(2*r-1) s*(2*s-1) 4*r*t 4*r*s 4*s*t
+        t*(2*t-1),  r*(2*r-1), s*(2*s-1), 4*r*t, 4*r*s, 4*s*t
     ]
     ∇N = SA[
         -(4*t-1)  4*r-1  0  4*(t-r)  4*s  -4*s    
