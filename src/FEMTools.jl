@@ -1,6 +1,8 @@
 module FEMTools
 
 using StaticArrays
+using Triangulate
+using ForwardDiff
 
 include("elements/triangular_elements.jl")
 export 

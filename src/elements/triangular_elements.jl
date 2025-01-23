@@ -30,11 +30,11 @@ end
 
 abstract type AbstractElement end 
 
-struct CruziexRaviart{VE, PE} <:AbstractElement 
+struct CrouziexRaviart{VE, PE} <:AbstractElement 
     VelocityElement::VE
     PressureElement::PE
     
-    function CruziexRaviart()
+    function CrouziexRaviart()
         VelocityElement = Element(QuadraticTriangleBubble)
         PressureElement = Element(LinearTriangle)
         new{typeof(VelocityElement), typeof(PressureElement)}(VelocityElement, PressureElement)
