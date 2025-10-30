@@ -1,4 +1,4 @@
-using JustFEM, Triangulate
+using FEMTools, Triangulate
 using LinearAlgebra, SparseArrays, TimerOutputs
 
 function example_domain_qcdt_area(; minangle = 20, maxarea = 0.05)
@@ -12,7 +12,7 @@ function example_domain_qcdt_area(; minangle = 20, maxarea = 0.05)
     return triout
 end;
 
-tri = example_domain_qcdt_area()
+tri = example_domain_qcdt_area(; maxarea = 1e-3)
 
 x            = tri.pointlist[1, :]
 y            = tri.pointlist[2, :]
@@ -40,9 +40,18 @@ nt   = 100
 dt   = ttot / nt
 
 # initial conditions
-Tmax = 10
-σ    = 1
-T    = Tmax * exp.(-(grid.x.^2 .+ grid.y.^2) ./ σ)
+Tmax = 2
+σ    = 1e-1
+T    = Tmax * exp.(-((grid.x.-0.5).^2 .+ (grid.y.-0.5).^2) ./ 2σ^2)
+
+f = mesh(
+    [grid.x grid.y], 
+    grid.element2node', 
+    colormap = Reverse(:romaO),
+    color = T, 
+    shading = false
+)
+
 # boundary conditions
 c1 = grid.y => ==(0) => :bot
 c2 = grid.y => ==(1) => :top
@@ -60,93 +69,44 @@ KG = preallocate_sparse_matrix(grid, 1)
 MG = preallocate_sparse_matrix(grid, 1)
 FG = zeros(nnodes)
 
-# to = TimerOutput()
-# @timeit to "Assembly" for iel in 1:nel
-iel = 1
-    KL = local_SMatrix(element)
-    ML = local_SMatrix(element)
-    FL = local_SVector(element)
+assemble_system!(KG, MG, FG, grid, element, κ, H)
 
-    el_coords = getelementcoords(grid, iel)
+@b assemble_system!($(KG, MG, FG, grid, element, κ, H)...)
 
-    # @timeit to "Integration" for ip in eachindex(element.ip)
-        ip = 1
-        # extract integration point and shape functions data
-        ξ, ω, N, ∇N_local = element[ip]
-        
-        # compute the Jacobian for 1D linear element
-        J = ∇N_local' * el_coords'
-        # in 1D the determinant of the Jacobian is the Jacobian
-        detJ = det(J)
-        
-        # assemble local stiffness matrix (transform gradients to physical coordinates)
-        ∇N_global = J \ ∇N_local'
-        KL += (∇N_global * κ * ∇N_global') * detJ * ω
+to
 
-        # assemble local mass matrix
-        ML += (N * N') * detJ * ω
+# # Create system matrix (sparse)
+# KLG = KG + MG / dt
 
-        # assemble local force vector
-        FL += N * H * detJ * ω
-    # end
+# # Apply boundary conditions to sparse matrix
+# @views KLG[bcs.dofs,:]         .= 0.0
+# @views KLG[bcs.dofs, bcs.dofs] .= I(length(bcs.dofs))
 
-    # assemgle global matrices
-    @timeit to "Assembly" begin
-        global_dofs = getelement(grid, iel)
-        assemble_sparse_matrix!(KG, KL, global_dofs)
-        assemble_sparse_matrix!(MG, ML, global_dofs)
-        assemble_sparse_vector!(FG, FL, global_dofs)
-    end
+# t = 0
+
+# f,ax, = lines(T, label="T0")
+
+# b = similar(T)
+
+# @timeit to "Time loop" for _ in 1:nt
+#     t += dt
+#     @timeit to "build RHS" b .= MG / dt * T .+ FG
+
+#     # Apply boundary conditions
+#     bcs.value          .= T_analytical.(grid.x[bcs.dofs], Tmax, t, κ, σ) 
+#     @views b[bcs.dofs] .= bcs.value
+
+#     # Solve the linear system
+#     @timeit to "solve" T .= KLG \ b
 # end
 
-# Create system matrix (sparse)
-KLG = KG + MG / dt
+# @show to
+# sol = T_analytical.(grid.x, Tmax, t, κ, σ) 
+# lines!(ax, T, label="T FEM")
+# lines!(ax, sol, label="T analytical")
+# axislegend(ax)
+# display(f)
 
-# Apply boundary conditions to sparse matrix
-@views KLG[bcs.dofs,:]         .= 0.0
-@views KLG[bcs.dofs, bcs.dofs] .= I(length(bcs.dofs))
-
-t = 0
-
-f,ax, = lines(T, label="T0")
-
-b = similar(T)
-
-@timeit to "Time loop" for _ in 1:nt
-    t += dt
-    @timeit to "build RHS" b .= MG / dt * T .+ FG
-
-    # Apply boundary conditions
-    bcs.value          .= T_analytical.(grid.x[bcs.dofs], Tmax, t, κ, σ) 
-    @views b[bcs.dofs] .= bcs.value
-
-    # Solve the linear system
-    @timeit to "solve" T .= KLG \ b
-end
-
-@show to
-sol = T_analytical.(grid.x, Tmax, t, κ, σ) 
-lines!(ax, T, label="T FEM")
-lines!(ax, sol, label="T analytical")
-axislegend(ax)
-display(f)
-
-function assemble_sparse_matrix!(global_matrix, local_matrix, global_dofs)
-    for j in eachindex(global_dofs), i in eachindex(global_dofs)
-        @inbounds global_matrix[global_dofs[i], global_dofs[j]] += local_matrix[i, j]
-    end
-end
-@b assemble_sparse_matrix!($(KG, KL, global_dofs)...)
-
-function assemble_sparse_vector!(global_vector, local_vector, global_dofs)
-    @inbounds @simd for i in eachindex(global_dofs)
-        global_vector[global_dofs[i]] += local_vector[i]
-    end
-end
-
-@b assemble_sparse_vector!($(FG, FL, global_dofs)...)
-
-function set_boundary_condition!(A::AbstractMatrix, F::AbstractVector, bcs::DirichletBoundaryCondition)
-    (; dofs, values) = bcs
-
-end
+# function set_boundary_condition!(A::AbstractMatrix, F::AbstractVector, bcs::DirichletBoundaryCondition)
+#     (; dofs, values) = bcs
+# end
