@@ -65,22 +65,57 @@ bcs    = DirichletBoundaryCondition(bc_dof, bc_val...)
 
 # Preallocate sparse matrix structure
 dofs_per_element = 1
-KG = preallocate_sparse_matrix(grid, 1)
-MG = preallocate_sparse_matrix(grid, 1)
+KG = preallocate_sparse_matrix(grid.element2node, 3)
+MG = preallocate_sparse_matrix(grid.element2node, 3)
 FG = zeros(nnodes)
 
 assemble_system!(KG, MG, FG, grid, element, κ, H)
 
-@b assemble_system!($(KG, MG, FG, grid, element, κ, H)...)
+# Create system matrix (sparse)
+KLG = KG + MG / dt
 
-to
+# Apply boundary conditions to sparse matrix
+@views KLG[bcs.dofs,:]         .= 0.0
+@views KLG[bcs.dofs, bcs.dofs] .= I(length(bcs.dofs))
 
-# # Create system matrix (sparse)
-# KLG = KG + MG / dt
 
-# # Apply boundary conditions to sparse matrix
-# @views KLG[bcs.dofs,:]         .= 0.0
-# @views KLG[bcs.dofs, bcs.dofs] .= I(length(bcs.dofs))
+
+@generated function set_boundary_condition!(bcs::DirichletBoundaryCondition, args::NTuple{N, AbstractArray}) where N
+    quote 
+        for i in eachindex(bcs.dofs)
+            dofᵢ          = bcs.dofs[i]
+            valᵢ          = bcs.values[i]
+
+            Base.@nexprs $N I -> begin
+                arg = args[I]
+                if arg isa AbstractMatrix
+                    arg[dofᵢ, dofᵢ] = 1.0
+                elseif arg isa AbstractVector
+                    arg[dofᵢ]       = valᵢ
+                else
+                    error("Unsupported type in args")
+                end
+            end
+
+            for j in eachindex(bcs.dofs)
+                dofⱼ = bcs.dofs[j]
+
+                Base.@nexprs $N I -> begin
+                    if arg isa AbstractMatrix
+                        arg[dofᵢ, dofⱼ] = 0.0
+                    end
+                end
+            end
+
+        end
+    end
+end
+
+@b set_boundary_condition!($bcs, $args)
+@code_warntype set_boundary_condition2!(bcs, args)
+
+args = KG, MG, FG
+
 
 # t = 0
 
@@ -110,3 +145,6 @@ to
 # function set_boundary_condition!(A::AbstractMatrix, F::AbstractVector, bcs::DirichletBoundaryCondition)
 #     (; dofs, values) = bcs
 # end
+
+
+sparsitythermal(grid.element2node, 3)
