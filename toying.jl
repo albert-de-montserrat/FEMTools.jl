@@ -86,26 +86,31 @@ KLG = KG + MG / dt
             dofᵢ          = bcs.dofs[i]
             valᵢ          = bcs.values[i]
 
+            for j in axes(bcs.dofs, 2)
+                # set diagonal entries to 0
+                Base.@nexprs $N I -> begin
+                    if arg isa AbstractMatrix
+                        arg[dofᵢ, j] = 0.0
+                    end
+                end
+            end
+
             Base.@nexprs $N I -> begin
                 arg = args[I]
+                # set diagonal entries to 1
                 if arg isa AbstractMatrix
                     arg[dofᵢ, dofᵢ] = 1.0
+                
+                # set entries of the vector to the prescribed value
                 elseif arg isa AbstractVector
                     arg[dofᵢ]       = valᵢ
+
                 else
                     error("Unsupported type in args")
                 end
             end
 
-            for j in eachindex(bcs.dofs)
-                dofⱼ = bcs.dofs[j]
 
-                Base.@nexprs $N I -> begin
-                    if arg isa AbstractMatrix
-                        arg[dofᵢ, dofⱼ] = 0.0
-                    end
-                end
-            end
 
         end
     end
