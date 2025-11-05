@@ -32,7 +32,7 @@ end
 
 @inline Base.size(grid::Grid) = size(grid.element2node, 2)
 
-@inline getelement(grid::Grid{M, N}, el::Int) where {M, N} = ntuple(node -> grid.element2node[node, el], Val(N))
+@inline getelement(grid::Grid{M, N}, el::Int) where {M, N} = ntuple(node -> @inbounds(grid.element2node[node, el]), Val(N))
 
 @inline function getelementcoords(grid::Grid{2, N}, el::Int) where {N} 
     ind = getelement(grid, el)
@@ -41,5 +41,14 @@ end
     y = SVector{N, T}(@inbounds grid.y[ind[i]] for i in 1:N)
     return vcat(x',y')
 end
+
+@inline function getelementfield(A::AbstractVector, grid::Grid{2, N}, el::Int) where {N} 
+    ind = getelement(grid, el)
+    T = eltype(grid.x)
+    A_element = SVector{N, T}(@inbounds A[ind[i]] for i in 1:N)
+    return A_element
+end
+
+
 
 @inline node_x_el(grid::Grid) = size(grid.element2node, 1)

@@ -1,12 +1,14 @@
 struct DirichletBoundaryCondition{T}
     dofs::Vector{Int64}
     values::Vector{T}
-
-    function DirichletBoundaryCondition(bc_dof, bc_val::Vararg{Pair, N}) where {T, N}
-        dof_array, value_array = generate_bc_arrays(bc_dof, bc_val...)
-        new{eltype(value_array)}(dof_array, value_array)
-    end
 end
+
+function DirichletBoundaryCondition(bc_dof, bc_val::Vararg{Pair, N}) where {N}
+    dof_array, value_array = generate_bc_arrays(bc_dof, bc_val...)
+    DirichletBoundaryCondition{eltype(value_array)}(dof_array, value_array)
+end
+
+DirichletBoundaryCondition() = DirichletBoundaryCondition{Int64}(Int64[], Int64[])
 
 function generate_bc_arrays(bc_dof, bc_val::Vararg{Pair, N}) where {N}
     value = ntuple(Val(N)) do i

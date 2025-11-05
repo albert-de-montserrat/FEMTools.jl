@@ -27,7 +27,14 @@ export preallocate_sparse_matrix
 
 include("assembly.jl")
 export assemble_system!, assemble_sparse_matrix!, assemble_sparse_vector!
-export assemble_system_atomics!
+export assemble_system_atomics!, assemble_system_color_coded!
+
+include("assembly_matrix_free.jl")
+# export matrix_free_assembly!, matrix_free_assembly_atomics!, matrix_free_assembly_colored!
+export update_T!, update_T_atomics!, update_T_colored!
+
+include("assembly_poisson_free.jl")
+export update_poisson_R!
 
 include("coloring.jl")
 export color_mesh

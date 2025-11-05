@@ -4,16 +4,26 @@ version = "0.1.0"
 authors = ["albert-de-montserrat <albert.de.montserrat@gmail.com>"]
 
 [deps]
+AMD = "14f7f29c-3bd6-536c-9a0b-7339e30b5a3e"
+Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CuthillMcKee = "17f17636-5e38-52e3-a803-7ae3aaaf3da9"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+SymRCM = "286e6d88-80af-4590-acc9-0001b223b9bd"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [compat]
+AMD = "0.5.3"
+Atomix = "1.1.2"
+CuthillMcKee = "0.1.0"
 ForwardDiff = "0.10.38"
 LinearAlgebra = "1.12.0"
+Metis = "1.5.0"
 SparseArrays = "1.12.0"
 StaticArrays = "1.9.10"
+SymRCM = "0.2.2"
 Triangulate = "2.3.4"
 julia = "1.11"

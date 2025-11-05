@@ -21,6 +21,7 @@ function main(tri)
 
     element = T1Element()
     grid = Grid(x, y, element2node, element)
+    element_colors, color_list = color_mesh(grid)
 
     # # grid limits
     # x1 = 0e0
@@ -64,12 +65,13 @@ function main(tri)
     rhs = similar(T)
 
     to = TimerOutput()
-    @timeit to "assembly" begin
-        @timeit to "classic" assemble_system!(KG, MG, FG, grid, element, κ, H)
+    assemble_system!(KG, MG, FG, grid, element, κ, H)
+    assemble_system_color_coded!(KG, MG, FG, grid, element, κ, H, color_list)
+    assemble_system_atomics!(KG, MG, FG, grid, element, κ, H)
 
-        KG .= 0e0 
-        # MG .= 0e0 
-        FG .= 0e0
+    @timeit to "FEM assembly" begin
+        @timeit to "classic" assemble_system!(KG, MG, FG, grid, element, κ, H)
+        @timeit to "colored" assemble_system_color_coded!(KG, MG, FG, grid, element, κ, H, color_list)
         @timeit to "atomics" assemble_system_atomics!(KG, MG, FG, grid, element, κ, H)
     end
     display(to)
@@ -99,15 +101,5 @@ function main(tri)
     )
 end
 
-tri = example_domain_qcdt_area(; maxarea = 1e-4)
+# tri = example_domain_qcdt_area(; maxarea = 1e-4)
 main(tri)
-
-# using Profile
-# using PProf
-
-# Profile.clear()
-# @profile for i in 1:10000 assemble_system!(KG, MG, FG, grid, element, κ, H) end
-# pprof()
-
-
-@b assemble_system!($(KG, MG, FG, grid, element, κ, H)...)

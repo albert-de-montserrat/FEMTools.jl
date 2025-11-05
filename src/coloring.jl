@@ -54,7 +54,7 @@ function color_mesh(grid::Grid)
 
     ## List of elements per color (this is what is needed for threading the assembler)
     # max_color -= 1
-    color_list = [Int32[] for _ in 1:max_color]
+    color_list = [Int64[] for _ in 1:max_color]
     for (iel, color) in enumerate(els_colors)
         @inbounds push!(color_list[color], iel)
     end   
