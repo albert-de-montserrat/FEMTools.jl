@@ -1,68 +1,114 @@
+"""
+    IntegrationPoints{Dim, Nip, T}
 
-struct IntegrationPoints{T}
-    η::T    # local η coordinates
-    ξ::T    # local ξ coordinates
-    vals::T # weights
+Reference-coordinate integration points for an element.
+
+Fields:
+- `ξ`: first reference coordinate for each integration point.
+- `η`: second reference coordinate, or `nothing` for 1D rules.
+- `ζ`: third reference coordinate, or `nothing` for lower-dimensional rules.
+- `ω`: integration weight for each integration point.
+"""
+struct IntegrationPoints{Dim, Nip, T} <: AbstractIntegrationPoints
+    ξ::SVector{Nip, T}
+    η::Union{SVector{Nip, T}, Nothing}
+    ζ::Union{SVector{Nip, T}, Nothing}
+    ω::SVector{Nip, T}
 end
 
-function IntegrationPoints(::Union{LinearTriangle, Type{LinearTriangle}})
-    # Integration points coordinates
-    η = SA[
-        1/6, 2/3, 1/6
-    ]
-    ξ = SA[
-        1/6, 1/6, 2/3
-    ]
-    # Weights
-    vals = SA[
-        1/6, 1/6, 1/6
-    ]
-    # Type
-    T = typeof(η)
-    # instantiate
-    IntegrationPoints{T}(η, ξ, vals)
+"""
+    IntegrationPoints(::Type{T}) where {T<:AbstractElement{nDim, nVert}}
+
+Construct integration points for element type `T`.
+"""
+IntegrationPoints(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = IntegrationPoints(T())
+
+"""
+    IntegrationPoints(::LinearElement{1, 2})
+
+Return the two-point Gauss rule on the reference line.
+"""
+function IntegrationPoints(::LinearElement{1, 2})
+    ξ = SVector(-√(1 / 3), +√(1 / 3))
+    η = nothing
+    ζ = nothing
+    ω = SVector(1.0, 1.0)
+    return IntegrationPoints{1, 2, Float64}(ξ, η, ζ, ω)
 end
 
-function IntegrationPoints(::Union{QuadraticTriangle, Type{QuadraticTriangle}})
-    # Integration points coordinates
-    g1  = (8 - √10 + √(38 - 44 * √(2/5))) / 18
-    g2  = (8 - √10 - √(38 - 44 * √(2/5))) / 18
-    η   = SA[
-        1-2*g1, g1, g1, 1-2*g2, g2, g2
-    ]
-    ξ   = SA[
-        g1, 1-2*g1, g1, g2, 1-2*g2, g2
-    ]
-    # Weights
-    w1 = (620 + √(213125 - 53320 * √10)) / 3720
-    w2 = (620 - √(213125 - 53320 * √10)) / 3720
-    vals = SA[
-        w1, w1, w1, w2, w2, w2
-    ]
-    # Type
-    T = typeof(η)
-    # instantiate
-    IntegrationPoints{T}(η, ξ, vals)
+"""
+    IntegrationPoints(::QuadraticElement{1, 3})
+
+Return the three-point Gauss rule on the reference line.
+"""
+function IntegrationPoints(::QuadraticElement{1, 3})
+    ξ = SVector(-√(3 / 5), 0.0, +√(3 / 5))
+    η = nothing
+    ζ = nothing
+    ω = SVector(5 / 9, 8 / 9, 5 / 9)
+    return IntegrationPoints{1, 3, Float64}(ξ, η, ζ, ω)
 end
 
-function IntegrationPoints(::Union{QuadraticTriangleBubble, Type{QuadraticTriangleBubble}})
-    # Integration points coordinates
-    g1 = (6 - √15) / 21
-    g2 = (6 + √15) / 21
-    η   = SA[
-        1/3, 1-2*g1, g1, g1, 1-2*g2, g2, g2
-    ]
-    ξ   = SA[
-        1/3, g1, 1-2*g1, g1, g2, 1-2*g2, g2
-    ]
-    # Weights
-    w1 = (155 - √15) / 1200
-    w2 = (155 + √15) / 1200
-    vals = SA[
-        0.225, w1, w1, w1, w2, w2, w2
-    ]
-    # Type
-    T = typeof(η)
-    # instantiate
-    IntegrationPoints{T}(η, ξ, vals)
+"""
+    IntegrationPoints(::LinearElement{2, 3})
+
+Return the one-point centroid rule on the reference triangle.
+"""
+function IntegrationPoints(::LinearElement{2, 3})
+    ξ = SVector(1 / 3)
+    η = SVector(1 / 3)
+    ζ = nothing
+    ω = SVector(1 / 2)
+    return IntegrationPoints{2, 1, Float64}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{2, 6})
+
+Return a three-point degree-two rule on the reference triangle.
+"""
+function IntegrationPoints(::QuadraticElement{2, 6})
+    ξ = SVector(1 / 6, 2 / 3, 1 / 6)
+    η = SVector(1 / 6, 1 / 6, 2 / 3)
+    ζ = nothing
+    ω = SVector(1 / 6, 1 / 6, 1 / 6)
+    return IntegrationPoints{2, 3, Float64}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::LinearElement{2, 4})
+
+Return the tensor-product two-by-two Gauss rule on the reference quadrilateral.
+"""
+function IntegrationPoints(::LinearElement{2, 4})
+    ξ = SVector(-√(1 / 3), +√(1 / 3), -√(1 / 3), +√(1 / 3))
+    η = SVector(-√(1 / 3), -√(1 / 3), +√(1 / 3), +√(1 / 3))
+    ζ = nothing
+    ω = SVector(1.0, 1.0, 1.0, 1.0)
+    return IntegrationPoints{2, 4, Float64}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{2, 9})
+
+Return the tensor-product three-by-three Gauss rule on the reference
+quadrilateral.
+"""
+function IntegrationPoints(::QuadraticElement{2, 9})
+    a = √(3 / 5)
+    ξ = SVector(-a, 0.0, +a, -a, 0.0, +a, -a, 0.0, +a)
+    η = SVector(-a, -a, -a, 0.0, 0.0, 0.0, +a, +a, +a)
+    ζ = nothing
+    ω = SVector(
+        25 / 81,
+        40 / 81,
+        25 / 81,
+        40 / 81,
+        64 / 81,
+        40 / 81,
+        25 / 81,
+        40 / 81,
+        25 / 81,
+    )
+    return IntegrationPoints{2, 9, Float64}(ξ, η, ζ, ω)
 end

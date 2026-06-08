@@ -1,42 +1,49 @@
 module FEMTools
 
-using ForwardDiff, StaticArrays, SparseArrays, LinearAlgebra, Triangulate
-using Atomix
+@doc """
+    FEMTools
 
-import Base.getindex, Base.length
+Finite-element utilities for reference elements, shape functions, and
+integration points.
+""" FEMTools
 
-include("elements.jl")
-export AbstractFiniteElement, T1Element, T2Element
-export local_SMatrix, local_SVector
+using ForwardDiff
+using StaticArrays
+using DomainSets
+using SparseArrays
 
-include("basis.jl")
+include("elements/elements.jl")
+include("elements/shape_functions.jl")
+include("elements/integration_points.jl")
+include("mesh/connectivity.jl")
+include("mesh/mesh.jl")
+include("mesh/sparsity.jl")
+include("mesh/coloring.jl")
+include("boundary_conditions/boundary_conditions.jl")
+include("boundary_conditions/apply.jl")
 
-include("quadrature.jl")
+public AbstractElement,
+    AbstractLinearElement,
+    AbstractQuadraticElement,
+    AbstractShapeFunction,
+    AbstractIntegrationPoints,
+    AbstractMesh,
+    AbstractBoundaryCondition
+export LinearElement, QuadraticElement, CubicElement
+export ReferenceElement, ShapeFunctions, IntegrationPoints
+export order
+export Mesh
+export DirichletBoundaryCondition, apply_bc!
+export generate_element2node,
+    generate_node2element,
+    generate_boundary_elements,
+    generate_coordinates,
+    generate_dofs,
+    generate_sparsity_pattern,
+    color_mesh,
+    color_mesh_greedy
+export eval_shape_function,
+    eval_shape_function_gradient,
+    eval_shape_function_jacobian
 
-include("mesh.jl")
-export Point, Grid, getelement, getelementcoords, node_x_el
-
-include("DoFs.jl")
-export get_dofs
-
-include("BC.jl")
-export DirichletBoundaryCondition, set_boundary_condition!
-
-include("sparsity.jl")
-export preallocate_sparse_matrix
-
-include("assembly.jl")
-export assemble_system!, assemble_sparse_matrix!, assemble_sparse_vector!
-export assemble_system_atomics!, assemble_system_color_coded!
-
-include("assembly_matrix_free.jl")
-# export matrix_free_assembly!, matrix_free_assembly_atomics!, matrix_free_assembly_colored!
-export update_T!, update_T_atomics!, update_T_colored!
-
-include("assembly_poisson_free.jl")
-export update_poisson_R!
-
-include("coloring.jl")
-export color_mesh
-
-end # module JustFEM
+end # module FEMTools
