@@ -89,6 +89,21 @@ _quadratic_line_∇N1(ξ) = ξ - 0.5
 _quadratic_line_∇N2(ξ) = -2ξ
 _quadratic_line_∇N3(ξ) = ξ + 0.5
 
+_linear_line_N(ξ, side) = side == -1 ? (1 - ξ) * 0.5 : (1 + ξ) * 0.5
+_linear_line_∇N(side) = side == -1 ? -0.5 : +0.5
+
+function _quadratic_line_N(ξ, node)
+    node == -1 && return _quadratic_line_N1(ξ)
+    node == 0 && return _quadratic_line_N2(ξ)
+    return _quadratic_line_N3(ξ)
+end
+
+function _quadratic_line_∇N(ξ, node)
+    node == -1 && return _quadratic_line_∇N1(ξ)
+    node == 0 && return _quadratic_line_∇N2(ξ)
+    return _quadratic_line_∇N3(ξ)
+end
+
 """
     ShapeFunctions(::LinearElement{2, 3})
 
@@ -181,6 +196,96 @@ function ShapeFunctions(::QuadraticElement{2, 9})
         (N1, N2, N3, N4, N5, N6, N7, N8, N9),
         (∇N1, ∇N2, ∇N3, ∇N4, ∇N5, ∇N6, ∇N7, ∇N8, ∇N9),
     )
+end
+
+"""
+    ShapeFunctions(::LinearElement{3, 8})
+
+Return the eight trilinear shape functions and gradients on the reference
+hexahedron `-1 <= ξ, η, ζ <= 1`.
+"""
+function ShapeFunctions(::LinearElement{3, 8})
+    nodes = (
+        (-1, -1, -1),
+        (+1, -1, -1),
+        (+1, +1, -1),
+        (-1, +1, -1),
+        (-1, -1, +1),
+        (+1, -1, +1),
+        (+1, +1, +1),
+        (-1, +1, +1),
+    )
+
+    N = ntuple(i -> begin
+        node = nodes[i]
+        (ξ, η, ζ) -> _linear_line_N(ξ, node[1]) * _linear_line_N(η, node[2]) * _linear_line_N(ζ, node[3])
+    end, Val(8))
+    ∇N = ntuple(i -> begin
+        node = nodes[i]
+        (ξ, η, ζ) -> (
+            _linear_line_∇N(node[1]) * _linear_line_N(η, node[2]) * _linear_line_N(ζ, node[3]),
+            _linear_line_N(ξ, node[1]) * _linear_line_∇N(node[2]) * _linear_line_N(ζ, node[3]),
+            _linear_line_N(ξ, node[1]) * _linear_line_N(η, node[2]) * _linear_line_∇N(node[3]),
+        )
+    end, Val(8))
+
+    return ShapeFunctions(N, ∇N)
+end
+
+"""
+    ShapeFunctions(::QuadraticElement{3, 27})
+
+Return the twenty-seven tensor-product quadratic shape functions and gradients
+on the reference hexahedron `-1 <= ξ, η, ζ <= 1`.
+"""
+function ShapeFunctions(::QuadraticElement{3, 27})
+    nodes = (
+        (-1, -1, -1),
+        (+1, -1, -1),
+        (+1, +1, -1),
+        (-1, +1, -1),
+        (-1, -1, +1),
+        (+1, -1, +1),
+        (+1, +1, +1),
+        (-1, +1, +1),
+        (0, -1, -1),
+        (+1, 0, -1),
+        (0, +1, -1),
+        (-1, 0, -1),
+        (0, -1, +1),
+        (+1, 0, +1),
+        (0, +1, +1),
+        (-1, 0, +1),
+        (-1, -1, 0),
+        (+1, -1, 0),
+        (+1, +1, 0),
+        (-1, +1, 0),
+        (0, 0, -1),
+        (0, -1, 0),
+        (+1, 0, 0),
+        (0, +1, 0),
+        (-1, 0, 0),
+        (0, 0, +1),
+        (0, 0, 0),
+    )
+
+
+    N = ntuple(Val(27)) do i 
+        @inline
+        node = nodes[i]
+        (ξ, η, ζ) -> _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3])
+    end
+    ∇N = ntuple(Val(27)) do i 
+        @inline
+        node = nodes[i]
+        (ξ, η, ζ) -> (
+            _quadratic_line_∇N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3]),
+            _quadratic_line_N(ξ, node[1]) * _quadratic_line_∇N(η, node[2]) * _quadratic_line_N(ζ, node[3]),
+            _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_∇N(ζ, node[3]),
+        )
+    end
+
+    return ShapeFunctions(N, ∇N)
 end
 
 """

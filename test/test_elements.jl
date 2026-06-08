@@ -10,16 +10,20 @@ const SUPPORTED_ELEMENTS = (
     QuadraticElement{2, 6},
     LinearElement{2, 4},
     QuadraticElement{2, 9},
+    LinearElement{3, 8},
+    QuadraticElement{3, 27},
 )
 
 @testset "latest element hierarchy" begin
     @test LinearElement{1, 2} <: FEMTools.AbstractLinearElement{1, 2}
     @test LinearElement{2, 3} <: FEMTools.AbstractLinearElement{2, 3}
     @test LinearElement{2, 4} <: FEMTools.AbstractLinearElement{2, 4}
+    @test LinearElement{3, 8} <: FEMTools.AbstractLinearElement{3, 8}
 
     @test QuadraticElement{1, 3} <: FEMTools.AbstractQuadraticElement{1, 3}
     @test QuadraticElement{2, 6} <: FEMTools.AbstractQuadraticElement{2, 6}
     @test QuadraticElement{2, 9} <: FEMTools.AbstractQuadraticElement{2, 9}
+    @test QuadraticElement{3, 27} <: FEMTools.AbstractQuadraticElement{3, 27}
 
     @test LinearElement{1, 2} <: FEMTools.AbstractElement{1, 2}
     @test QuadraticElement{1, 3} <: FEMTools.AbstractElement{1, 3}
@@ -47,11 +51,13 @@ end
         LinearElement{1, 2},
         LinearElement{2, 3},
         LinearElement{2, 4},
+        LinearElement{3, 8},
     )
     quadratic_elements = (
         QuadraticElement{1, 3},
         QuadraticElement{2, 6},
         QuadraticElement{2, 9},
+        QuadraticElement{3, 27},
     )
 
     for Element in linear_elements
@@ -82,6 +88,8 @@ end
         (QuadraticElement{2, 6}, 2, 3),
         (LinearElement{2, 4}, 2, 4),
         (QuadraticElement{2, 9}, 2, 9),
+        (LinearElement{3, 8}, 3, 8),
+        (QuadraticElement{3, 27}, 3, 27),
     )
 
     for (Element, nDim, nIp) in cases
@@ -93,7 +101,7 @@ end
         @test length(ip.ξ) == nIp
         @test length(ip.ω) == nIp
         @test nDim == 1 ? ip.η === nothing : ip.η isa SVector{nIp, Float64}
-        @test ip.ζ === nothing
+        @test nDim < 3 ? ip.ζ === nothing : ip.ζ isa SVector{nIp, Float64}
     end
 end
 

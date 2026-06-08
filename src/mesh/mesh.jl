@@ -27,8 +27,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     nnodes::Int # number of nodes
     nels::Int   # number of elements
 
-    function Mesh(Ω::ClosedInterval, nels::Integer)
-        element = ReferenceElement(QuadraticElement{1, 3})
+    function Mesh(Ω, element::ReferenceElement{nDim}, nels) where {nDim}
         Γ = boundary(Ω)
         coords = generate_coordinates(element, Ω, nels)
         DoFs = generate_dofs(element, length(coords))
@@ -39,7 +38,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
         nnodes = length(coords)
 
         return new{
-            1,
+            nDim,
             order(element),
             typeof(Ω),
             typeof(Γ),
@@ -49,7 +48,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
             typeof(n2el),
             typeof(Γnodes),
             typeof(Γels),
-        }(Ω, Γ, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, Int(nels))
+        }(Ω, Γ, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, length(n2el) == 0 ? 0 : size(el2n, 2))
     end
 end
 
@@ -82,11 +81,136 @@ function generate_coordinates(::ReferenceElement{1, 3}, Ω::ClosedInterval, nels
 end
 
 """
+    generate_coordinates(element::ReferenceElement{2, 4}, Ω, nels)
+
+Generate coordinates for a linear quadrilateral mesh over a rectangular domain.
+
+The rectangular domain is passed as `(xmin..xmax) × (ymin..ymax)` and the
+number of elements as `(nx, ny)`. Coordinates are returned as
+`SVector{2, Float64}` values with the x-coordinate varying fastest.
+"""
+function generate_coordinates(
+    ::ReferenceElement{2, 4},
+    Ω,
+    nels::NTuple{2, <:Integer},
+)
+    nx, ny = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], nx + 1)
+    ys = LinRange(left[2], right[2], ny + 1)
+
+    coords = Vector{SVector{2, Float64}}(undef, length(xs) * length(ys))
+    inode = 1
+    for y in ys, x in xs
+        coords[inode] = SVector{2, Float64}(x, y)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
+    generate_coordinates(element::ReferenceElement{2, 9}, Ω, nels)
+
+Generate coordinates for a quadratic quadrilateral mesh over a rectangular
+domain.
+
+The rectangular domain is passed as `(xmin..xmax) × (ymin..ymax)` and the
+number of elements as `(nx, ny)`. Vertex, edge-midpoint, and cell-center nodes
+lie on the refined `(2nx + 1) × (2ny + 1)` tensor-product grid, with the
+x-coordinate varying fastest.
+"""
+function generate_coordinates(
+    ::ReferenceElement{2, 9},
+    Ω,
+    nels::NTuple{2, <:Integer},
+)
+    nx, ny = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], 2nx + 1)
+    ys = LinRange(left[2], right[2], 2ny + 1)
+
+    coords = Vector{SVector{2, Float64}}(undef, length(xs) * length(ys))
+    inode = 1
+    for y in ys, x in xs
+        coords[inode] = SVector{2, Float64}(x, y)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
+    generate_coordinates(element::ReferenceElement{3, 8}, Ω, nels)
+
+Generate coordinates for a linear hexahedral mesh over a rectangular box.
+
+The box domain is passed as `(xmin..xmax) × (ymin..ymax) × (zmin..zmax)` and the
+number of elements as `(nx, ny, nz)`. Coordinates are returned as
+`SVector{3, Float64}` values with the x-coordinate varying fastest.
+"""
+function generate_coordinates(
+    ::ReferenceElement{3, 8},
+    Ω,
+    nels::NTuple{3, <:Integer},
+)
+    nx, ny, nz = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], nx + 1)
+    ys = LinRange(left[2], right[2], ny + 1)
+    zs = LinRange(left[3], right[3], nz + 1)
+
+    coords = Vector{SVector{3, Float64}}(undef, length(xs) * length(ys) * length(zs))
+    inode = 1
+    for z in zs, y in ys, x in xs
+        coords[inode] = SVector{3, Float64}(x, y, z)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
+    generate_coordinates(element::ReferenceElement{3, 27}, Ω, nels)
+
+Generate coordinates for a quadratic hexahedral mesh over a rectangular box.
+
+The box domain is passed as `(xmin..xmax) × (ymin..ymax) × (zmin..zmax)` and the
+number of elements as `(nx, ny, nz)`. Nodes lie on the refined
+`(2nx + 1) × (2ny + 1) × (2nz + 1)` tensor-product grid, with the x-coordinate
+varying fastest.
+"""
+function generate_coordinates(
+    ::ReferenceElement{3, 27},
+    Ω,
+    nels::NTuple{3, <:Integer},
+)
+    nx, ny, nz = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], 2nx + 1)
+    ys = LinRange(left[2], right[2], 2ny + 1)
+    zs = LinRange(left[3], right[3], 2nz + 1)
+
+    coords = Vector{SVector{3, Float64}}(undef, length(xs) * length(ys) * length(zs))
+    inode = 1
+    for z in zs, y in ys, x in xs
+        coords[inode] = SVector{3, Float64}(x, y, z)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
     generate_dofs(element::ReferenceElement{1}, npoints)
 
 Generate one degree of freedom per mesh point for a one-dimensional element.
 """
-generate_dofs(::ReferenceElement{1}, npoints) = [Int32(i) for i in 1:npoints]
+generate_dofs(::ReferenceElement, npoints) = [Int32(i) for i in 1:npoints]
 
 generete_coordinates(args...) = generate_coordinates(args...)
 generete_DoFs(args...) = generate_dofs(args...)

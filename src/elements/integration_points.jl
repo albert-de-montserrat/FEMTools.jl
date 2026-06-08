@@ -112,3 +112,37 @@ function IntegrationPoints(::QuadraticElement{2, 9})
     )
     return IntegrationPoints{2, 9, Float64}(ξ, η, ζ, ω)
 end
+
+"""
+    IntegrationPoints(::LinearElement{3, 8})
+
+Return the tensor-product two-by-two-by-two Gauss rule on the reference
+hexahedron.
+"""
+function IntegrationPoints(::LinearElement{3, 8})
+    a = √(1 / 3)
+    ξ = SVector(-a, +a, -a, +a, -a, +a, -a, +a)
+    η = SVector(-a, -a, +a, +a, -a, -a, +a, +a)
+    ζ = SVector(-a, -a, -a, -a, +a, +a, +a, +a)
+    ω = SVector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    return IntegrationPoints{3, 8, Float64}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{3, 27})
+
+Return the tensor-product three-by-three-by-three Gauss rule on the reference
+hexahedron.
+"""
+function IntegrationPoints(::QuadraticElement{3, 27})
+    a = √(3 / 5)
+    points = (-a, 0.0, +a)
+    weights = (5 / 9, 8 / 9, 5 / 9)
+
+    ξ = SVector{27, Float64}(ntuple(i -> points[mod1(i, 3)], Val(27)))
+    η = SVector{27, Float64}(ntuple(i -> points[mod1(cld(i, 3), 3)], Val(27)))
+    ζ = SVector{27, Float64}(ntuple(i -> points[cld(i, 9)], Val(27)))
+    ω = SVector{27, Float64}(ntuple(i -> weights[mod1(i, 3)] * weights[mod1(cld(i, 3), 3)] * weights[cld(i, 9)], Val(27)))
+
+    return IntegrationPoints{3, 27, Float64}(ξ, η, ζ, ω)
+end

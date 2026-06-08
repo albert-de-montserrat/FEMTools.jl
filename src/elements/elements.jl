@@ -70,6 +70,22 @@ LinearElement{2, 4}
     |   |
     |   |
     1---2 --> ξ
+
+
+LinearElement{3, 8}
+
+        ζ
+        ^
+        |
+        5--------6
+       /|       /|
+      8--------7 |
+      | |      | |
+      | 1------|-2 --> ξ
+      |/       |/
+      4--------3
+     /
+    η
 ```
 """
 struct LinearElement{nDim, nVert} <: AbstractLinearElement{nDim, nVert} end
@@ -113,6 +129,36 @@ QuadraticElement{2, 9}
     8--9--6
     |  |  |
     1--5--2 --> ξ
+
+
+QuadraticElement{3, 27}
+
+    ζ = -1 layer
+
+        η
+        ^
+        |
+        4--11--3
+        |  |   |
+       12--21-10
+        |  |   |
+        1---9--2 --> ξ
+
+    ζ = 0 layer
+
+       20--24-19
+        |  |   |
+       25--27-23
+        |  |   |
+       17--22-18
+
+    ζ = +1 layer
+
+        8--15--7
+        |  |   |
+       16--26-14
+        |  |   |
+        5--13--6
 ```
 """
 struct QuadraticElement{nDim, nVert} <: AbstractQuadraticElement{nDim, nVert} end

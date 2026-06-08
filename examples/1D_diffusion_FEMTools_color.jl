@@ -1,13 +1,16 @@
 using LinearAlgebra
 using SparseArrays
 using StaticArrays
+using Atomix
 
-# import Pkg
-# Pkg.activate(joinpath(@__DIR__, ".."))
+import Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using DomainSets
 using GLMakie
 using FEMTools
+
+using Base.Threads: @threads
 
 function gaussian_temperature(x, t; κ=1.0, center=5.0, σ=0.6, amplitude=10.0)
     width² = σ^2 + 4κ * t
@@ -65,7 +68,44 @@ function assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{
     return Floc
 end
 
-function assemble_diffusion_matrices!(K, M, F, mesh, element::ReferenceElement{1, N}, κ, source) where {N}
+function color_element_batches(mesh)
+    colors = color_mesh(mesh)
+    batches = [Int[] for _ in 1:maximum(colors)]
+    for iel in 1:mesh.nels
+        push!(batches[colors[iel]], iel)
+    end
+    return batches
+end
+
+function assemble_diffusion_matrices!(
+    K,
+    M,
+    F,
+    mesh,
+    element::ReferenceElement{1, N},
+    iel,
+    ip,
+    Nq,
+    ∂N∂ξq,
+    κ,
+    source,
+) where {N}
+
+    local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
+    coords = SVector{N, Float64}(ntuple(i -> mesh.coords[local_nodes[i]], Val(N)))
+
+    Kloc = assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, element, κ)
+    Mloc = assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, element)
+    Floc = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, source)
+
+    @views K[local_nodes, local_nodes] .+= Kloc
+    @views M[local_nodes, local_nodes] .+= Mloc
+    @views F[local_nodes] .+= Floc
+
+    return nothing
+end
+
+function assemble_diffusion_matrices_color_coded!(K, M, F, mesh, element::ReferenceElement{1, N}, κ, source) where {N}
     fill!(K, 0.0)
     fill!(M, 0.0)
     fill!(F, 0.0)
@@ -73,19 +113,14 @@ function assemble_diffusion_matrices!(K, M, F, mesh, element::ReferenceElement{1
     ξq = ntuple(q -> (ip.ξ[q],), length(ip.ω))
     Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
     ∂N∂ξq = ntuple(q -> eval_shape_function_gradient(element, ξq[q]), length(ip.ω))
+    colors = color_element_batches(mesh)
 
-    for iel in 1:mesh.nels
-        local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
-        coords = SVector{N, Float64}(ntuple(i -> mesh.coords[local_nodes[i]], Val(N)))
-
-        Kloc = assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, element, κ)
-        Mloc = assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, element)
-        Floc = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, source)
-
-        @views K[local_nodes, local_nodes] .+= Kloc
-        @views M[local_nodes, local_nodes] .+= Mloc
-        @views F[local_nodes] .+= Floc
+    for color in colors
+        @threads for iel in color
+            assemble_diffusion_matrices!(K, M, F, mesh, element, iel, ip, Nq, ∂N∂ξq, κ, source)
+        end
     end
+    return nothing
 end
 
 function solve_1d_diffusion(;
@@ -97,9 +132,9 @@ function solve_1d_diffusion(;
     on_step=nothing,
 )
     Ω = 0.0..Lx
-    element = ReferenceElement(LinearElement{1, 2})
+    element = ReferenceElement(QuadraticElement{1, 3})
     mesh = FEMTools.Mesh(Ω, element, nel)
-    # element = ReferenceElement(QuadraticElement{1, 3})
+    # element = ReferenceElement(LinearElement{1, 2})
 
     # ΓD = DirichletBoundaryCondition(mesh.Γ, mesh.Γnodes, zeros(length(mesh.Γnodes)))
 
@@ -110,7 +145,7 @@ function solve_1d_diffusion(;
     M = preallocate_sparse_matrix(pattern)
     F = zeros(mesh.nnodes)
 
-    assemble_diffusion_matrices!(K, M, F, mesh, element, κ, source)
+    assemble_diffusion_matrices_color_coded!(K, M, F, mesh, element, κ, source)
 
     dt = t_total / n_steps
     lhs = M ./ dt .+ K
@@ -139,7 +174,7 @@ function solve_1d_diffusion(;
     return mesh.coords, T, T_exact
 end
 
-function plot_solution(grid, T, T_exact; output="1D_diffusion_FEMTools_solution.png")
+function plot_solution(grid, T, T_exact; output="1D_diffusion_FEMTools_color_solution.png")
     error = T - T_exact
 
     fig = Figure(size=(900, 600))
@@ -170,7 +205,7 @@ function plot_solution(grid, T, T_exact; output="1D_diffusion_FEMTools_solution.
 end
 
 function record_time_evolution(;
-    output="1D_diffusion_FEMTools_evolution.gif",
+    output="1D_diffusion_FEMTools_color_evolution.gif",
     framerate=24,
     kwargs...,
 )
@@ -221,7 +256,7 @@ function record_time_evolution(;
     return grid, T, T_exact
 end
 
-function main(; render=:none, output="1D_diffusion_FEMTools_solution.png", gif_output="1D_diffusion_FEMTools_evolution.gif")
+function main(; render=:none, output="1D_diffusion_FEMTools_color_solution.png", gif_output="1D_diffusion_FEMTools_color_evolution.gif")
     if render === :gif
         @time grid, T, T_exact = record_time_evolution(; output=gif_output)
     elseif render === :plot || render === :none
@@ -232,7 +267,7 @@ function main(; render=:none, output="1D_diffusion_FEMTools_solution.png", gif_o
 
     error = norm(T - T_exact) / sqrt(length(T))
 
-    println("Solved 1D diffusion with FEMTools quadrature.")
+    println("Solved 1D diffusion with FEMTools color-coded quadrature assembly.")
     println("nodes: ", length(grid))
     println("relative L2-like error: ", error)
 
@@ -248,4 +283,3 @@ end
 
 main(; render=:gif)
 # main(; render=:none)
-# main(; render=:plot)

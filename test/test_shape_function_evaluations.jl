@@ -122,4 +122,59 @@ using FEMTools
         dl1(ξ)*l3(η) l1(ξ)*dl3(η)
         dl3(ξ)*l3(η) l3(ξ)*dl3(η)
     ]
+
+    hexahedron = ReferenceElement(LinearElement{3, 8})
+    hex_nodes = (
+        (-1.0, -1.0, -1.0),
+        (+1.0, -1.0, -1.0),
+        (+1.0, +1.0, -1.0),
+        (-1.0, +1.0, -1.0),
+        (-1.0, -1.0, +1.0),
+        (+1.0, -1.0, +1.0),
+        (+1.0, +1.0, +1.0),
+        (-1.0, +1.0, +1.0),
+    )
+    for (inode, coords) in pairs(hex_nodes)
+        values = eval_shape_function(hexahedron, coords)
+        @test values[inode] == 1.0
+        @test sum(values) == 1.0
+        @test count(!iszero, values) == 1
+    end
+
+    quadratic_hexahedron = ReferenceElement(QuadraticElement{3, 27})
+    qhex_nodes = (
+        (-1.0, -1.0, -1.0),
+        (+1.0, -1.0, -1.0),
+        (+1.0, +1.0, -1.0),
+        (-1.0, +1.0, -1.0),
+        (-1.0, -1.0, +1.0),
+        (+1.0, -1.0, +1.0),
+        (+1.0, +1.0, +1.0),
+        (-1.0, +1.0, +1.0),
+        (0.0, -1.0, -1.0),
+        (+1.0, 0.0, -1.0),
+        (0.0, +1.0, -1.0),
+        (-1.0, 0.0, -1.0),
+        (0.0, -1.0, +1.0),
+        (+1.0, 0.0, +1.0),
+        (0.0, +1.0, +1.0),
+        (-1.0, 0.0, +1.0),
+        (-1.0, -1.0, 0.0),
+        (+1.0, -1.0, 0.0),
+        (+1.0, +1.0, 0.0),
+        (-1.0, +1.0, 0.0),
+        (0.0, 0.0, -1.0),
+        (0.0, -1.0, 0.0),
+        (+1.0, 0.0, 0.0),
+        (0.0, +1.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, 0.0, +1.0),
+        (0.0, 0.0, 0.0),
+    )
+    for (inode, coords) in pairs(qhex_nodes)
+        values = eval_shape_function(quadratic_hexahedron, coords)
+        @test values[inode] == 1.0
+        @test sum(values) == 1.0
+        @test count(!iszero, values) == 1
+    end
 end
