@@ -3,21 +3,21 @@
 
 Abstract supertype for finite element reference-element tags.
 """
-abstract type AbstractElement{nDim, nVert} end
+abstract type AbstractElement{nDim, nVert, T} end
 
 """
     AbstractLinearElement{nDim, nVert}
 
 Abstract supertype for linear finite element reference-element tags.
 """
-abstract type AbstractLinearElement{nDim, nVert} <: AbstractElement{nDim, nVert} end
+abstract type AbstractLinearElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
 """
     AbstractQuadraticElement{nDim, nVert}
 
 Abstract supertype for quadratic finite element reference-element tags.
 """
-abstract type AbstractQuadraticElement{nDim, nVert} <: AbstractElement{nDim, nVert} end
+abstract type AbstractQuadraticElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
 """
     AbstractShapeFunction
@@ -88,7 +88,7 @@ LinearElement{3, 8}
     η
 ```
 """
-struct LinearElement{nDim, nVert} <: AbstractLinearElement{nDim, nVert} end
+struct LinearElement{nDim, nVert, T} <: AbstractLinearElement{nDim, nVert, T} end
 
 """
     QuadraticElement{nDim, nVert}
@@ -161,7 +161,7 @@ QuadraticElement{3, 27}
         5--13--6
 ```
 """
-struct QuadraticElement{nDim, nVert} <: AbstractQuadraticElement{nDim, nVert} end
+struct QuadraticElement{nDim, nVert, T} <: AbstractQuadraticElement{nDim, nVert, T} end
 
 """
     CubicElement{nDim, nVert}
@@ -171,10 +171,10 @@ and `nVert` vertices.
 
 No cubic node ordering is implemented yet.
 """
-struct CubicElement{nDim, nVert} <: AbstractElement{nDim, nVert} end
+struct CubicElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
 """
-    ReferenceElement{nDim, nVert, Element, SF, IP}
+    ReferenceElement{Element, SF, IP}
 
 Bundle shape functions and integration points for one reference element.
 
@@ -182,28 +182,29 @@ Fields:
 - `shape_functions`: shape-function data.
 - `integration_points`: integration-point data.
 """
-struct ReferenceElement{nDim, nVert, Element<:AbstractElement{nDim, nVert}, SF, IP}
+struct ReferenceElement{Element<:AbstractElement, SF, IP}
     shape_functions::SF
     integration_points::IP
 
-    function ReferenceElement(element::T) where {nDim, nVert, T<:AbstractElement{nDim, nVert}}
+    function ReferenceElement(element::T) where {T<:AbstractElement}
         shape_functions = ShapeFunctions(element)
         integration_points = IntegrationPoints(element)
 
-        new{nDim, nVert, T, typeof(shape_functions), typeof(integration_points)}(
+        new{T, typeof(shape_functions), typeof(integration_points)}(
             shape_functions,
             integration_points,
         )
     end
 end
 
-ReferenceElement(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = ReferenceElement(T())
+ReferenceElement(::Type{T}) where {T<:AbstractElement} = ReferenceElement(T())
 
 ###
 # OTHER FUNCTIONS
 ###
 
-Base.length(::ReferenceElement{nDim, nVert}) where {nDim, nVert} = nVert
+Base.length(::ReferenceElement{T}) where {T<:AbstractElement} = length(T())
+Base.length(::AbstractElement{nDim, nVert}) where {nDim, nVert} = nVert
 
 """
     order(element)
@@ -212,7 +213,7 @@ Base.length(::ReferenceElement{nDim, nVert}) where {nDim, nVert} = nVert
 Return the polynomial order associated with an element tag, element type, or
 `ReferenceElement`.
 """
-@inline order(::ReferenceElement{nDim, nVert, T}) where {nDim, nVert, T} = order(T)
+@inline order(::ReferenceElement{T}) where {T} = order(T)
 @inline order(::Type{T}) where T<:AbstractElement = order(T())
 @inline order(::AbstractLinearElement) = 1
 @inline order(::AbstractQuadraticElement) = 2

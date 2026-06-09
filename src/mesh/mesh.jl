@@ -27,7 +27,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     nnodes::Int # number of nodes
     nels::Int   # number of elements
 
-    function Mesh(Ω, element::ReferenceElement{nDim}, nels) where {nDim}
+    function Mesh(Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
         Γ = boundary(Ω)
         coords = generate_coordinates(element, Ω, nels)
         DoFs = generate_dofs(element, length(coords))
@@ -52,12 +52,13 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     end
 end
 
+
 """
     generate_coordinates(element::ReferenceElement{1, 2}, Ω, nels)
 
 Generate coordinates for a linear one-dimensional mesh over interval `Ω`.
 """
-function generate_coordinates(::ReferenceElement{1, 2}, Ω::ClosedInterval, nels)
+function generate_coordinates(::ReferenceElement{LinearElement{1, 2, T}}, Ω::ClosedInterval, nels) where {T}
     domain = LinRange(leftendpoint(Ω), rightendpoint(Ω), nels + 1)
     return collect(domain)
 end
@@ -69,10 +70,10 @@ Generate coordinates for a quadratic one-dimensional mesh over interval `Ω`.
 
 Vertex nodes occupy odd indices and midpoint nodes occupy even indices.
 """
-function generate_coordinates(::ReferenceElement{1, 3}, Ω::ClosedInterval, nels)
+function generate_coordinates(::ReferenceElement{QuadraticElement{1, 3, T}}, Ω::ClosedInterval, nels) where {T}
     domain = LinRange(leftendpoint(Ω), rightendpoint(Ω), nels + 1)
     npoints = 2 * length(domain) - 1
-    coords = zeros(npoints)
+    coords = zeros(T, npoints)
     coords[1:2:npoints] .= domain
     for i in 2:2:length(coords)
         coords[i] = (coords[i - 1] + coords[i + 1]) / 2
@@ -90,20 +91,20 @@ number of elements as `(nx, ny)`. Coordinates are returned as
 `SVector{2, Float64}` values with the x-coordinate varying fastest.
 """
 function generate_coordinates(
-    ::ReferenceElement{2, 4},
+    ::ReferenceElement{LinearElement{2, 4, T}},
     Ω,
     nels::NTuple{2, <:Integer},
-)
+) where {T}
     nx, ny = nels
     left = leftendpoint(Ω)
     right = rightendpoint(Ω)
     xs = LinRange(left[1], right[1], nx + 1)
     ys = LinRange(left[2], right[2], ny + 1)
 
-    coords = Vector{SVector{2, Float64}}(undef, length(xs) * length(ys))
+    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
     inode = 1
     for y in ys, x in xs
-        coords[inode] = SVector{2, Float64}(x, y)
+        coords[inode] = SVector{2, T}(x, y)
         inode += 1
     end
 
@@ -122,20 +123,20 @@ lie on the refined `(2nx + 1) × (2ny + 1)` tensor-product grid, with the
 x-coordinate varying fastest.
 """
 function generate_coordinates(
-    ::ReferenceElement{2, 9},
+    ::ReferenceElement{QuadraticElement{2, 9, T}},
     Ω,
     nels::NTuple{2, <:Integer},
-)
+) where {T}
     nx, ny = nels
     left = leftendpoint(Ω)
     right = rightendpoint(Ω)
     xs = LinRange(left[1], right[1], 2nx + 1)
     ys = LinRange(left[2], right[2], 2ny + 1)
 
-    coords = Vector{SVector{2, Float64}}(undef, length(xs) * length(ys))
+    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
     inode = 1
     for y in ys, x in xs
-        coords[inode] = SVector{2, Float64}(x, y)
+        coords[inode] = SVector{2, T}(x, y)
         inode += 1
     end
 
@@ -152,10 +153,10 @@ number of elements as `(nx, ny, nz)`. Coordinates are returned as
 `SVector{3, Float64}` values with the x-coordinate varying fastest.
 """
 function generate_coordinates(
-    ::ReferenceElement{3, 8},
+    ::ReferenceElement{LinearElement{3, 8, T}},
     Ω,
     nels::NTuple{3, <:Integer},
-)
+) where {T}
     nx, ny, nz = nels
     left = leftendpoint(Ω)
     right = rightendpoint(Ω)
@@ -163,10 +164,10 @@ function generate_coordinates(
     ys = LinRange(left[2], right[2], ny + 1)
     zs = LinRange(left[3], right[3], nz + 1)
 
-    coords = Vector{SVector{3, Float64}}(undef, length(xs) * length(ys) * length(zs))
+    coords = Vector{SVector{3, T}}(undef, length(xs) * length(ys) * length(zs))
     inode = 1
     for z in zs, y in ys, x in xs
-        coords[inode] = SVector{3, Float64}(x, y, z)
+        coords[inode] = SVector{3, T}(x, y, z)
         inode += 1
     end
 
@@ -184,10 +185,10 @@ number of elements as `(nx, ny, nz)`. Nodes lie on the refined
 varying fastest.
 """
 function generate_coordinates(
-    ::ReferenceElement{3, 27},
+    ::ReferenceElement{QuadraticElement{3, 27, T}},
     Ω,
     nels::NTuple{3, <:Integer},
-)
+) where {T}
     nx, ny, nz = nels
     left = leftendpoint(Ω)
     right = rightendpoint(Ω)
@@ -195,10 +196,10 @@ function generate_coordinates(
     ys = LinRange(left[2], right[2], 2ny + 1)
     zs = LinRange(left[3], right[3], 2nz + 1)
 
-    coords = Vector{SVector{3, Float64}}(undef, length(xs) * length(ys) * length(zs))
+    coords = Vector{SVector{3, T}}(undef, length(xs) * length(ys) * length(zs))
     inode = 1
     for z in zs, y in ys, x in xs
-        coords[inode] = SVector{3, Float64}(x, y, z)
+        coords[inode] = SVector{3, T}(x, y, z)
         inode += 1
     end
 

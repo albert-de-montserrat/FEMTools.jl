@@ -22,8 +22,8 @@ include("mesh/coloring.jl")
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
-public AbstractElement,
-    AbstractLinearElement,
+export AbstractElement
+public AbstractLinearElement,
     AbstractQuadraticElement,
     AbstractShapeFunction,
     AbstractIntegrationPoints,

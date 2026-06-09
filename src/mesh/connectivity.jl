@@ -7,7 +7,17 @@ Rows are local node ids and columns are element ids. For example, a quadratic
 line mesh with three elements gives columns `[1, 2, 3]`, `[3, 4, 5]`, and
 `[5, 6, 7]`.
 """
-function generate_element2node(::ReferenceElement{1, N}, nel) where N
+function generate_element2node(::ReferenceElement{LinearElement{1, N, T}}, nel) where {N, T}
+    el2n = zeros(Int32, N, nel)
+    for iel = axes(el2n, 2)
+        for offset in 0:N-1
+            el2n[offset + 1, iel] = (N - 1) * (iel - 1) + offset + 1
+        end
+    end
+    return el2n
+end
+
+function generate_element2node(::ReferenceElement{QuadraticElement{1, N, T}}, nel) where {N, T}
     el2n = zeros(Int32, N, nel)
     for iel = axes(el2n, 2)
         for offset in 0:N-1
@@ -25,7 +35,7 @@ Build element-to-node connectivity for a structured linear quadrilateral mesh.
 Nodes are numbered with the x-index varying fastest. Local nodes follow the
 reference element order: bottom-left, bottom-right, top-right, top-left.
 """
-function generate_element2node(::ReferenceElement{2, 4}, nels::NTuple{2, <:Integer})
+function generate_element2node(::ReferenceElement{LinearElement{2, 4, T}}, nels::NTuple{2, <:Integer}) where T
     nx, ny = nels
     stride = nx + 1
     el2n = zeros(Int32, 4, nx * ny)
@@ -52,7 +62,7 @@ mesh.
 Nodes are numbered on the refined `(2nx + 1) × (2ny + 1)` grid with the x-index
 varying fastest. Local nodes follow the `QuadraticElement{2, 9}` order.
 """
-function generate_element2node(::ReferenceElement{2, 9}, nels::NTuple{2, <:Integer})
+function generate_element2node(::ReferenceElement{QuadraticElement{2, 9, T}}, nels::NTuple{2, <:Integer}) where T
     nx, ny = nels
     stride = 2nx + 1
     el2n = zeros(Int32, 9, nx * ny)
@@ -85,7 +95,7 @@ end
 
 Build element-to-node connectivity for a structured linear hexahedral mesh.
 """
-function generate_element2node(::ReferenceElement{3, 8}, nels::NTuple{3, <:Integer})
+function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels::NTuple{3, <:Integer}) where T
     nx, ny, nz = nels
     stride_y = nx + 1
     stride_z = (nx + 1) * (ny + 1)
@@ -116,7 +126,7 @@ end
 
 Build element-to-node connectivity for a structured quadratic hexahedral mesh.
 """
-function generate_element2node(::ReferenceElement{3, 27}, nels::NTuple{3, <:Integer})
+function generate_element2node(::ReferenceElement{QuadraticElement{3, 27, T}}, nels::NTuple{3, <:Integer}) where T
     nx, ny, nz = nels
     stride_y = 2nx + 1
     stride_z = (2nx + 1) * (2ny + 1)

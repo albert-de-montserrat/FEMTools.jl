@@ -1,5 +1,14 @@
 using Test
 
+using DomainSets
+using DomainSets: ×
+using FEMTools
+using SparseArrays
+using StaticArrays
+
+const FP64 = Float64
+const FP32 = Float32
+
 @testset "FEMTools tests" begin
     test_dir = @__DIR__
 

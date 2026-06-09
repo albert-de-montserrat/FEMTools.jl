@@ -32,7 +32,7 @@ function element_coordinate_matrix(mesh, local_nodes::SVector{N, Int}) where {N}
     return SMatrix{N, 2, Float64, 2N}(data)
 end
 
-function assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, ::ReferenceElement{2, N}, κ) where {N}
+function assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, ::ReferenceElement{T}, κ) where T<:AbstractElement{2, N} where N
     Kloc = @SMatrix zeros(N, N)
 
     for q in eachindex(ip.ω)
@@ -47,7 +47,7 @@ function assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, ::ReferenceElement{2, N
     return Kloc
 end
 
-function assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{2, N}) where {N}
+function assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
     Mloc = @SMatrix zeros(N, N)
 
     for q in eachindex(ip.ω)
@@ -62,7 +62,7 @@ function assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{
     return Mloc
 end
 
-function assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{2, N}, source) where {N}
+function assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{T}, source) where T<:AbstractElement{2, N} where N
     Floc = @SVector zeros(N)
 
     for q in eachindex(ip.ω)
@@ -79,7 +79,7 @@ function assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{
     return Floc
 end
 
-function assemble_diffusion_matrices!(K, M, F, mesh, element::ReferenceElement{2, N}, κ, source) where {N}
+function assemble_diffusion_matrices!(K, M, F, mesh, element::ReferenceElement{T}, κ, source) where T<:AbstractElement{2, N} where N
     fill!(K, 0.0)
     fill!(M, 0.0)
     fill!(F, 0.0)
@@ -113,7 +113,7 @@ function solve_2d_diffusion(;
     n_steps=40,
     on_step=nothing,
 )
-    element = ReferenceElement(LinearElement{2, 4})
+    element = ReferenceElement(LinearElement{2, 4, Float64})
     Ω = (0.0..Lx) × (0.0..Ly)
     mesh = FEMTools.Mesh(Ω, element, nels)
     source = 0.0

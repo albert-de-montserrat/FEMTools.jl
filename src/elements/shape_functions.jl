@@ -28,11 +28,11 @@ ShapeFunctions(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} =
 Return the two linear shape functions and constant gradients on the reference
 line `-1 <= ξ <= 1`.
 """
-function ShapeFunctions(::LinearElement{1, 2})
-    N1 = ξ -> (1 - ξ) * 0.5
-    N2 = ξ -> (1 + ξ) * 0.5
-    ∇N1 = ξ -> -0.5
-    ∇N2 = ξ -> +0.5
+function ShapeFunctions(::LinearElement{1, 2, T}) where T
+    N1 = ξ -> (1 - ξ) * T(1/2)
+    N2 = ξ -> (1 + ξ) * T(1/2)
+    ∇N1 = ξ -> -T(1/2)
+    ∇N2 = ξ -> +T(1/2)
     return ShapeFunctions((N1, N2), (∇N1, ∇N2))
 end
 
@@ -42,13 +42,13 @@ end
 Return the three quadratic shape functions and gradients on the reference line
 `-1 <= ξ <= 1`.
 """
-function ShapeFunctions(::QuadraticElement{1, 3})
-    N1 = ξ -> ξ * (ξ - 1) * 0.5
-    N2 = ξ -> 1 - ξ^2
-    N3 = ξ -> ξ * (ξ + 1) * 0.5
-    ∇N1 = ξ -> ξ - 0.5
+function ShapeFunctions(::QuadraticElement{1, 3, T}) where T
+    N1 = ξ -> ξ * (ξ - 1) * T(1/2)
+    N2 = ξ -> 1 - T(ξ^2)
+    N3 = ξ -> ξ * (ξ + 1) * T(1/2)
+    ∇N1 = ξ -> ξ - T(1/2)
     ∇N2 = ξ -> -2ξ
-    ∇N3 = ξ -> ξ + 0.5
+    ∇N3 = ξ -> ξ + T(1/2)
     return ShapeFunctions((N1, N2, N3), (∇N1, ∇N2, ∇N3))
 end
 
@@ -58,7 +58,7 @@ end
 Return the six quadratic shape functions and gradients on the reference
 triangle `ξ >= 0`, `η >= 0`, and `ξ + η <= 1`.
 """
-function ShapeFunctions(::QuadraticElement{2, 6})
+function ShapeFunctions(::QuadraticElement{2, 6, T}) where T
     N1 = (ξ, η) -> begin
         L1 = 1 - ξ - η
         L1 * (2L1 - 1)
@@ -73,8 +73,8 @@ function ShapeFunctions(::QuadraticElement{2, 6})
         L1 = 1 - ξ - η
         (1 - 4L1, 1 - 4L1)
     end
-    ∇N2 = (ξ, η) -> (4ξ - 1, 0.0)
-    ∇N3 = (ξ, η) -> (0.0, 4η - 1)
+    ∇N2 = (ξ, η) -> (4ξ - 1, zero(T))
+    ∇N3 = (ξ, η) -> (zero(T), 4η - 1)
     ∇N4 = (ξ, η) -> (4 * (1 - 2ξ - η), -4ξ)
     ∇N5 = (ξ, η) -> (4η, 4ξ)
     ∇N6 = (ξ, η) -> (-4η, 4 * (1 - ξ - 2η))
@@ -82,15 +82,15 @@ function ShapeFunctions(::QuadraticElement{2, 6})
     return ShapeFunctions((N1, N2, N3, N4, N5, N6), (∇N1, ∇N2, ∇N3, ∇N4, ∇N5, ∇N6))
 end
 
-_quadratic_line_N1(ξ) = ξ * (ξ - 1) * 0.5
-_quadratic_line_N2(ξ) = 1 - ξ^2
-_quadratic_line_N3(ξ) = ξ * (ξ + 1) * 0.5
-_quadratic_line_∇N1(ξ) = ξ - 0.5
-_quadratic_line_∇N2(ξ) = -2ξ
-_quadratic_line_∇N3(ξ) = ξ + 0.5
+_quadratic_line_N1(ξ::T) where T = ξ * (ξ - 1) * T(1/2)
+_quadratic_line_N2(ξ::T) where T = 1 - ξ^2
+_quadratic_line_N3(ξ::T) where T = ξ * (ξ + 1) * T(1/2)
+_quadratic_line_∇N1(ξ::T) where T = ξ - T(1/2)
+_quadratic_line_∇N2(ξ::T) where T = -2ξ
+_quadratic_line_∇N3(ξ::T) where T = ξ + T(1/2)
 
-_linear_line_N(ξ, side) = side == -1 ? (1 - ξ) * 0.5 : (1 + ξ) * 0.5
-_linear_line_∇N(side) = side == -1 ? -0.5 : +0.5
+_linear_line_N(ξ::T, side) where T = side == -1 ? (1 - ξ) * T(1/2) : (1 + ξ) * T(1/2)
+_linear_line_∇N(side::T) where T= side == -1 ? -T(1/2) : +T(1/2)
 
 function _quadratic_line_N(ξ, node)
     node == -1 && return _quadratic_line_N1(ξ)
@@ -110,13 +110,13 @@ end
 Return the three linear shape functions and constant gradients on the reference
 triangle `ξ >= 0`, `η >= 0`, and `ξ + η <= 1`.
 """
-function ShapeFunctions(::LinearElement{2, 3})
+function ShapeFunctions(::LinearElement{2, 3, T}) where T
     N1 = (ξ, η) -> 1 - ξ - η
     N2 = (ξ, η) -> ξ
     N3 = (ξ, η) -> η
-    ∇N1 = (ξ, η) -> (-1.0, -1.0)
-    ∇N2 = (ξ, η) -> (+1.0, 0.0)
-    ∇N3 = (ξ, η) -> (0.0, +1.0)
+    ∇N1 = (ξ, η) -> (-one(T), -one(T))
+    ∇N2 = (ξ, η) -> (+one(T), zero(T))
+    ∇N3 = (ξ, η) -> (zero(T), +one(T))
     return ShapeFunctions((N1, N2, N3), (∇N1, ∇N2, ∇N3))
 end
 
@@ -126,15 +126,15 @@ end
 Return the four bilinear shape functions and gradients on the reference
 quadrilateral `-1 <= ξ <= 1`, `-1 <= η <= 1`.
 """
-function ShapeFunctions(::LinearElement{2, 4})
-    N1 = (ξ, η) -> (1 - ξ) * (1 - η) * 0.25
-    N2 = (ξ, η) -> (1 + ξ) * (1 - η) * 0.25
-    N3 = (ξ, η) -> (1 + ξ) * (1 + η) * 0.25
-    N4 = (ξ, η) -> (1 - ξ) * (1 + η) * 0.25
-    ∇N1 = (ξ, η) -> (-(1 - η) * 0.25, -(1 - ξ) * 0.25)
-    ∇N2 = (ξ, η) -> (+(1 - η) * 0.25, -(1 + ξ) * 0.25)
-    ∇N3 = (ξ, η) -> (+(1 + η) * 0.25, +(1 + ξ) * 0.25)
-    ∇N4 = (ξ, η) -> (-(1 + η) * 0.25, +(1 - ξ) * 0.25)
+function ShapeFunctions(::LinearElement{2, 4, T}) where T
+    N1 = (ξ, η) -> (1 - ξ) * (1 - η) * T(1/4)
+    N2 = (ξ, η) -> (1 + ξ) * (1 - η) * T(1/4)
+    N3 = (ξ, η) -> (1 + ξ) * (1 + η) * T(1/4)
+    N4 = (ξ, η) -> (1 - ξ) * (1 + η) * T(1/4)
+    ∇N1 = (ξ, η) -> (-(1 - η) * T(1/4), -(1 - ξ) * T(1/4))
+    ∇N2 = (ξ, η) -> (+(1 - η) * T(1/4), -(1 + ξ) * T(1/4))
+    ∇N3 = (ξ, η) -> (+(1 + η) * T(1/4), +(1 + ξ) * T(1/4))
+    ∇N4 = (ξ, η) -> (-(1 + η) * T(1/4), +(1 - ξ) * T(1/4))
     return ShapeFunctions((N1, N2, N3, N4), (∇N1, ∇N2, ∇N3, ∇N4))
 end
 
@@ -144,7 +144,7 @@ end
 Return the nine tensor-product quadratic shape functions and gradients on the
 reference quadrilateral `-1 <= ξ <= 1`, `-1 <= η <= 1`.
 """
-function ShapeFunctions(::QuadraticElement{2, 9})
+function ShapeFunctions(::QuadraticElement{2, 9, T}) where T
     N1 = (ξ, η) -> _quadratic_line_N1(ξ) * _quadratic_line_N1(η)
     N2 = (ξ, η) -> _quadratic_line_N3(ξ) * _quadratic_line_N1(η)
     N3 = (ξ, η) -> _quadratic_line_N3(ξ) * _quadratic_line_N3(η)
@@ -204,16 +204,16 @@ end
 Return the eight trilinear shape functions and gradients on the reference
 hexahedron `-1 <= ξ, η, ζ <= 1`.
 """
-function ShapeFunctions(::LinearElement{3, 8})
+function ShapeFunctions(::LinearElement{3, 8, T}) where T
     nodes = (
-        (-1, -1, -1),
-        (+1, -1, -1),
-        (+1, +1, -1),
-        (-1, +1, -1),
-        (-1, -1, +1),
-        (+1, -1, +1),
-        (+1, +1, +1),
-        (-1, +1, +1),
+        (-one(T), -one(T), -one(T)),
+        (+one(T), -one(T), -one(T)),
+        (+one(T), +one(T), -one(T)),
+        (-one(T), +one(T), -one(T)),
+        (-one(T), -one(T), +one(T)),
+        (+one(T), -one(T), +one(T)),
+        (+one(T), +one(T), +one(T)),
+        (-one(T), +one(T), +one(T)),
     )
 
     N = ntuple(i -> begin
@@ -238,35 +238,35 @@ end
 Return the twenty-seven tensor-product quadratic shape functions and gradients
 on the reference hexahedron `-1 <= ξ, η, ζ <= 1`.
 """
-function ShapeFunctions(::QuadraticElement{3, 27})
+function ShapeFunctions(::QuadraticElement{3, 27, T}) where T
     nodes = (
-        (-1, -1, -1),
-        (+1, -1, -1),
-        (+1, +1, -1),
-        (-1, +1, -1),
-        (-1, -1, +1),
-        (+1, -1, +1),
-        (+1, +1, +1),
-        (-1, +1, +1),
-        (0, -1, -1),
-        (+1, 0, -1),
-        (0, +1, -1),
-        (-1, 0, -1),
-        (0, -1, +1),
-        (+1, 0, +1),
-        (0, +1, +1),
-        (-1, 0, +1),
-        (-1, -1, 0),
-        (+1, -1, 0),
-        (+1, +1, 0),
-        (-1, +1, 0),
-        (0, 0, -1),
-        (0, -1, 0),
-        (+1, 0, 0),
-        (0, +1, 0),
-        (-1, 0, 0),
-        (0, 0, +1),
-        (0, 0, 0),
+        (-one(T), -one(T), -one(T)),
+        (+one(T), -one(T), -one(T)),
+        (+one(T), +one(T), -one(T)),
+        (-one(T), +one(T), -one(T)),
+        (-one(T), -one(T), +one(T)),
+        (+one(T), -one(T), +one(T)),
+        (+one(T), +one(T), +one(T)),
+        (-one(T), +one(T), +one(T)),
+        (zero(T), -one(T), -one(T)),
+        (+one(T), zero(T), -one(T)),
+        (zero(T), +one(T), -one(T)),
+        (-one(T), zero(T), -one(T)),
+        (zero(T), -one(T), +one(T)),
+        (+one(T), zero(T), +one(T)),
+        (zero(T), +one(T), +one(T)),
+        (-one(T), zero(T), +one(T)),
+        (-one(T), -one(T), zero(T)),
+        (+one(T), -one(T), zero(T)),
+        (+one(T), +one(T), zero(T)),
+        (-one(T), +one(T), zero(T)),
+        (zero(T), zero(T), -one(T)),
+        (zero(T), -one(T), zero(T)),
+        (+one(T), zero(T), zero(T)),
+        (zero(T), +one(T), zero(T)),
+        (-one(T), zero(T), zero(T)),
+        (zero(T), zero(T), +one(T)),
+        (zero(T), zero(T), zero(T)),
     )
 
 

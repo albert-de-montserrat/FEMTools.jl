@@ -5,7 +5,7 @@ using FEMTools
 using SparseArrays
 
 @testset "dirichlet boundary condition" begin
-    Γ = boundary(0.0..1.0)
+    Γ = boundary(0.0 .. 1.0)
     DoFs = Int32[1, 4]
     vals = [10.0, -2.0]
 
