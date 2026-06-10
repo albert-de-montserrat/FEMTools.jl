@@ -23,7 +23,7 @@ include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
 export AbstractElement
-public AbstractLinearElement,
+export AbstractLinearElement,
     AbstractQuadraticElement,
     AbstractShapeFunction,
     AbstractIntegrationPoints,
