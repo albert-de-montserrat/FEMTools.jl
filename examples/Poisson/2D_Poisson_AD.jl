@@ -18,56 +18,48 @@ function element_coordinate_matrix(mesh, local_nodes::SVector{N, Int}) where {N}
     return SMatrix{N, 2, Float64, 2N}(data)
 end
 
-# @inline function integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ω, ::Val{N}) where N
-#     Re = zero(Hloc)
-#     for q in eachindex(ω)
-#         Nv = Nq[q]
-#         ∂N∂ξ = ∂N∂ξq[q]
-#         J = ∂N∂ξ' * coords
-#         ∂N∂x = ∂N∂ξ * inv(J)
-#         dΩ = abs(det(J)) * ω[q]
-
-#         tmp   = ∂N∂x' * Hloc
-#         KHloc = (D * dΩ) * (∂N∂x * tmp)
-#         Re   += SVector{N}(-sloc[i] * Nv[i] * dΩ - KHloc[i] for i in 1:N)
-#     end
-#     return Re
-# end
-
-@generated function integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ω::SVector{M, T}, ::Val{N}) where {M, N, T}
-    quote
-        @inline
-        Base.@nexprs $M q -> Re_q = zero(T)
-        Base.@nexprs $M q -> begin
-            Nv = Nq[q]
-            ∂N∂ξ = ∂N∂ξq[q]
-            J = ∂N∂ξ' * coords
-            ∂N∂x = ∂N∂ξ * inv(J)
-            dΩ = abs(det(J)) * ω[q]
-
-            tmp   = ∂N∂x' * Hloc
-            KHloc = (D * dΩ) * (∂N∂x * tmp)
-            Base.@nexprs $N i -> Re_i += -sloc[i] * Nv[i] * dΩ - KHloc[i]
+# (∂N∂x_q, dΩ_q) for every element and quadrature point. Depends only on the
+# mesh, so it is computed once and reused across all PT iterations.
+function precompute_geometry(mesh, element::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
+    ip = element.integration_points
+    ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
+    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
+    return map(1:mesh.nels) do iel
+        local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
+        coords = element_coordinate_matrix(mesh, local_nodes)
+        ntuple(Val(N)) do q
+            J = ∂N∂ξq[q]' * coords
+            (∂N∂ξq[q] * inv(J), abs(det(J)) * ip.ω[q])
         end
-        Re = Base.@ncall $N SVector Re
-        return Re
     end
+end
+
+function integrate_residual(Hloc, geo_el, sloc, D, Nq, ::Val{N}) where N
+    Re = zero(Hloc)
+    for q in eachindex(geo_el)
+        ∂N∂x, dΩ = geo_el[q]
+        Nv = Nq[q]
+        tmp   = ∂N∂x' * Hloc
+        KHloc = (D * dΩ) * (∂N∂x * tmp)
+        Re   += SVector{N}(-sloc[i] * Nv[i] * dΩ - KHloc[i] for i in 1:N)
+    end
+    return Re
 end
 
 # per-element residual (and optionally Gershgorin row sum + |diagonal|) with plain scatter;
 # safe serially or within a color batch
-function integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, do_∂R∂H, ::Val{N}) where N
+function integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, geo, iel, do_∂R∂H, ::Val{N}) where N
     local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
-    coords = element_coordinate_matrix(mesh, local_nodes)
+    geo_el = geo[iel]
     Hloc   = SVector{N}(H[local_nodes[i]] for i in 1:N)
     sloc   = SVector{N}(source[local_nodes[i]] for i in 1:N)
-    Re     = integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ip.ω, Val(N))
+    Re     = integrate_residual(Hloc, geo_el, sloc, D, Nq, Val(N))
     for (i, inod) in enumerate(local_nodes)
         R[inod] += Re[i]
     end
     if do_∂R∂H
         ∂Re∂He = ForwardDiff.jacobian(
-            Hloc -> integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ip.ω, Val(N)),
+            Hloc -> integrate_residual(Hloc, geo_el, sloc, D, Nq, Val(N)),
             Hloc
         )
         for (i, inod) in enumerate(local_nodes)
@@ -78,18 +70,18 @@ function integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, �
 end
 
 # same as integrate_residual_element! but with atomic scatter, safe for unordered threading
-function integrate_residual_atomic!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, do_∂R∂H, ::Val{N}) where N
+function integrate_residual_atomic!(R, ∂R∂H, PC, H, source, D, mesh, Nq, geo, iel, do_∂R∂H, ::Val{N}) where N
     local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
-    coords = element_coordinate_matrix(mesh, local_nodes)
+    geo_el = geo[iel]
     Hloc   = SVector{N}(H[local_nodes[i]] for i in 1:N)
     sloc   = SVector{N}(source[local_nodes[i]] for i in 1:N)
-    Re     = integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ip.ω, Val(N))
+    Re     = integrate_residual(Hloc, geo_el, sloc, D, Nq, Val(N))
     for (i, inod) in enumerate(local_nodes)
         Atomix.@atomic :monotonic R[inod] += Re[i]
     end
     if do_∂R∂H
         ∂Re∂He = ForwardDiff.jacobian(
-            Hloc -> integrate_residual(Hloc, coords, sloc, D, Nq, ∂N∂ξq, ip.ω, Val(N)),
+            Hloc -> integrate_residual(Hloc, geo_el, sloc, D, Nq, Val(N)),
             Hloc
         )
         for (i, inod) in enumerate(local_nodes)
@@ -99,7 +91,7 @@ function integrate_residual_atomic!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂
     end
 end
 
-function assemble_diffusion_matrices!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, do_∂R∂H) where T<:AbstractElement{2, N} where N
+function assemble_diffusion_matrices!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, geo, do_∂R∂H) where T<:AbstractElement{2, N} where N
 
     fill!(R, 0)
     if do_∂R∂H
@@ -109,14 +101,13 @@ function assemble_diffusion_matrices!(R, ∂R∂H, PC, H, mesh, element::Referen
     ip = element.integration_points
     ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
     Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
 
     for iel in 1:mesh.nels
-        integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, do_∂R∂H, Val(N))
+        integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, geo, iel, do_∂R∂H, Val(N))
     end
 end
 
-function assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, do_∂R∂H) where T<:AbstractElement{2, N} where N
+function assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, geo, do_∂R∂H) where T<:AbstractElement{2, N} where N
 
     fill!(R, 0)
     if do_∂R∂H
@@ -126,14 +117,13 @@ function assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H, mesh, element::
     ip = element.integration_points
     ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
     Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
 
     Threads.@threads :static for iel in 1:mesh.nels
-        integrate_residual_atomic!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, do_∂R∂H, Val(N))
+        integrate_residual_atomic!(R, ∂R∂H, PC, H, source, D, mesh, Nq, geo, iel, do_∂R∂H, Val(N))
     end
 end
 
-function assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, do_∂R∂H, colors) where T<:AbstractElement{2, N} where N
+function assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H, mesh, element::ReferenceElement{T}, D, source, geo, do_∂R∂H, colors) where T<:AbstractElement{2, N} where N
 
     fill!(R, 0)
     if do_∂R∂H
@@ -143,11 +133,10 @@ function assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H, mesh, element:
     ip = element.integration_points
     ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
     Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
 
     for color in colors
         Threads.@threads for iel in color
-            integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, do_∂R∂H, Val(N))
+            integrate_residual_element!(R, ∂R∂H, PC, H, source, D, mesh, Nq, geo, iel, do_∂R∂H, Val(N))
         end
     end
 end
@@ -173,10 +162,11 @@ function main(nels)
     Lx = Ly = 1
 
     Ω = (-Lx..Lx) × (-Ly..Ly)
-    element = ReferenceElement(LinearElement{2, 4, Float64})
-    # element = ReferenceElement(QuadraticElement{2, 9, Float64})
+    # element = ReferenceElement(LinearElement{2, 4, Float64})
+    element = ReferenceElement(QuadraticElement{2, 9, Float64})
     mesh = FEMTools.Mesh(Ω, element, nels)
     colors = color_element_batches(mesh)
+    geo = precompute_geometry(mesh, element)
 
     σ      = 0.1                                # Source width
     r²     = [coord[1]^2 + coord[2]^2 for coord in mesh.coords]
@@ -222,7 +212,7 @@ function main(nels)
 
     # Estimate min/max λ
     do_∂R∂H = true
-    assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
+    assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, geo, do_∂R∂H)
 
     CFL    = 0.99
     c_fact = 0.9
@@ -236,16 +226,16 @@ function main(nels)
 
     to = TimerOutput()
     ncheck = 1000
-    for it = 1:10_000
+    for it = 1:1_000
         do_∂R∂H = if mod(it, ncheck) == 0
             copyto!(R0, R)
             true
         else
             false
         end
-        @timeit to "series" assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
-        # @timeit to "atomix" assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
-        # @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H, colors)
+        @timeit to "series" assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, geo, do_∂R∂H)
+        @timeit to "atomix" assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, geo, do_∂R∂H)
+        @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, geo, do_∂R∂H, colors)
 
         # Dirichlet BCs: constrain residual and rate *before* the update,
         # otherwise the (nonzero) reaction-force residual at the boundary
@@ -299,5 +289,9 @@ function main(nels)
     return nothing
 end
 
-nels = (100, 100) .*2
+n = 110
+nels = (n, n) .* 2
+prod(nels)
+
 main(nels)
+prod(nels)
