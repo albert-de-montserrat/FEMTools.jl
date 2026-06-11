@@ -214,12 +214,11 @@ function main(nels)
     Lx = Ly = 1
 
     Ω = (-Lx..Lx) × (-Ly..Ly)
-    element = ReferenceElement(LinearElement{2, 4, Float64})
-    # element = ReferenceElement(QuadraticElement{2, 9, Float64})
+    # element = ReferenceElement(LinearElement{2, 4, Float64})
+    element = ReferenceElement(QuadraticElement{2, 9, Float64})
     mesh = FEMTools.Mesh(Ω, element, nels)
 
     σ      = 0.1                                # Source width
-    r²     = [coord[1]^2 + coord[2]^2 for coord in mesh.coords]
     HW     = 1.0                                # Dirichlet value west
     HE     = 0.0                                # Dirichlet value east
     epsi   = 1e-9                               # Relative tolerance
@@ -244,8 +243,8 @@ function main(nels)
     # mesh data and fields on the compute backend
     coords  = to_backend(mesh.coords)
     el2n    = to_backend(mesh.el2n)
-    source  = to_backend(2.0 * exp.(-r² / (2σ^2)))
-    H_FEM   = to_backend(exp.(-r² / (2σ^2)))
+    source  = to_backend([2*exp(-(p[1]^2+p[2]^2)^2/(2σ^2)) for p in mesh.coords])
+    H_FEM   = to_backend([exp(-(p[1]^2+p[2]^2)^2/(2σ^2)) for p in mesh.coords])
     Γ_dofs  = to_backend(Γ_dofs_host)
     Γ_vals  = to_backend(Γ_vals_host)
     Γ_zero  = to_backend(zero(Γ_vals_host))
@@ -277,17 +276,16 @@ function main(nels)
     β    = (2 - c * Δτ) / (2 + c * Δτ)
 
     to = TimerOutput()
-    ncheck = 100
-    for it = 1:100_000
+    ncheck = 1000
+    for it = 1:10_000
         do_∂R∂H = if mod(it, ncheck) == 0
             copyto!(R0, R)
             true
         else
             false
         end
-        @timeit to "series" assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, geo, do_∂R∂H)
         @timeit to "atomix" assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H_FEM, el2n, geo, mesh.nels, element, D, source, do_∂R∂H)
-        @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, el2n, geo, element, D, source, do_∂R∂H, colors)
+        # @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, el2n, geo, element, D, source, do_∂R∂H, colors)
 
         # Dirichlet BCs: constrain residual and rate *before* the update,
         # otherwise the (nonzero) reaction-force residual at the boundary
@@ -341,5 +339,6 @@ function main(nels)
     return nothing
 end
 
-nels = (100, 100) .* 2
+n = 110
+nels = (n, n) .* 1
 main(nels)

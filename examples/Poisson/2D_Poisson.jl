@@ -47,9 +47,9 @@ function integrate_residual!(R, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, ::V
         KHloc  = (D*dΩ) * (∂N∂x * tmp)
         for (i, inod) in enumerate(local_nodes)
             if doatomic
-                Atomix.@atomic :monotonic R[inod] += source[local_nodes[i]] * Nv[i] * dΩ - KHloc[i]
+                Atomix.@atomic :monotonic R[inod] += -source[local_nodes[i]] * Nv[i] * dΩ - KHloc[i]
             else
-                R[inod] += source[local_nodes[i]] * Nv[i] * dΩ - KHloc[i]
+                R[inod] += -source[local_nodes[i]] * Nv[i] * dΩ - KHloc[i]
             end
         end
     end

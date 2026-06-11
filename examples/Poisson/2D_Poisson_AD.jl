@@ -9,6 +9,8 @@ using DomainSets: ×
 using GLMakie
 using FEMTools
 
+include("../mesh_node_reordering.jl")
+
 function element_coordinate_matrix(mesh, local_nodes::SVector{N, Int}) where {N}
     data = ntuple(Val(2N)) do k
         col = cld(k, N)
@@ -165,26 +167,31 @@ function main(nels)
     # element = ReferenceElement(LinearElement{2, 4, Float64})
     element = ReferenceElement(QuadraticElement{2, 9, Float64})
     mesh = FEMTools.Mesh(Ω, element, nels)
+   
+    # recover locality with RCM
+    # perm_rcm = rcm_permutation(mesh)
+    # reorder_mesh!(mesh, perm_rcm)
+   
     colors = color_element_batches(mesh)
     geo = precompute_geometry(mesh, element)
 
     σ      = 0.1                                # Source width
     r²     = [coord[1]^2 + coord[2]^2 for coord in mesh.coords]
-    source = 2.0 * exp.(-r² / (2σ^2))           # Source
+    # source = 2.0 * exp.(-r² / (2σ^2))           # Source
+    source = [2*exp(-(p[1]^2+p[2]^2)^2/(2σ^2) )  for p in mesh.coords]  # Source  
     HW     = 1.0                                # Dirichlet value west
     HE     = 0.0                                # Dirichlet value east
     epsi   = 1e-9                               # Relative tolerance
 
     # FEM PT solve
     D            = 1.0
-    H_FEM        = zeros(mesh.nnodes)
+    H_FEM        = [exp(-(p[1]^2+p[2]^2)^2/(2σ^2) )  for p in mesh.coords]
     R            = zeros(mesh.nnodes)
     R0           = zeros(mesh.nnodes)
     ∂H∂τ         = zeros(mesh.nnodes)
     ∂R∂H         = zeros(mesh.nnodes)
     PC           = zeros(mesh.nnodes)
     nr0          = 0.0
-    H_FEM       .= exp.(-r² / (2σ^2))
 
     # Dirichlet BCs on the left/right faces only (top/bottom natural), as in 2D_Poisson.jl
     left_boundary(p, D) = begin
@@ -226,7 +233,7 @@ function main(nels)
 
     to = TimerOutput()
     ncheck = 1000
-    for it = 1:1_000
+    for it = 1:10_000
         do_∂R∂H = if mod(it, ncheck) == 0
             copyto!(R0, R)
             true
@@ -282,7 +289,7 @@ function main(nels)
     hm = heatmap!(ax, xs, ys, reshape(H_FEM, nx + 1, ny + 1); colormap=:inferno)
     Colorbar(fig[1, 2], hm)
 
-    fig = scatterlines(xs, (reshape(H_FEM, nx + 1, ny + 1))[:, ny>>>1]; label="converged")
+    # fig = scatterlines(xs, (reshape(H_FEM, nx + 1, ny + 1))[:, ny>>>1]; label="converged")
 
     display(fig)
 
@@ -290,8 +297,8 @@ function main(nels)
 end
 
 n = 110
-nels = (n, n) .* 2
-prod(nels)
+nels = (n, n) .* 1
+# prod(nels)
 
 main(nels)
 prod(nels)

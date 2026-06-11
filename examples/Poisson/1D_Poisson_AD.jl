@@ -185,8 +185,8 @@ function main(nel)
     β    = (2 - c * Δτ) / (2 + c * Δτ)
 
     to = TimerOutput()
-    ncheck = 100
-    for it=1:1_000
+    ncheck = 1000
+    for it=1:10_000
         do_∂R∂H = if mod(it, ncheck) == 0
             copyto!(R0, R)
             true
@@ -194,8 +194,8 @@ function main(nel)
             false
         end
         @timeit to "series" assemble_diffusion_matrices!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
-        @timeit to "atomix" assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
-        @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H, colors)
+        # @timeit to "atomix" assemble_diffusion_matrices_atomix!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H)
+        # @timeit to "colors" assemble_diffusion_matrices_colored!(R, ∂R∂H, PC, H_FEM, mesh, element, D, source, do_∂R∂H, colors)
 
         # Dirichlet BCs: constrain residual and rate *before* the update,
         # otherwise the (nonzero) reaction-force residual at the boundary
@@ -242,5 +242,5 @@ function main(nel)
 
 end
 
-nel = 50_000
+nel = 2_000
 main(nel)
