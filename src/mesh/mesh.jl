@@ -27,15 +27,25 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     nnodes::Int # number of nodes
     nels::Int   # number of elements
 
-    function Mesh(Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
-        Γ = boundary(Ω)
-        coords = generate_coordinates(element, Ω, nels)
-        DoFs = generate_dofs(element, length(coords))
-        el2n = generate_element2node(element, nels)
-        n2el = generate_node2element(el2n, length(coords))
-        Γnodes = DoFs[in.(coords, Γ)]
-        Γels = generate_boundary_elements(Γnodes, n2el)
-        nnodes = length(coords)
+    function Mesh(backend, Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
+        
+        TDev       = TA(backend) 
+        Γ          = boundary(Ω)
+        coords_cpu = generate_coordinates(element, Ω, nels)
+        nnodes     = length(coords_cpu)
+        DoFs_cpu   = generate_dofs(element, nnodes)
+        el2n_cpu   = generate_element2node(element, nels)
+        n2el_cpu   = generate_node2element(el2n_cpu, nnodes)
+        Γmask       = Bool[p ∈ Γ for p in coords_cpu]
+        Γnodes_cpu  = Vector{Int32}(DoFs_cpu[Γmask])
+        Γels_cpu    = generate_boundary_elements(Γnodes_cpu, n2el_cpu)
+
+        coords = TDev(coords_cpu)
+        DoFs   = TDev(DoFs_cpu)
+        el2n   = TDev(el2n_cpu)
+        n2el   = n2el_cpu
+        Γnodes = TDev(Γnodes_cpu)
+        Γels   = TDev(Γels_cpu)
 
         return new{
             nDim,
@@ -51,6 +61,8 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
         }(Ω, Γ, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, length(n2el) == 0 ? 0 : size(el2n, 2))
     end
 end
+
+Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 
 
 """

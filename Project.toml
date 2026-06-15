@@ -5,22 +5,27 @@ authors = ["Albert de Montserrat <albert.de.montserrat@gmail.com>"]
 
 [deps]
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
 Atomix = "1.1.3"
+CUDA = "6.1.0"
 DomainSets = "0.8.0"
 ForwardDiff = "1.3.3"
+KernelAbstractions = "0.9.41"
+Mooncake = "0.5.31"
 StaticArrays = "1.9.18"
 
-
 [extras]
-StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]

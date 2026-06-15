@@ -11,6 +11,11 @@ using ForwardDiff
 using StaticArrays
 using DomainSets
 using SparseArrays
+using KernelAbstractions
+using CUDA
+
+TA(::CPU) = Array
+TA(::CUDABackend) = CuArray
 
 include("elements/elements.jl")
 include("elements/shape_functions.jl")

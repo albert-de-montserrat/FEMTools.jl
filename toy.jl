@@ -1,216 +1,292 @@
 using LinearAlgebra
-using SparseArrays
-using StaticArrays
 
+# ------------------------------------------------------------
+# 1D Q2 basis on [-1, 1], nodes at ξ = -1, 0, 1
+# ------------------------------------------------------------
 
-using DomainSets
-using DomainSets: ×
-using GLMakie
-using FEMTools
+@inline function q2_basis_1d(ξ)
+    L = zeros(3)
+    dL = zeros(3)
 
-function gaussian_temperature(x, y, t; κ=1.0, center=(0.5, 0.5), σ=0.08, amplitude=10.0)
-    width² = σ^2 + 4κ * t
-    dx = x - center[1]
-    dy = y - center[2]
-    return amplitude * σ^2 / width² * exp(-(dx^2 + dy^2) / width²)
+    L[1] = 0.5 * ξ * (ξ - 1.0)
+    L[2] = 1.0 - ξ^2
+    L[3] = 0.5 * ξ * (ξ + 1.0)
+
+    dL[1] = ξ - 0.5
+    dL[2] = -2.0 * ξ
+    dL[3] = ξ + 0.5
+
+    return L, dL
 end
 
-function preallocate_sparse_matrix(pattern)
-    A = Float64.(pattern)
-    fill!(nonzeros(A), 0.0)
-    return A
-end
+# ------------------------------------------------------------
+# 3-point Gauss quadrature
+# ------------------------------------------------------------
 
-function element_coordinate_matrix(mesh, local_nodes::SVector{N, Int}) where {N}
-    data = ntuple(Val(2N)) do k
-        col = cld(k, N)
-        row = k - (col - 1) * N
-        mesh.coords[local_nodes[row]][col]
-    end
-    return SMatrix{N, 2, Float64, 2N}(data)
-end
+const ξq = [-sqrt(3 / 5), 0.0, sqrt(3 / 5)]
+const wq = [5 / 9, 8 / 9, 5 / 9]
 
-function assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, ::ReferenceElement{T}, κ) where T<:AbstractElement{2, N} where N
-    Kloc = @SMatrix zeros(N, N)
+const Lq  = [q2_basis_1d(ξq[q])[1][a] for q in 1:3, a in 1:3]
+const dLq = [q2_basis_1d(ξq[q])[2][a] for q in 1:3, a in 1:3]
 
-    for q in eachindex(ip.ω)
-        ∂N∂ξ = ∂N∂ξq[q]
-        J = ∂N∂ξ' * coords
-        dΩ = abs(det(J)) * ip.ω[q]
-        ∂N∂x = ∂N∂ξ * inv(J)
+# ------------------------------------------------------------
+# Flattened Q2 node numbering
+#
+# i, j, k ∈ 1:3
+#
+# a = 1 + (i-1) + 3(j-1) + 9(k-1)
+#
+# So:
+#
+# k = 1 plane: a = 1:9
+# k = 2 plane: a = 10:18
+# k = 3 plane: a = 19:27
+# ------------------------------------------------------------
 
-        Kloc += κ * (∂N∂x * ∂N∂x') * dΩ
-    end
+@inline node_id(i, j, k) = i + 3 * (j - 1) + 9 * (k - 1)
 
-    return Kloc
-end
+# ------------------------------------------------------------
+# Matrix-free flattened Q2 diffusion operator
+# ------------------------------------------------------------
 
-function assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
-    Mloc = @SMatrix zeros(N, N)
+function apply_q2_diffusion_flat!(re, ue; κ = 1.0, hx = 1.0, hy = 1.0, hz = 1.0)
 
-    for q in eachindex(ip.ω)
-        Nv = Nq[q]
-        ∂N∂ξ = ∂N∂ξq[q]
-        J = ∂N∂ξ' * coords
-        dΩ = abs(det(J)) * ip.ω[q]
+    fill!(re, 0.0)
 
-        Mloc += (Nv * Nv') * dΩ
-    end
+    dξdx = 2.0 / hx
+    dηdy = 2.0 / hy
+    dζdz = 2.0 / hz
 
-    return Mloc
-end
+    detJ = hx * hy * hz / 8.0
 
-function assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, ::ReferenceElement{T}, source) where T<:AbstractElement{2, N} where N
-    Floc = @SVector zeros(N)
+    # Loop over quadrature points
+    for qz in 1:3, qy in 1:3, qx in 1:3
 
-    for q in eachindex(ip.ω)
-        Nv = Nq[q]
-        ∂N∂ξ = ∂N∂ξq[q]
-        J = ∂N∂ξ' * coords
-        dΩ = abs(det(J)) * ip.ω[q]
-        # xq = sum(Nv[i] * coords[i, 1] for i in 1:N)
-        # yq = sum(Nv[i] * coords[i, 2] for i in 1:N)
-        # source_value = source isa Function ? source(xq, yq) : source
-        Floc += Nv * source * dΩ
-    end
+        weight = wq[qx] * wq[qy] * wq[qz] * detJ
 
-    return Floc
-end
+        # ----------------------------------------------------
+        # Compute ∇u at quadrature point
+        # ----------------------------------------------------
 
-function assemble_diffusion_matrices!(K, M, F, mesh, element::ReferenceElement{T}, κ, source) where T<:AbstractElement{2, N} where N
-    ip = element.integration_points
-    ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
-    Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
+        dudx = 0.0
+        dudy = 0.0
+        dudz = 0.0
 
-    for iel in 1:mesh.nels
-        local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
-        coords = element_coordinate_matrix(mesh, local_nodes)
+        for k in 1:3, j in 1:3, i in 1:3
+            a = node_id(i, j, k)
 
-        Kloc = assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, element, κ)
-        Mloc = assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, element)
-        Floc = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, source)
+            u = ue[a]
 
-        @views K[local_nodes, local_nodes] .+= Kloc
-        @views M[local_nodes, local_nodes] .+= Mloc
-        @views F[local_nodes] .+= Floc
-    end
+            Nx  = Lq[qx, i]
+            Ny  = Lq[qy, j]
+            Nz  = Lq[qz, k]
 
-    return nothing
-end
+            dNx = dLq[qx, i] * dξdx
+            dNy = dLq[qy, j] * dηdy
+            dNz = dLq[qz, k] * dζdz
 
-Lx=1.0
-Ly=1.0
-nels=(40, 40)
-κ=1.0e-2
+            dNdx = dNx * Ny  * Nz
+            dNdy = Nx  * dNy * Nz
+            dNdz = Nx  * Ny  * dNz
 
-element = ReferenceElement(LinearElement{2, 4, Float64})
-Ω = (0.0..Lx) × (0.0..Ly)
-mesh = FEMTools.Mesh(Ω, element, nels)
-source = 0.0
+            dudx += dNdx * u
+            dudy += dNdy * u
+            dudz += dNdz * u
+        end
 
-pattern = generate_sparsity_pattern(mesh)
-K = preallocate_sparse_matrix(pattern)
-M = preallocate_sparse_matrix(pattern)
-F = zeros(mesh.nnodes)
+        # Isotropic scalar diffusion flux
+        qx_flux = κ * dudx
+        qy_flux = κ * dudy
+        qz_flux = κ * dudz
 
-# assemble_diffusion_matrices!(K, M, F, mesh, element, κ, source)
-N = 4
-ip = element.integration_points
-ξq = ntuple(q -> (ip.ξ[q], ip.η[q]), length(ip.ω))
-Nq = ntuple(q -> eval_shape_function(element, ξq[q]), length(ip.ω))
-∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), length(ip.ω))
+        # ----------------------------------------------------
+        # Project flux back to flattened nodal residual
+        # ----------------------------------------------------
 
-iel =1
-local_nodes = SVector{N, Int}(ntuple(i -> mesh.el2n[i, iel], Val(N)))
-coords = element_coordinate_matrix(mesh, local_nodes)
+        for k in 1:3, j in 1:3, i in 1:3
+            a = node_id(i, j, k)
 
-K_e  = assemble_diffusion_Kloc(coords, ip, ∂N∂ξq, element, κ)
-M_e  = assemble_diffusion_Mloc(coords, ip, Nq, ∂N∂ξq, element)
-F_e  = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, source)
-T_e  = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, 1)
-T0_e = assemble_diffusion_Floc(coords, ip, Nq, ∂N∂ξq, element, 2)
+            Nx  = Lq[qx, i]
+            Ny  = Lq[qy, j]
+            Nz  = Lq[qz, k]
 
-R_r = (-K_e + M_e) * T_e - (F_e  + T0_e)
+            dNx = dLq[qx, i] * dξdx
+            dNy = dLq[qy, j] * dηdy
+            dNz = dLq[qz, k] * dζdz
 
-R_r = (-K_e) * T_e # - (F_e  + T0_e)
+            dNdx = dNx * Ny  * Nz
+            dNdy = Nx  * dNy * Nz
+            dNdz = Nx  * Ny  * dNz
 
-q = 1
-
-∂N∂ξ = ∂N∂ξq[q]
-Nv = Nq[q]
-J = ∂N∂ξ' * coords
-dΩ = abs(det(J)) * ip.ω[q]
-invJ =inv(J)
-∂N∂x = ∂N∂ξ * invJ
-
-Kloc = κ * (∂N∂x * ∂N∂x') * dΩ
-Ke_ij = SVector{4}((κ * (∂N∂x[i, :] ⋅ ∂N∂x[j, :]) * dΩ)   for j in 1:4)
-
-Mloc = (Nv * Nv') * dΩ
-Me_ij = SVector{4}(((Nv[i] * Nv[j])) * dΩ for j in 1:4)
-
-(Ke_ij .+ Me_ij) 
-
-bar(K_e, M_e, T_e, Nv, F_e, T0_e) = (-K_e .+ M_e) * T_e - Nv .* (F_e  .+ T0_e)
-
-@inline function compute_Re(Nv::SVector{M}, ∂N∂x::SMatrix{M, N}, κ, T_e, T0_e, F_e, dΩ, i::Int) where {M,N}
-    # Ke_i  = SVector{M}((κ * (∂N∂x[i, :] ⋅ ∂N∂x[j, :]) * dΩ) * T_e[j]  for j in 1:M)
-    # Me_i  = SVector{M}(((Nv[i] ⋅ Nv[j]) * dΩ) * T_e[j] for j in 1:M)
-    # T0e_i = T0_e[i]
-    # Fe_i  = F_e[i]
-
-    # R_e = (-sum(Ke_i) + sum(Me_i)) - Nv[i] * (Fe_i  + T0e_i) * dΩ
-
-    Ke_i  = SVector{M}(((∂N∂x[i, :] ⋅ ∂N∂x[j, :]) ) * T_e[j]  for j in 1:M)
-    Me_i  = SVector{M}(((Nv[i] ⋅ Nv[j]) ) * T_e[j] for j in 1:M)
-    T0e_i = T0_e[i]
-    Fe_i  = F_e[i]
-    R_e   = ((-κ * sum(Ke_i) + sum(Me_i))  - Nv[i] * (Fe_i  + T0e_i)) * dΩ
-
-    return R_e
-end
-
-@inline compute_Re_ip(Nv::SVector{M}, ∂N∂x::SMatrix{M, N}, κ, T_e, T0_e, F_e, dΩ) where {M,N} = SVector{M}(compute_Re(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ, i) for i in 1:M)
-
-function integrate_Re(Nq, ∂N∂ξq, coords, ip, κ, T_e, T0_e, F_e, dΩ)
-
-    Re = @SVector zeros(4)
-    for q in eachindex(Nq)
-        ∂N∂ξ = ∂N∂ξq[q]
-        Nv = Nq[q]
-        J = ∂N∂ξ' * coords
-        dΩ = abs(det(J)) * ip.ω[q]
-        invJ =inv(J)
-        ∂N∂x = ∂N∂ξ * invJ
-
-        Re += compute_Re_ip(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ)
-    end
-    Re
-end
-
-R = zeros(4) 
-function integrate_Re!(R, Nq, ∂N∂ξq, coords, ip, κ, T_e, T0_e, F_e, dΩ)
-
-    fill!(R, 0)
-    for q in eachindex(Nq)
-        ∂N∂ξ = ∂N∂ξq[q]
-        Nv = Nq[q]
-        J = ∂N∂ξ' * coords
-        dΩ = abs(det(J)) * ip.ω[q]
-        invJ =inv(J)
-        ∂N∂x = ∂N∂ξ * invJ
-
-        # Re += compute_Re_ip(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ)
-        # R .+= compute_Re_ip(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ)
-
-        for qq in eachindex(Nv)
-            R[qq] += compute_Re(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ, qq)
+            re[a] += weight * (
+                dNdx * qx_flux +
+                dNdy * qy_flux +
+                dNdz * qz_flux
+            )
         end
     end
-    # Re
+
+    return re
 end
 
-@b integrate_Re($(Nq, ∂N∂ξq, coords, ip, κ, T_e, T0_e, F_e, dΩ))
-@code_warntype integrate_Re(Nq, ∂N∂ξq, coords, ip, κ, T_e, T0_e, F_e, dΩ)
-# compute_Re_ip($(Nv, ∂N∂x, κ, T_e, T0_e, F_e, dΩ)...)
+# ------------------------------------------------------------
+# Example usage
+# ------------------------------------------------------------
+
+ue = zeros(27)
+
+for k in 1:3, j in 1:3, i in 1:3
+    a = node_id(i, j, k)
+
+    x = (i - 1) / 2
+    y = (j - 1) / 2
+    z = (k - 1) / 2
+
+    ue[a] = sin(pi * x) * cos(pi * y) + z^2
+end
+
+re = similar(ue)
+
+apply_q2_diffusion_flat!(re, ue; κ = 2.0, hx = 1.0, hy = 1.0, hz = 1.0)
+
+println("Flattened element vector ue:")
+display(ue)
+
+println("Flattened matrix-free residual re = Ke * ue:")
+display(re)
+
+
+#########
+using StaticArrays
+geo = [(@SMatrix(rand(27,3)), rand()) for q in 1:27, iel in 1:1]
+
+Nq   = [@SVector(rand(27)) for q in 1:27]
+Hloc = @SVector rand(27)
+sloc = @SVector rand(27)
+D    = 1
+iel  = 1
+
+@inline function integrate_residual(Hloc, geo, iel, sloc, D, Nq, ::Val{N}) where N
+    Re = zero(Hloc)
+    for q in eachindex(Nq)
+        ∂N∂x, dΩ = geo[q, iel]
+        Nv = Nq[q]
+        tmp   = ∂N∂x' * Hloc
+        KHloc = (D * dΩ) * (∂N∂x * tmp)
+        # Re   += SVector{N}(ntuple(i -> KHloc[i], Val(N)))
+        Re   += SVector{N}(ntuple(i -> -sloc[i] * Nv[i] * dΩ - KHloc[i], Val(N)))
+    end
+    return Re
+end
+
+@b integrate_residual($(Hloc, geo, iel, sloc, D, Nq, Val(27))...)
+
+@inline function integrate_residual_opt(Hloc, geo, iel, sloc, D, Nq, ::Val{N}) where N
+    Re = @MVector zeros(N)
+    for q in eachindex(Nq)
+        ∂N∂x, dΩ = geo[q, iel]
+        Nv = Nq[q]
+                
+        dudx = 0.0
+        dudy = 0.0
+        dudz = 0.0
+        for i in 1:N
+            # interpolate ∇H to integration point
+            H = Hloc[i]
+            dudx += ∂N∂x[i, 1] * H
+            dudy += ∂N∂x[i, 2] * H
+            dudz += ∂N∂x[i, 3] * H
+            # interpolate source to integration point
+        end
+
+        # Isotropic scalar diffusion flux
+        qx_flux = D * dudx
+        qy_flux = D * dudy
+        qz_flux = D * dudz
+
+        for i in 1:N
+            Re[i] += dΩ * (
+                -Nv[i] * sloc[i] - (∂N∂x[i, 1] * qx_flux + ∂N∂x[i, 2] * qy_flux +  ∂N∂x[i, 3] * qz_flux)
+            )
+        end
+        # Re   += SVector{N}(ntuple(i -> -sloc[i] * Nv[i] * dΩ - KHloc[i], Val(N)))
+    end
+    return SVector(Re)
+end
+integrate_residual_opt(Hloc, geo, iel, sloc, D, Nq, Val(27))
+integrate_residual_opt0(Hloc, geo, iel, sloc, D, Nq, Val(27))
+integrate_residual(Hloc, geo, iel, sloc, D, Nq, Val(27))
+
+@b integrate_residual_opt($(Hloc, geo, iel, sloc, D, Nq, Val(27))...)
+
+
+@inline function integrate_residual_opt0(Hloc, geo, iel, sloc, D, Nq, ::Val{N}) where N
+    Re = @MVector zeros(N)
+    
+    for q in eachindex(Nq)
+        ∂N∂x, dΩ = geo[q, iel]
+        Nv = Nq[q]
+        # ∂N∂x_T = ∂N∂x'
+                
+        Base.@nexprs 3 i -> dud_i = 0e0
+        for i in 1:N
+            # interpolate ∇H to integration point
+            H = Hloc[i]
+            Base.@nexprs 3 j -> dud_j +=  ∂N∂x[i, j] * H
+            # interpolate source to integration point
+        end
+
+        # Isotropic scalar diffusion flux
+        Base.@nexprs 3 i -> q_flux_i =  D * dud_i
+
+        for i in 1:N
+            sum_flux = 0e0
+            Base.@nexprs 3 j -> sum_flux += ∂N∂x[i, j] * q_flux_j
+            Re[i] += dΩ * (
+                -Nv[i] * sloc[i] -  sum_flux
+            )
+        end
+    end
+    return SVector(Re)
+end
+
+integrate_residual_opt(Hloc, geo, iel, sloc, D, Nq, Val(27))
+integrate_residual_opt0(Hloc, geo, iel, sloc, D, Nq, Val(27))
+
+
+@b integrate_residual_opt0($(Hloc, geo, iel, sloc, D, Nq, Val(27))...)
+
+
+@generated function integrate_residual_opt2(Hloc, geo, iel, sloc, D, Nq, ::Val{nDim}, ::Val{N}) where {nDim, N}
+    quote
+        @inline 
+        Re = @MVector zeros($N)
+        @inbounds for q in eachindex(Nq)
+            ∂N∂x, dΩ = geo[q, iel]
+            Nv = Nq[q]
+                    
+            Base.@nexprs $nDim i -> ∂N∂x_i = 0e0
+            for i in 1:N
+                # interpolate ∇H to integration point
+                H = Hloc[i]
+                Base.@nexprs $nDim j -> ∂N∂x_j = muladd(∂N∂x[i, j], H, ∂N∂x_j)
+            end
+
+            # Isotropic scalar diffusion flux
+            Base.@nexprs $nDim i -> q_flux_i =  D * ∂N∂x_i
+
+            for i in 1:N
+                sum_flux = 0e0
+                Base.@nexprs 3 j -> sum_flux += ∂N∂x[i, j] * q_flux_j
+                Re[i] = muladd(
+                    dΩ,
+                    -(Nv[i], sloc[i]) - sum_flux,
+                    Re[i]
+                )
+            end
+        end
+        return SVector(Re)
+    end
+end
+
+@b integrate_residual_opt2($(Hloc, geo, iel, sloc, D, Nq,  Val(3), Val(27))...)

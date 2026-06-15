@@ -9,7 +9,7 @@ using DomainSets: ×
 using GLMakie
 using FEMTools
 
-include("../mesh_node_reordering.jl")
+# include("../mesh_node_reordering.jl")
 
 function element_coordinate_matrix(mesh, local_nodes::SVector{N, Int}) where {N}
     data = ntuple(Val(2N)) do k
@@ -298,7 +298,18 @@ end
 
 n = 110
 nels = (n, n) .* 1
-# prod(nels)
-
+nels = (n, n) .* 2
+print("\n $(prod(nels)) elements in a ($n × $n) grid\n")
 main(nels)
-prod(nels)
+
+# ────────────────────────────────────────────────────────────────────
+#                            Time                    Allocations      
+#                   ───────────────────────   ────────────────────────
+# Tot / % measured:      82.3s /  96.9%            367MiB /  90.7%    
+
+# Section   ncalls     time    %tot     avg     alloc    %tot      avg
+# ────────────────────────────────────────────────────────────────────
+# series     7.00k    47.0s   58.9%  6.71ms   2.24MiB    0.7%     336B
+# colors     7.00k    19.6s   24.6%  2.80ms    206MiB   61.7%  30.1KiB
+# atomix     7.00k    13.2s   16.5%  1.88ms    125MiB   37.6%  18.3KiB
+# ────────────────────────────────────────────────────────────────────
