@@ -90,11 +90,11 @@ function main(nels)
         fill!(dr.∂T∂τ, 0)
 
         # one call — everything lives in FEMTools
-        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup)
+        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;ncheck=50)
     end
 
     T_host = reshape(Array(dr.T), nx + 1, ny + 1)
-    ax = Axis(fig[1, 1]; title = "t = $(step * Δt) s", aspect = DataAspect())
+    ax = Axis(fig[1, 1]; aspect = DataAspect())
     heatmap!(ax, xs, ys, T_host; colormap = :thermal, colorrange = (T_top, T_bot))
     Colorbar(fig[1, 2]; colormap = :thermal, limits = (T_top, T_bot), label = "T [K]")
     display(fig)
@@ -102,5 +102,5 @@ function main(nels)
     return dr
 end
 
-nels = (20, 20)
+nels = (160, 160)
 main(nels)
