@@ -17,6 +17,7 @@ makedocs(;
         "Elements" => "elements.md",
         "Mesh" => "mesh.md",
         "Boundary Conditions" => "boundary_conditions.md",
+        "Heat Diffusion" => "heat_diffusion.md",
         "API" => "api.md",
     ],
 )

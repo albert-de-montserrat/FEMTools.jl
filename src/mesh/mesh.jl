@@ -95,6 +95,34 @@ function generate_coordinates(::ReferenceElement{QuadraticElement{1, 3, T}}, Ω:
 end
 
 """
+    generate_coordinates(element::ReferenceElement{<:LinearElement{2, 3}}, Ω, nels)
+
+Generate coordinates for a structured linear triangular mesh over a rectangular
+domain. Each quadrilateral cell is split into two triangles, so the node grid is
+the same `(nx+1) × (ny+1)` layout as the quadrilateral case.
+"""
+function generate_coordinates(
+    ::ReferenceElement{LinearElement{2, 3, T}},
+    Ω,
+    nels::NTuple{2, <:Integer},
+) where {T}
+    nx, ny = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], nx + 1)
+    ys = LinRange(left[2], right[2], ny + 1)
+
+    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
+    inode = 1
+    for y in ys, x in xs
+        coords[inode] = SVector{2, T}(x, y)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
     generate_coordinates(element::ReferenceElement{<:LinearElement{2, 4}}, Ω, nels)
 
 Generate coordinates for a linear quadrilateral mesh over a rectangular domain.
@@ -257,28 +285,3 @@ iterations.
         (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
     end
 end
-
-"""
-    element_coordinate_matrix(coords, local_nodes)
-
-Return the `N × 2` coordinate matrix for a two-dimensional element.
-
-Rows follow `local_nodes`; columns are physical `x` and `y`. The static matrix
-layout is intended for small element-local geometry calculations.
-"""
-@inline function element_coordinate_matrix(coords, local_nodes::SVector{N, Int}) where {N}
-    data = ntuple(Val(2N)) do k
-        col = cld(k, N)
-        row = k - (col - 1) * N
-        coords[local_nodes[row]][col]
-    end
-    return SMatrix{N, 2, Float64, 2N}(data)
-end
-
-"""
-    local_nodes_of(el2n, iel, Val(N))
-
-Gather the `N` local-to-global node ids for element `iel` as an `SVector`.
-"""
-@inline local_nodes_of(el2n, iel, ::Val{N}) where N =
-    SVector{N, Int}(ntuple(i -> Int(el2n[i, iel]), Val(N)))

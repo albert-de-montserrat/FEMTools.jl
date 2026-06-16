@@ -29,6 +29,49 @@ function generate_element2node(::ReferenceElement{QuadraticElement{1, N, T}}, ne
 end
 
 """
+    generate_element2node(element::ReferenceElement{<:LinearElement{2, 3}}, nels)
+
+Build element-to-node connectivity for a structured linear triangular mesh.
+
+Each quadrilateral cell `(ex, ey)` is split into two counter-clockwise triangles
+using an **alternating-diagonal** (checker) pattern that restores the reflection
+symmetry of the mesh:
+
+- `(ex + ey)` even — BL→TR diagonal:
+  - Triangle A: n1 (BL), n2 (BR), n3 (TR)
+  - Triangle B: n1 (BL), n3 (TR), n4 (TL)
+- `(ex + ey)` odd — BR→TL diagonal:
+  - Triangle C: n1 (BL), n2 (BR), n4 (TL)
+  - Triangle D: n2 (BR), n3 (TR), n4 (TL)
+
+Nodes are on the `(nx+1) × (ny+1)` grid with the x-index varying fastest,
+consistent with `generate_coordinates(::ReferenceElement{LinearElement{2, 3}})`.
+"""
+function generate_element2node(::ReferenceElement{LinearElement{2, 3, T}}, nels::NTuple{2, <:Integer}) where T
+    nx, ny = nels
+    stride = nx + 1
+    el2n = zeros(Int32, 3, 2 * nx * ny)
+
+    iel = 1
+    for ey in 1:ny, ex in 1:nx
+        n1 = (ey - 1) * stride + ex   # bottom-left
+        n2 = n1 + 1                    # bottom-right
+        n4 = n1 + stride               # top-left
+        n3 = n4 + 1                    # top-right
+        if iseven(ex + ey)
+            el2n[:, iel]     .= Int32[n1, n2, n3]   # BL→TR diagonal: lower-right
+            el2n[:, iel + 1] .= Int32[n1, n3, n4]   #                  upper-left
+        else
+            el2n[:, iel]     .= Int32[n1, n2, n4]   # BR→TL diagonal: lower-left
+            el2n[:, iel + 1] .= Int32[n2, n3, n4]   #                  upper-right
+        end
+        iel += 2
+    end
+
+    return el2n
+end
+
+"""
     generate_element2node(element::ReferenceElement{<:LinearElement{2, 4}}, nels)
 
 Build element-to-node connectivity for a structured linear quadrilateral mesh.
@@ -218,3 +261,15 @@ function generate_boundary_elements(Γnodes, n2el)
     end
     return unique!(sort!(Γels))
 end
+
+@inline function element_coordinate_matrix(coords::AbstractArray{SVector{D, T}}, local_nodes::SVector{N, Int}) where {D, T, N}
+    data = ntuple(Val(D * N)) do k
+        col = cld(k, N)
+        row = k - (col - 1) * N
+        coords[local_nodes[row]][col]
+    end
+    return SMatrix{N, D, T, D * N}(data)
+end
+
+@inline local_nodes_of(el2n, iel, ::Val{N}) where N =
+    SVector{N, Int}(ntuple(i -> Int(el2n[i, iel]), Val(N)))

@@ -1,0 +1,98 @@
+"""
+    solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
+            ncheck = 100)
+
+Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
+step of size `Δt`.
+
+`Γ_dofs` is an integer array of constrained DOF indices. `Γ_zero` and `Γ_vals`
+are float arrays of the same length: zero values (for zeroing the residual and
+rate at constrained nodes) and the prescribed Dirichlet values respectively.
+`backend` and `workgroup` are forwarded to all KernelAbstractions kernel
+launches. `ncheck` controls how often the spectral estimates and convergence
+criterion are recomputed (every `ncheck` PT iterations).
+
+The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
+the previous time step before calling.
+"""
+function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
+                 Γ_dofs, Γ_zero, Γ_vals,
+                 backend, workgroup; ncheck = 100)
+    (; R, R0, ∂R∂T, PC, T, T0, ∂T∂τ,
+       phases, k, Cp, ρ0, α, K, P, source,
+       CFL, c_fact, ϵ) = dr
+
+    # α_dr: pseudo-transient step (distinct from thermal expansivity α in dr)
+    α_dr = zero(eltype(R))
+    β    = zero(eltype(R))
+    nr0  = zero(eltype(R))
+
+    for it in 1:10_000
+        do_∂R∂T = (mod(it, ncheck) == 0) || (it == 1)
+        do_∂R∂T && copyto!(R0, R)
+
+        assemble_diffusion_matrices_atomix!(
+            R, ∂R∂T, PC, T, T0, mesh.el2n, geo, mesh.nels,
+            element, phases, k, Cp, ρ0, α, K, P, Δt, source, do_∂R∂T,
+            backend, workgroup,
+        )
+
+        # Constrain residual and rate *before* the update so that boundary
+        # reaction forces do not corrupt the λ_min spectral estimate.
+        apply_dirichlet!(R,    Γ_dofs, Γ_zero, backend, workgroup)
+        apply_dirichlet!(∂T∂τ, Γ_dofs, Γ_zero, backend, workgroup)
+
+        update_rate_kernel!(backend, workgroup)(∂T∂τ, R, PC, β; ndrange = mesh.nnodes)
+        update_variable_kernel!(backend, workgroup)(T, ∂T∂τ, α_dr; ndrange = mesh.nnodes)
+
+        apply_dirichlet!(T, Γ_dofs, Γ_vals, backend, workgroup)
+
+        if do_∂R∂T || it == 1
+            nr = norm(R)
+            it == 1 && (nr0 = nr)
+            isnan(nr / nr0) && error("NaNs at PT iter $it")
+
+            λmax  = maximum(∂R∂T ./ PC)
+            Δτ    = 2 / √(λmax) * CFL
+            denom = sum((Δτ .* ∂T∂τ) .^ 2)
+            λmin  = (it == 1 || denom == 0) ? zero(eltype(R)) :
+                    abs(sum(Δτ .* ∂T∂τ .* ((R .- R0) ./ PC))) / denom
+            c    = 2 * √(λmin) * c_fact
+            α_dr = 2 * Δτ^2 / (2 + c * Δτ)
+            β    = (2 - c * Δτ) / (2 + c * Δτ)
+            @printf("  PT %05d  res = %6.2e\n", it, nr / nr0)
+            nr / nr0 < ϵ && break
+        end
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Dirichlet enforcement
+# ---------------------------------------------------------------------------
+
+@kernel function dirichlet_kernel!(v, @Const(dofs), @Const(vals))
+    i = @index(Global)
+    v[dofs[i]] = vals[i]
+end
+
+function apply_dirichlet!(v, dofs, vals, backend, workgroup)
+    isempty(dofs) && return nothing
+    dirichlet_kernel!(backend, workgroup)(v, dofs, vals; ndrange = length(dofs))
+    KA.synchronize(backend)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Pseudo-transient update kernels
+# ---------------------------------------------------------------------------
+
+@kernel function update_rate_kernel!(∂u∂τ, @Const(R), @Const(PC), β)
+    i = @index(Global)
+    ∂u∂τ[i] = R[i] / PC[i] + β * ∂u∂τ[i]
+end
+
+@kernel function update_variable_kernel!(u, @Const(∂u∂τ), α_dr)
+    i = @index(Global)
+    u[i] += α_dr * ∂u∂τ[i]
+end

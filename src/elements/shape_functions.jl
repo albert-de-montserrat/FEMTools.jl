@@ -311,6 +311,8 @@ local node number.
     return _eval_shape_function(element.shape_functions.N, coords)
 end
 
+@inline eval_shape_function(element, coords::SVector) = eval_shape_function(element, tuple(coords...))
+
 """
     eval_shape_function_gradient(element, coords)
 
@@ -344,6 +346,44 @@ end
 @inline function eval_shape_function_jacobian(element, coords::SVector{1, T}) where {T}
     return _eval_shape_function(element.shape_functions.∇N, coords)
 end
+
+"""
+    shape_function_values(element)
+
+Return shape-function values evaluated at every quadrature point of `element`.
+
+The result is an `NTuple` of length `Nq` (number of quadrature points). Each
+entry is an `SVector` of length `N` (number of local nodes) holding `Nᵢ(ξ_q)`
+for node `i` at quadrature point `q`.  Used inside assembly kernels to form the
+consistent mass matrix and source-term integrals.
+"""
+@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{1}
+    ip = element.integration_points
+    NQ = length(ip.ω)
+    coords = ntuple(NQ) do q
+        SVector(ip.ξ[q])
+    end
+    return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
+end
+
+@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{2}
+    ip = element.integration_points
+    NQ = length(ip.ω)
+    coords = ntuple(NQ) do q
+        SVector(ip.ξ[q], ip.η[q])
+    end
+    return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
+end
+
+@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{3}
+    ip = element.integration_points
+    NQ = length(ip.ω)
+    coords = ntuple(NQ) do q
+        SVector(ip.ξ[q], ip.η[q], ip.ζ[q])
+    end
+    return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
+end
+
 
 # Unroll shape-function evaluation at compile time. This keeps the result as an
 # `SVector` with statically known length, which is helpful inside element

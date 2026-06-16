@@ -14,6 +14,7 @@ QuadraticElement
 CubicElement
 ReferenceElement
 order
+Base.length(::ReferenceElement)
 ```
 
 ## Shape Functions

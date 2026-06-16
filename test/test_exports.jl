@@ -25,9 +25,11 @@ import FEMTools
         :eval_shape_function_gradient,
         :eval_shape_function_jacobian,
         :order,
-    )
-
-    public_only_names = (
+        :ThermalDiffusionDR,
+        :solver!,
+        :assemble_diffusion_matrices_atomix!,
+        :apply_dirichlet!,
+        :shape_function_values,
         :AbstractElement,
         :AbstractLinearElement,
         :AbstractQuadraticElement,
@@ -36,6 +38,8 @@ import FEMTools
         :AbstractMesh,
         :AbstractBoundaryCondition,
     )
+
+    public_only_names = ()
 
     for name in exported_names
         @test Base.isexported(FEMTools, name)

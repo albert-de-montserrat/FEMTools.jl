@@ -1,7 +1,8 @@
 # Mesh
 
-FEMTools.jl includes a small one-dimensional mesh container and helper functions
-for connectivity.
+FEMTools.jl includes a structured mesh container for 1-D, 2-D, and 3-D
+domains and helper functions for connectivity, geometry precomputation, and
+graph coloring.
 
 ## Mesh Container
 
@@ -31,4 +32,10 @@ generate_boundary_elements
 generate_sparsity_pattern
 color_mesh
 color_mesh_greedy
+```
+
+## Geometry Precomputation
+
+```@docs
+FEMTools.precompute_geometry_kernel!
 ```

@@ -14,11 +14,15 @@ The package is organized around lightweight reference-element tags such as
 coordinates.
 """ FEMTools
 
+using Printf
 using ForwardDiff
+using Atomix
 using StaticArrays
 using DomainSets
 using SparseArrays
 using KernelAbstractions
+import KernelAbstractions as KA
+using LinearAlgebra
 
 """
     TA(backend) -> Array type
@@ -54,6 +58,11 @@ include("mesh/coloring.jl")
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
+# Heat-diffusion solver: types, assembly, and PT solver.
+include("heat_diffusion/types/heat_diffusion_types.jl")
+include("heat_diffusion/assembly/residual.jl")
+include("heat_diffusion/solvers.jl/DR.jl")
+
 # Public type hierarchy and constructors.
 export AbstractElement
 export AbstractLinearElement,
@@ -81,6 +90,13 @@ export generate_element2node,
 # Reference-element evaluation helpers.
 export eval_shape_function,
     eval_shape_function_gradient,
-    eval_shape_function_jacobian
+    eval_shape_function_jacobian,
+    shape_function_values
+
+# Heat-diffusion solver.
+export ThermalDiffusionDR,
+    solver!,
+    assemble_diffusion_matrices_atomix!,
+    apply_dirichlet!
 
 end # module FEMTools
