@@ -46,3 +46,20 @@ function color_mesh(mesh::Mesh{1})
 end
 
 color_mesh(mesh) = color_mesh_greedy(mesh)
+
+"""
+    build_element_groups(backend, colors)
+
+Convert a flat `colors` vector (as returned by `color_mesh`) into a vector of
+device integer arrays, one per color, each holding the indices of elements
+assigned that color.
+
+The returned groups are suitable for passing directly to
+`assemble_diffusion_matrices_colored!`: elements within a group share no nodes,
+so the assembly kernel can scatter without atomics.
+"""
+function build_element_groups(backend, colors)
+    TDev    = TA(backend)
+    ncolors = maximum(colors)
+    return [TDev(findall(==(c), colors)) for c in 1:ncolors]
+end

@@ -102,5 +102,5 @@ function main(nels)
     return dr
 end
 
-nels = (160, 160)
+nels = (30, 30)
 main(nels)

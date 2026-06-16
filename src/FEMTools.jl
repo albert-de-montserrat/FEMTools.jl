@@ -61,7 +61,7 @@ include("boundary_conditions/apply.jl")
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
-include("heat_diffusion/solvers.jl/DR.jl")
+include("heat_diffusion/solvers/DR.jl")
 
 # Public type hierarchy and constructors.
 export AbstractElement
@@ -85,7 +85,8 @@ export generate_element2node,
     generate_dofs,
     generate_sparsity_pattern,
     color_mesh,
-    color_mesh_greedy
+    color_mesh_greedy,
+    build_element_groups
 
 # Reference-element evaluation helpers.
 export eval_shape_function,
@@ -97,6 +98,7 @@ export eval_shape_function,
 export ThermalDiffusionDR,
     solver!,
     assemble_diffusion_matrices_atomix!,
+    assemble_diffusion_matrices_colored!,
     apply_dirichlet!
 
 end # module FEMTools
