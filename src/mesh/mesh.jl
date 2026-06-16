@@ -281,7 +281,7 @@ iterations.
     local_nodes = local_nodes_of(el2n, iel, Val(N))
     c = element_coordinate_matrix(coords, local_nodes)
     geo[iel] = ntuple(Val(length(ω))) do q
-        J = ∂N∂ξq[q]' * c
+        J = c' * ∂N∂ξq[q]
         (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
     end
 end
