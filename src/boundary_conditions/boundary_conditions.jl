@@ -14,6 +14,9 @@ abstract type AbstractBoundaryCondition end
 
 Container for Dirichlet boundary data.
 
+`DoFs` and `vals` are expected to have matching order and length: `vals[i]` is
+the prescribed value for degree of freedom `DoFs[i]`.
+
 Fields:
 - `Γ`: boundary domain or boundary marker.
 - `DoFs`: degrees of freedom constrained on `Γ`.

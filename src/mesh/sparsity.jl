@@ -15,6 +15,8 @@ function generate_sparsity_pattern(mesh)
 
     for iel in axes(mesh.el2n, 2)
         local_nodes = @view mesh.el2n[:, iel]
+        # A standard finite-element element matrix is dense over the element's
+        # local nodes, so every pair contributes one structural nonzero.
         for j in local_nodes
             for i in local_nodes
                 push!(rows, i)

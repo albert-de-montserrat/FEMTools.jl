@@ -11,6 +11,7 @@ function color_mesh_greedy(mesh)
     colors = zeros(Int, mesh.nels)
 
     for iel in 1:mesh.nels
+        # Collect colors already used by node-adjacent elements.
         used_colors = Set{Int}()
         for node in @view mesh.el2n[:, iel]
             for jel in mesh.n2el[node]
@@ -21,6 +22,7 @@ function color_mesh_greedy(mesh)
             end
         end
 
+        # Assign the smallest available positive color for deterministic output.
         color = 1
         while color in used_colors
             color += 1

@@ -7,13 +7,14 @@ abstract type AbstractMesh end
 
 """
     Mesh(Ω, nels)
+    Mesh(Ω, element, nels)
 
-Construct a one-dimensional quadratic mesh over the interval domain `Ω` with
-`nels` elements.
+Construct a structured mesh over domain `Ω` using `element` and `nels`.
 
 The constructor derives the boundary `Γ`, coordinates, degrees of freedom,
 element-to-node connectivity, node-to-element adjacency, boundary nodes,
-boundary elements, and stores the node/element counts.
+boundary elements, and stores the node and element counts. For tensor-product
+domains, `nels` is a tuple such as `(nx, ny)` or `(nx, ny, nz)`.
 """
 struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     Ω::D        # model domain
@@ -66,7 +67,7 @@ Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 
 
 """
-    generate_coordinates(element::ReferenceElement{1, 2}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:LinearElement{1, 2}}, Ω, nels)
 
 Generate coordinates for a linear one-dimensional mesh over interval `Ω`.
 """
@@ -76,7 +77,7 @@ function generate_coordinates(::ReferenceElement{LinearElement{1, 2, T}}, Ω::Cl
 end
 
 """
-    generate_coordinates(element::ReferenceElement{1, 3}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{1, 3}}, Ω, nels)
 
 Generate coordinates for a quadratic one-dimensional mesh over interval `Ω`.
 
@@ -94,7 +95,7 @@ function generate_coordinates(::ReferenceElement{QuadraticElement{1, 3, T}}, Ω:
 end
 
 """
-    generate_coordinates(element::ReferenceElement{2, 4}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:LinearElement{2, 4}}, Ω, nels)
 
 Generate coordinates for a linear quadrilateral mesh over a rectangular domain.
 
@@ -124,7 +125,7 @@ function generate_coordinates(
 end
 
 """
-    generate_coordinates(element::ReferenceElement{2, 9}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 9}}, Ω, nels)
 
 Generate coordinates for a quadratic quadrilateral mesh over a rectangular
 domain.
@@ -156,7 +157,7 @@ function generate_coordinates(
 end
 
 """
-    generate_coordinates(element::ReferenceElement{3, 8}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:LinearElement{3, 8}}, Ω, nels)
 
 Generate coordinates for a linear hexahedral mesh over a rectangular box.
 
@@ -187,7 +188,7 @@ function generate_coordinates(
 end
 
 """
-    generate_coordinates(element::ReferenceElement{3, 27}, Ω, nels)
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{3, 27}}, Ω, nels)
 
 Generate coordinates for a quadratic hexahedral mesh over a rectangular box.
 
@@ -219,11 +220,54 @@ function generate_coordinates(
 end
 
 """
-    generate_dofs(element::ReferenceElement{1}, npoints)
+    generate_dofs(element, npoints)
 
-Generate one degree of freedom per mesh point for a one-dimensional element.
+Generate one degree of freedom per mesh point.
 """
 generate_dofs(::ReferenceElement, npoints) = [Int32(i) for i in 1:npoints]
 
+# Backwards-compatible misspelled aliases retained for older examples.
 generete_coordinates(args...) = generate_coordinates(args...)
 generete_DoFs(args...) = generate_dofs(args...)
+
+# ---------------------------------------------------------------------------
+# KA kernels
+# ---------------------------------------------------------------------------
+
+# Precompute `(∂N∂x_q, dΩ_q)` for every element and quadrature point. This
+# depends only on the mesh geometry, so time-stepping or pseudo-transient
+# iterations can reuse it.
+@kernel function precompute_geometry_kernel!(geo, @Const(coords), @Const(el2n), ∂N∂ξq, ω, ::Val{N}) where N
+    iel = @index(Global)
+    local_nodes = local_nodes_of(el2n, iel, Val(N))
+    c = element_coordinate_matrix(coords, local_nodes)
+    geo[iel] = ntuple(Val(length(ω))) do q
+        J = ∂N∂ξq[q]' * c
+        (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
+    end
+end
+
+"""
+    element_coordinate_matrix(coords, local_nodes)
+
+Return the `N × 2` coordinate matrix for a two-dimensional element.
+
+Rows follow `local_nodes`; columns are physical `x` and `y`. The static matrix
+layout is intended for small element-local geometry calculations.
+"""
+@inline function element_coordinate_matrix(coords, local_nodes::SVector{N, Int}) where {N}
+    data = ntuple(Val(2N)) do k
+        col = cld(k, N)
+        row = k - (col - 1) * N
+        coords[local_nodes[row]][col]
+    end
+    return SMatrix{N, 2, Float64, 2N}(data)
+end
+
+"""
+    local_nodes_of(el2n, iel, Val(N))
+
+Gather the `N` local-to-global node ids for element `iel` as an `SVector`.
+"""
+@inline local_nodes_of(el2n, iel, ::Val{N}) where N =
+    SVector{N, Int}(ntuple(i -> Int(el2n[i, iel]), Val(N)))

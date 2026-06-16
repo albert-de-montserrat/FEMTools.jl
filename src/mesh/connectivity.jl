@@ -1,5 +1,6 @@
 """
-    generate_element2node(element::ReferenceElement{1, N}, nels)
+    generate_element2node(element::ReferenceElement{<:LinearElement{1, N}}, nel)
+    generate_element2node(element::ReferenceElement{<:QuadraticElement{1, N}}, nel)
 
 Build the element-to-node connectivity matrix for a one-dimensional mesh.
 
@@ -28,7 +29,7 @@ function generate_element2node(::ReferenceElement{QuadraticElement{1, N, T}}, ne
 end
 
 """
-    generate_element2node(element::ReferenceElement{2, 4}, nels)
+    generate_element2node(element::ReferenceElement{<:LinearElement{2, 4}}, nels)
 
 Build element-to-node connectivity for a structured linear quadrilateral mesh.
 
@@ -42,6 +43,8 @@ function generate_element2node(::ReferenceElement{LinearElement{2, 4, T}}, nels:
 
     iel = 1
     for ey in 1:ny, ex in 1:nx
+        # `n1` is the lower-left corner of the current cell. The other corners
+        # are offsets on the row-major node grid.
         n1 = (ey - 1) * stride + ex
         n2 = n1 + 1
         n4 = n1 + stride
@@ -54,7 +57,7 @@ function generate_element2node(::ReferenceElement{LinearElement{2, 4, T}}, nels:
 end
 
 """
-    generate_element2node(element::ReferenceElement{2, 9}, nels)
+    generate_element2node(element::ReferenceElement{<:QuadraticElement{2, 9}}, nels)
 
 Build element-to-node connectivity for a structured quadratic quadrilateral
 mesh.
@@ -67,6 +70,8 @@ function generate_element2node(::ReferenceElement{QuadraticElement{2, 9, T}}, ne
     stride = 2nx + 1
     el2n = zeros(Int32, 9, nx * ny)
 
+    # Index into the refined tensor grid used by quadratic elements. `ix` and
+    # `iy` are zero-based grid coordinates; the returned node id is one-based.
     node(ix, iy) = iy * stride + ix + 1
 
     iel = 1
@@ -91,9 +96,12 @@ function generate_element2node(::ReferenceElement{QuadraticElement{2, 9, T}}, ne
 end
 
 """
-    generate_element2node(element::ReferenceElement{3, 8}, nels)
+    generate_element2node(element::ReferenceElement{<:LinearElement{3, 8}}, nels)
 
 Build element-to-node connectivity for a structured linear hexahedral mesh.
+
+Nodes are numbered on the tensor grid with x varying fastest, then y, then z.
+Local nodes follow the `LinearElement{3, 8}` hexahedron ordering.
 """
 function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels::NTuple{3, <:Integer}) where T
     nx, ny, nz = nels
@@ -122,9 +130,12 @@ function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels:
 end
 
 """
-    generate_element2node(element::ReferenceElement{3, 27}, nels)
+    generate_element2node(element::ReferenceElement{<:QuadraticElement{3, 27}}, nels)
 
 Build element-to-node connectivity for a structured quadratic hexahedral mesh.
+
+Nodes are numbered on the refined tensor grid with x varying fastest, then y,
+then z. Local nodes follow the `QuadraticElement{3, 27}` ordering.
 """
 function generate_element2node(::ReferenceElement{QuadraticElement{3, 27, T}}, nels::NTuple{3, <:Integer}) where T
     nx, ny, nz = nels
@@ -132,6 +143,9 @@ function generate_element2node(::ReferenceElement{QuadraticElement{3, 27, T}}, n
     stride_z = (2nx + 1) * (2ny + 1)
     el2n = zeros(Int32, 27, nx * ny * nz)
 
+    # Zero-based tensor-grid coordinates are converted to one-based Julia node
+    # ids. Quadratic elements use every second refined-grid coordinate for
+    # corners, with odd coordinates representing mid-edge, face, and cell nodes.
     node(ix, iy, iz) = iz * stride_z + iy * stride_y + ix + 1
 
     iel = 1

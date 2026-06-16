@@ -1,21 +1,24 @@
 """
-    AbstractElement
+    AbstractElement{nDim, nVert, T}
 
-Abstract supertype for finite element reference-element tags.
+Abstract supertype for finite-element reference-element tags.
+
+The type parameters encode the reference-space dimension `nDim`, the number of
+local nodes `nVert`, and the scalar coordinate type `T`.
 """
 abstract type AbstractElement{nDim, nVert, T} end
 
 """
-    AbstractLinearElement{nDim, nVert}
+    AbstractLinearElement{nDim, nVert, T}
 
-Abstract supertype for linear finite element reference-element tags.
+Abstract supertype for linear finite-element reference-element tags.
 """
 abstract type AbstractLinearElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
 """
-    AbstractQuadraticElement{nDim, nVert}
+    AbstractQuadraticElement{nDim, nVert, T}
 
-Abstract supertype for quadratic finite element reference-element tags.
+Abstract supertype for quadratic finite-element reference-element tags.
 """
 abstract type AbstractQuadraticElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
@@ -35,10 +38,10 @@ points.
 abstract type AbstractIntegrationPoints end
 
 """
-    LinearElement{nDim, nVert}
+    LinearElement{nDim, nVert, T}
 
 Reference element tag for a linear element with `nDim` reference dimensions
-and `nVert` vertices.
+and `nVert` local nodes using scalar type `T`.
 
 Implemented linear node orderings:
 
@@ -91,10 +94,10 @@ LinearElement{3, 8}
 struct LinearElement{nDim, nVert, T} <: AbstractLinearElement{nDim, nVert, T} end
 
 """
-    QuadraticElement{nDim, nVert}
+    QuadraticElement{nDim, nVert, T}
 
 Reference element tag for a quadratic element with `nDim` reference dimensions
-and `nVert` vertices.
+and `nVert` local nodes using scalar type `T`.
 
 Implemented quadratic node orderings:
 
@@ -164,10 +167,10 @@ QuadraticElement{3, 27}
 struct QuadraticElement{nDim, nVert, T} <: AbstractQuadraticElement{nDim, nVert, T} end
 
 """
-    CubicElement{nDim, nVert}
+    CubicElement{nDim, nVert, T}
 
 Reference element tag for a cubic element with `nDim` reference dimensions
-and `nVert` vertices.
+and `nVert` local nodes using scalar type `T`.
 
 No cubic node ordering is implemented yet.
 """
@@ -175,6 +178,8 @@ struct CubicElement{nDim, nVert, T} <: AbstractElement{nDim, nVert, T} end
 
 """
     ReferenceElement{Element, SF, IP}
+    ReferenceElement(element)
+    ReferenceElement(ElementType)
 
 Bundle shape functions and integration points for one reference element.
 
@@ -187,6 +192,8 @@ struct ReferenceElement{Element<:AbstractElement, SF, IP}
     integration_points::IP
 
     function ReferenceElement(element::T) where {T<:AbstractElement}
+        # The concrete element tag selects the matching shape-function and
+        # quadrature constructors through dispatch.
         shape_functions = ShapeFunctions(element)
         integration_points = IntegrationPoints(element)
 
@@ -199,10 +206,12 @@ end
 
 ReferenceElement(::Type{T}) where {T<:AbstractElement} = ReferenceElement(T())
 
-###
-# OTHER FUNCTIONS
-###
+"""
+    length(element)
+    length(reference_element)
 
+Return the number of local nodes in an element or reference-element bundle.
+"""
 Base.length(::ReferenceElement{T}) where {T<:AbstractElement} = length(T())
 Base.length(::AbstractElement{nDim, nVert}) where {nDim, nVert} = nVert
 

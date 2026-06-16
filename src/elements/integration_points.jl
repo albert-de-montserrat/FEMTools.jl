@@ -95,6 +95,7 @@ Return the tensor-product three-by-three Gauss rule on the reference
 quadrilateral.
 """
 function IntegrationPoints(::QuadraticElement{2, 9, T}) where T
+    # Tensor-product ordering: ξ varies fastest, then η.
     a = √(3 / 5)
     ξ = SVector(-a, 0.0, +a, -a, 0.0, +a, -a, 0.0, +a)
     η = SVector(-a, -a, -a, 0.0, 0.0, 0.0, +a, +a, +a)
@@ -139,6 +140,7 @@ function IntegrationPoints(::QuadraticElement{3, 27, T}) where T
     points = (-a, zero(T), +a)
     weights = T.((5 / 9, 8 / 9, 5 / 9))
 
+    # Tensor-product ordering: ξ varies fastest, followed by η and then ζ.
     ξ = SVector{27, T}(ntuple(i -> points[mod1(i, 3)], Val(27)))
     η = SVector{27, T}(ntuple(i -> points[mod1(cld(i, 3), 3)], Val(27)))
     ζ = SVector{27, T}(ntuple(i -> points[cld(i, 9)], Val(27)))

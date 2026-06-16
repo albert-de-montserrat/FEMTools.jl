@@ -1,9 +1,13 @@
 """
     apply_bc!(rhs, ΓD::DirichletBoundaryCondition)
+    apply_bc!(A, ΓD::DirichletBoundaryCondition)
     apply_bc!(A, rhs, ΓD::DirichletBoundaryCondition)
 
 Apply a Dirichlet boundary condition to the right-hand-side vector `rhs` in
 place by assigning `ΓD.vals` at `ΓD.DoFs`.
+
+For a matrix alone, `apply_bc!(A, ΓD)` zeroes constrained rows and sets the
+constrained diagonal entries to one.
 
 For a matrix system, `apply_bc!(A, rhs, ΓD)` first moves constrained-column
 contributions to `rhs`, then zeroes constrained rows and columns of `A`, sets
@@ -35,6 +39,8 @@ function apply_bc!(A::AbstractMatrix, rhs::AbstractVector, ΓD::DirichletBoundar
     dofs = ΓD.DoFs
     vals = ΓD.vals
 
+    # Preserve the effect of constrained columns before those columns are
+    # eliminated from the system matrix.
     @inbounds for i in axes(A, 1)
         i in dofs && continue
         for (dof, val) in zip(dofs, vals)
@@ -42,6 +48,8 @@ function apply_bc!(A::AbstractMatrix, rhs::AbstractVector, ΓD::DirichletBoundar
         end
     end
 
+    # Symmetric elimination: constrained rows and columns are cleared, the
+    # diagonal is pinned to one, and the RHS receives the prescribed value.
     @inbounds for (dof, val) in zip(dofs, vals)
         @views A[dof, :] .= 0
         @views A[:, dof] .= 0

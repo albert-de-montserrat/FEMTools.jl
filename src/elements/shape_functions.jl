@@ -12,6 +12,8 @@ struct ShapeFunctions{SF, G} <: AbstractShapeFunction
     N::SF
     ∇N::G
 
+    # Keep the tuple types concrete so callers can specialize on element order
+    # and dimension without dynamic dispatch inside quadrature loops.
     ShapeFunctions(N::SF, ∇N::G) where {SF, G} = new{SF, G}(N, ∇N)
 end
 
@@ -89,6 +91,9 @@ _quadratic_line_∇N1(ξ::T) where T = ξ - T(1/2)
 _quadratic_line_∇N2(ξ::T) where T = -2ξ
 _quadratic_line_∇N3(ξ::T) where T = ξ + T(1/2)
 
+# Tensor-product quadrilateral and hexahedral elements reuse the 1D Lagrange
+# basis. The `side` or `node` argument is the reference coordinate of the local
+# node in that coordinate direction.
 _linear_line_N(ξ::T, side) where T = side == -1 ? (1 - ξ) * T(1/2) : (1 + ξ) * T(1/2)
 _linear_line_∇N(side::T) where T= side == -1 ? -T(1/2) : +T(1/2)
 
@@ -205,6 +210,8 @@ Return the eight trilinear shape functions and gradients on the reference
 hexahedron `-1 <= ξ, η, ζ <= 1`.
 """
 function ShapeFunctions(::LinearElement{3, 8, T}) where T
+    # Local node coordinates follow the ordering documented in
+    # `LinearElement{3, 8}`.
     nodes = (
         (-one(T), -one(T), -one(T)),
         (+one(T), -one(T), -one(T)),
@@ -239,6 +246,8 @@ Return the twenty-seven tensor-product quadratic shape functions and gradients
 on the reference hexahedron `-1 <= ξ, η, ζ <= 1`.
 """
 function ShapeFunctions(::QuadraticElement{3, 27, T}) where T
+    # Tensor-product node coordinates in the ordering documented in
+    # `QuadraticElement{3, 27}`.
     nodes = (
         (-one(T), -one(T), -one(T)),
         (+one(T), -one(T), -one(T)),
@@ -336,6 +345,9 @@ end
     return _eval_shape_function(element.shape_functions.∇N, coords)
 end
 
+# Unroll shape-function evaluation at compile time. This keeps the result as an
+# `SVector` with statically known length, which is helpful inside element
+# assembly kernels.
 @generated function _eval_shape_function(N::NTuple{M, Any}, coords) where {M}
     quote
         @inline
