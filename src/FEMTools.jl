@@ -19,10 +19,8 @@ using StaticArrays
 using DomainSets
 using SparseArrays
 using KernelAbstractions
-using CUDA
 
 TA(::CPU) = Array
-TA(::CUDABackend) = CuArray
 
 # Reference-element definitions come first because the remaining source files
 # extend constructors and methods specialized on these tags.
