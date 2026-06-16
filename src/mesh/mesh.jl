@@ -234,9 +234,20 @@ generete_DoFs(args...) = generate_dofs(args...)
 # KA kernels
 # ---------------------------------------------------------------------------
 
-# Precompute `(∂N∂x_q, dΩ_q)` for every element and quadrature point. This
-# depends only on the mesh geometry, so time-stepping or pseudo-transient
-# iterations can reuse it.
+"""
+    precompute_geometry_kernel!(geo, coords, el2n, ∂N∂ξq, ω, Val(N))
+
+KernelAbstractions kernel that fills `geo` with per-element geometry data.
+
+For each element `iel`, computes `(∂N∂x_q, dΩ_q)` at every quadrature point `q`
+and stores the result as a tuple at `geo[iel]`. Here `∂N∂x_q` is the matrix of
+physical-space shape-function gradients (`N × nDim`) and `dΩ_q` is the
+quadrature weight scaled by `|det J|`.
+
+Because this kernel depends only on mesh geometry, it only needs to be called
+once per mesh and the result can be reused across nonlinear or pseudo-transient
+iterations.
+"""
 @kernel function precompute_geometry_kernel!(geo, @Const(coords), @Const(el2n), ∂N∂ξq, ω, ::Val{N}) where N
     iel = @index(Global)
     local_nodes = local_nodes_of(el2n, iel, Val(N))

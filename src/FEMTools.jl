@@ -20,6 +20,21 @@ using DomainSets
 using SparseArrays
 using KernelAbstractions
 
+"""
+    TA(backend) -> Array type
+
+Return the array constructor associated with `backend`.
+
+| Backend        | Array type |
+|:-------------- |:---------- |
+| `CPU()`        | `Array`    |
+| `CUDABackend()`| `CuArray`  |
+| `ROCBackend()` | `ROCArray` |
+| `MetalBackend()`| `MtlArray`|
+
+GPU backends are registered by the corresponding package extension and are only
+available when that package is loaded.
+"""
 TA(::CPU) = Array
 
 # Reference-element definitions come first because the remaining source files
