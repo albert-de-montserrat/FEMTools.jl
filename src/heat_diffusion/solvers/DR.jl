@@ -76,6 +76,14 @@ end
     v[dofs[i]] = vals[i]
 end
 
+"""
+    apply_dirichlet!(v, dofs, vals, backend, workgroup)
+
+Overwrite `v[dofs[i]] = vals[i]` for all `i` on the target backend.
+
+Used inside `solver!` to pin boundary nodes at Dirichlet values before and
+after pseudo-transient updates. Returns `nothing`.
+"""
 function apply_dirichlet!(v, dofs, vals, backend, workgroup)
     isempty(dofs) && return nothing
     dirichlet_kernel!(backend, workgroup)(v, dofs, vals; ndrange = length(dofs))

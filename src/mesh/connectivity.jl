@@ -262,6 +262,13 @@ function generate_boundary_elements(Γnodes, n2el)
     return unique!(sort!(Γels))
 end
 
+"""
+    element_coordinate_matrix(coords, local_nodes) -> SMatrix{N, D, T}
+
+Gather physical coordinates of `local_nodes` from `coords` into a dense
+`N × D` matrix, where `N` is the number of local nodes and `D` is the spatial
+dimension.
+"""
 @inline function element_coordinate_matrix(coords::AbstractArray{SVector{D, T}}, local_nodes::SVector{N, Int}) where {D, T, N}
     data = ntuple(Val(D * N)) do k
         col = cld(k, N)

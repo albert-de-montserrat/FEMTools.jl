@@ -385,9 +385,16 @@ end
 end
 
 
-# Unroll shape-function evaluation at compile time. This keeps the result as an
-# `SVector` with statically known length, which is helpful inside element
-# assembly kernels.
+"""
+    _eval_shape_function(N, coords)
+
+Evaluate every callable in the `NTuple` `N` at `coords` and return an
+`SVector` of length `M`.
+
+Uses `@generated` to unroll the evaluation loop at compile time, so the return
+type is concretely known and the result can be used inside element assembly
+kernels without dynamic dispatch.
+"""
 @generated function _eval_shape_function(N::NTuple{M, Any}, coords) where {M}
     quote
         @inline
