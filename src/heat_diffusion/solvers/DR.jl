@@ -1,6 +1,6 @@
 """
     solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck = 100)
+            ncheck = 100, Tref = 273)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
 step of size `Δt`.
@@ -11,13 +11,16 @@ rate at constrained nodes) and the prescribed Dirichlet values respectively.
 `backend` and `workgroup` are forwarded to all KernelAbstractions kernel
 launches. `ncheck` controls how often the spectral estimates and convergence
 criterion are recomputed (every `ncheck` PT iterations).
+`Tref` is the reference temperature used in the density equation of state.
 
 The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
 the previous time step before calling.
 """
 function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
-                 backend, workgroup; ncheck = 100)
+                 backend, workgroup;
+                 ncheck = 100,
+                 Tref = eltype(dr.T)(273))
     (; R, R0, ∂R∂T, PC, T, T0, ∂T∂τ,
        phases, k, Cp, ρ0, α, K, P, source,
        CFL, c_fact, ϵ) = dr
@@ -33,7 +36,7 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
 
         assemble_diffusion_matrices_atomix!(
             R, ∂R∂T, PC, T, T0, mesh.el2n, geo, mesh.nels,
-            element, phases, k, Cp, ρ0, α, K, P, Δt, source, do_∂R∂T,
+            element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T,
             backend, workgroup,
         )
 

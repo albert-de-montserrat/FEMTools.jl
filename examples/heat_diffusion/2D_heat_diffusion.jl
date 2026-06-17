@@ -43,6 +43,7 @@ function main(nels)
     ρ0  = (FP(3300.0), FP(2700.0))  # reference density      [kg m⁻³]
     α   = (FP(3e-5),   FP(2e-5))    # thermal expansivity    [K⁻¹]
     K   = (FP(1e11),   FP(8e10))    # bulk modulus           [Pa]
+    Tref = FP(273.0)                 # reference temperature [K]
     Δt  = FP(100e3 * 365 * 24 * 3600) # time step             [s]
 
     # --- Dirichlet BCs: T = 1573 K at bottom wall, T = 273 K at top wall ---
@@ -90,7 +91,7 @@ function main(nels)
         fill!(dr.∂T∂τ, 0)
 
         # one call — everything lives in FEMTools
-        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;ncheck=50)
+        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 50, Tref = Tref)
     end
 
     T_host = reshape(Array(dr.T), nx + 1, ny + 1)

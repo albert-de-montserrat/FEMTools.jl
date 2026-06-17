@@ -157,6 +157,8 @@ function main(; max_area=1e5)
     ρ0  = (FP(3300.0),)
     α   = (FP(3e-5),)
     K   = (FP(1e11),)
+    Tref = FP(273.0)
+    g    = SA[FP(0.0), -FP(9.81)]
     Δt  = FP(20e3 * 365.25 * 24 * 3600)   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
@@ -174,13 +176,13 @@ function main(; max_area=1e5)
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
     lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = FP(0.9), ϵ = FP(1e-2))
     copyto!(lp_dr.T, dr.T)
-    P0_litho = FP[ρ0[1] * 9.81 * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = FP[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])  # P = 0 at free surface
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 50)
+    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 50, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK time-series setup -----------------------------------------------
@@ -203,7 +205,7 @@ function main(; max_area=1e5)
     P_obs  = Observable(Array(lp_dr.P))
     t_obs  = Observable(0.0)
 
-    P_max = ρ0[1] * 9.81 * Ly   # analytical pressure at max depth
+    P_max = ρ0[1] * (-g[2]) * Ly   # analytical pressure at max depth
 
     fig = Figure(size = (1300, 640))
     θ_c = range(0, 2π; length = 300)
@@ -244,7 +246,7 @@ function main(; max_area=1e5)
         @printf("─── time step %2d / %d ───\n", step, nsteps)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
-        @timeit to "solver" solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 100)
+        @timeit to "solver" solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 100, Tref = Tref)
         t_phys += Δt
 
         @timeit to "update obs" begin

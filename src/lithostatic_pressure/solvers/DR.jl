@@ -1,12 +1,14 @@
 """
     solver!(dr::LithostaticPressureDR, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck=100, verbose=true)
+            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
+            ncheck=100, verbose=true, Tref=273, g=SVector(0, -9.81))
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 
 `dr.T` must be set to the current temperature field before calling.
 `Γ_dofs`, `Γ_zero`, `Γ_vals` enforce Dirichlet boundary conditions on `P`.
+`Tref` and `g` control the density equation of state and body-force vector.
 `ncheck` controls how often spectral estimates and convergence are recomputed.
 Set `verbose = false` to suppress per-iteration residual output.
 
@@ -14,7 +16,11 @@ Modifies `dr.P` in-place. Returns `nothing`.
 """
 function solver!(dr::LithostaticPressureDR, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
-                 backend, workgroup; ncheck = 100, verbose = true)
+                 backend, workgroup;
+                 ncheck = 100,
+                 verbose = true,
+                 Tref = eltype(dr.P)(273),
+                 g = SVector(zero(eltype(dr.P)), -eltype(dr.P)(9.81)))
     (; R, R0, ∂R∂P, PC, P, ∂P∂τ, T,
        phases, ρ0, α, K,
        CFL, c_fact, ϵ) = dr
@@ -29,7 +35,7 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
 
         assemble_lithostatic_pressure_matrices_atomix!(
             R, ∂R∂P, PC, T, P, mesh.el2n, geo, mesh.nels,
-            element, phases, ρ0, α, K, do_∂R∂P,
+            element, phases, ρ0, α, K, Tref, g, do_∂R∂P,
             backend, workgroup,
         )
 

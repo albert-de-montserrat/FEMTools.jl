@@ -7,6 +7,8 @@ pseudo-transient dynamic-relaxation (DR) scheme.
 The weak form is `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ` (steady-state Poisson),
 so no time-step arrays are needed. Temperature `T` enters only as a known
 coefficient for the density EOS `ρ = ρ0(1 − α(T−Tref) + P/K)`.
+`Tref` and `g` are passed to `solver!`, so callers can choose the reference
+temperature and body-force vector without rebuilding the solver state.
 
 # Type parameters
 - `nphases` — number of material phases (compile-time constant)

@@ -21,7 +21,8 @@ where the per-phase density follows a linearised equation of state
 Material properties (`k`, `Cp`, `ρ0`, `α`, `K`) are stored as
 `NTuple{nphases, FP}` scalars inside the solver state object and are encoded as
 type parameters, so the compiler can unroll the per-phase accumulation loop
-without dynamic dispatch.
+without dynamic dispatch. The reference temperature `Tref` is passed to
+`solver!` when advancing the thermal field.
 
 ## Solver state
 
@@ -57,6 +58,7 @@ Cp = (FP(1000.0), FP(800.0))   # J kg⁻¹ K⁻¹
 ρ0 = (FP(3000.0), FP(2700.0))  # kg m⁻³
 α  = (FP(3e-5),   FP(2e-5))    # K⁻¹
 K  = (FP(1e11),   FP(8e10))    # Pa
+Tref = FP(273.0)               # K
 
 mesh = Mesh(0.0..1.0, 100)
 dr   = ThermalDiffusionDR(CPU(), mesh.nnodes, k, Cp, ρ0, α, K; CFL=0.9)
@@ -86,6 +88,7 @@ Cp = (FP(1200.0), FP(1100.0))
 ρ0 = (FP(3300.0), FP(2700.0))
 α  = (FP(3e-5),   FP(2e-5))
 K  = (FP(1e11),   FP(8e10))
+Tref = FP(273.0)
 
 dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K; CFL=FP(0.9))
 ```

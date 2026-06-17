@@ -33,6 +33,7 @@ stored here.
 # Per-phase scalar tuples (`NTuple{nphases, FP}`)
 `k` (conductivity), `Cp` (specific heat), `ρ0` (reference density),
 `α` (thermal expansivity), `K` (bulk modulus).
+The reference temperature `Tref` for the density EOS is passed to `solver!`.
 
 # Solver parameters
 `CFL`, `c_fact`, `ϵ` (convergence tolerance).
