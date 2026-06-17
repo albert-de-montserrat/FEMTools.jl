@@ -63,6 +63,11 @@ include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
 include("heat_diffusion/solvers/DR.jl")
 
+# Lithostatic-pressure solver: types, assembly, and PT solver.
+include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
+include("lithostatic_pressure/assembly/residual.jl")
+include("lithostatic_pressure/solvers/DR.jl")
+
 # Public type hierarchy and constructors.
 export AbstractElement
 export AbstractLinearElement,
@@ -100,5 +105,10 @@ export ThermalDiffusionDR,
     assemble_diffusion_matrices_atomix!,
     assemble_diffusion_matrices_colored!,
     apply_dirichlet!
+
+# Lithostatic-pressure solver.
+export LithostaticPressureDR,
+    assemble_lithostatic_pressure_matrices_atomix!,
+    assemble_lithostatic_pressure_matrices_colored!
 
 end # module FEMTools

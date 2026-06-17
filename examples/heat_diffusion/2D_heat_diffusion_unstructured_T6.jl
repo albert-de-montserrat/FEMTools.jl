@@ -1,5 +1,5 @@
-# Heat diffusion on a rectangle with a circular hole, meshed with Triangulate.jl
-# (wrapper around J.R. Shewchuk's Triangle library).
+# Heat diffusion on a rectangle with circular holes — 6-node quadratic triangles.
+# Mesh generated with Triangulate.jl (`o2` flag produces T6 elements).
 
 using Triangulate
 using StaticArrays
@@ -34,23 +34,21 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
+    build_mesh_T6(; Lx, Ly, holes, n_circle=64, max_area=nothing)
 
-Triangulate the rectangle [-Lx,Lx]×[-Ly,0] with circular holes using
-Triangulate.jl (Triangle library).
+Triangulate the rectangle [-Lx,Lx]×[-Ly,0] with circular holes and produce
+6-node quadratic triangles using Triangulate.jl's `o2` flag.
 
-`holes` is a vector of `(cx, cy, r)` tuples, one per hole. `n_circle`
-is the number of boundary segments per circle. `max_area` bounds element
-area; `nothing` skips quality refinement.
-
-Returns `(coords, el2n, outer_nodes, hole_nodes_per_hole)` where
-`hole_nodes_per_hole[h]` lists the boundary nodes of hole `h`.
+`holes` is a vector of `(cx, cy, r)` tuples. Returns
+`(coords, el2n, outer_nodes, hole_nodes_per_hole)` where `el2n` is 6×nels
+and nodes 1–3 of each column are corners, nodes 4–6 are edge midpoints
+(matching `QuadraticElement{2,6}` ordering).
 """
-function build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
+function build_mesh_T6(; Lx, Ly, holes, n_circle=64, max_area=nothing)
     # ---- outer rectangle (counter-clockwise) ----
     rect_pts  = Cdouble[-Lx  Lx  Lx -Lx;
                         -Ly -Ly  0.0  0.0]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'   # 2×4
+    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'
 
     all_pts  = Matrix{Cdouble}(rect_pts)
     all_segs = Matrix{Cint}(rect_segs)
@@ -68,17 +66,17 @@ function build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
         hole_xy[:, h] = [cx; cy]
     end
 
-    # ---- assemble TriangulateIO ----
     tio = TriangulateIO()
     tio.pointlist   = all_pts
     tio.segmentlist = all_segs
     tio.holelist    = hole_xy
 
-    flags = isnothing(max_area) ? "pqQ" : "pq30a$(max_area)Q"
+    # o2 = generate second-order (6-node) elements
+    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
     result, _ = triangulate(flags, tio)
 
     pts  = result.pointlist    # 2 × nnodes
-    tris = result.trianglelist # 3 × nels  (1-based)
+    tris = result.trianglelist # 6 × nels  (1-based, o2 ordering matches QuadraticElement{2,6})
 
     nnodes = size(pts, 2)
     coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in 1:nnodes]
@@ -101,31 +99,98 @@ function build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
 end
 
 # ---------------------------------------------------------------------------
+# Node reordering (Reverse Cuthill-McKee)
+# ---------------------------------------------------------------------------
+
+"""
+    reorder_mesh_rcm(coords, el2n, outer_nodes, hole_nodes_per_hole)
+
+Apply Reverse Cuthill-McKee reordering to reduce the bandwidth of the node
+adjacency graph, improving cache locality in the assembly kernels.
+
+Returns the same four arrays with nodes renumbered according to the RCM
+permutation.
+"""
+function reorder_mesh_rcm(coords, el2n, outer_nodes, hole_nodes_per_hole)
+    nnodes = length(coords)
+
+    # Build adjacency list from element connectivity
+    adj = [Int32[] for _ in 1:nnodes]
+    for iel in axes(el2n, 2)
+        for i in axes(el2n, 1), j in axes(el2n, 1)
+            i == j && continue
+            u, v = el2n[i, iel], el2n[j, iel]
+            u ∉ adj[v] && push!(adj[v], u)  # unique insertion (mesh is small)
+        end
+    end
+
+    # Cuthill-McKee BFS: start from the unvisited node with minimum degree,
+    # expand neighbours sorted by degree ascending.
+    visited = falses(nnodes)
+    order   = Int32[]
+    sizehint!(order, nnodes)
+
+    while length(order) < nnodes
+        # Seed: unvisited node with smallest degree
+        seed = argmin(i -> visited[i] ? typemax(Int) : length(adj[i]), 1:nnodes)
+        queue   = Int32[seed]
+        visited[seed] = true
+        while !isempty(queue)
+            v = popfirst!(queue)
+            push!(order, v)
+            nbrs = sort(adj[v]; by = n -> length(adj[n]))
+            for n in nbrs
+                visited[n] && continue
+                visited[n] = true
+                push!(queue, n)
+            end
+        end
+    end
+
+    reverse!(order)   # RCM = reversed CM
+
+    # Build inverse permutation: inv_perm[old_node] = new_node
+    inv_perm = Vector{Int32}(undef, nnodes)
+    for (new_i, old_i) in enumerate(order)
+        inv_perm[old_i] = Int32(new_i)
+    end
+
+    coords_new             = coords[order]
+    el2n_new               = map(i -> inv_perm[i], el2n)
+    outer_nodes_new        = inv_perm[outer_nodes]
+    hole_nodes_per_hole_new = [inv_perm[hn] for hn in hole_nodes_per_hole]
+
+    return coords_new, el2n_new, outer_nodes_new, hole_nodes_per_hole_new
+end
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-function main(; max_area=1e5)
+function main(; max_area=1e5 / 2)
     FP   = Float64
     TDev = FEMTools.TA(backend)
 
     # Domain geometry
     Lx, Ly = 15e3, 30e3
-    holes  = [(-7e3, -10e3, 2.5e3),   # (cx, cy, r), T = 1173 K
-              (  0e0, -11.5e3, 2e3)] # (cx, cy, r), T = 1273 K
+    holes  = [(-7e3, -10e3, 2.5e3),
+              (  0e0, -11.5e3, 2e3)]
     T_holes = FP[873, 1173]
 
-    # Generate mesh
-    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_mesh(;
+    # Generate T6 mesh and reorder nodes for cache locality
+    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_mesh_T6(;
         Lx, Ly, holes,
         n_circle = 64,
-        max_area = max_area,
+        max_area,
     )
+    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole =
+        reorder_mesh_rcm(coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole)
     mesh = FEMTools.Mesh(backend, coords_cpu, el2n_cpu)
-    @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
+    @printf("mesh: %d nodes, %d T6 elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
-    T_top    = FP(273)   # cold top wall  [K]
-    T_bottom = FP(873)   # hot bottom wall [K]
+    T_top    = FP(273)
+    T_bottom = FP(873)
 
     top_nodes    = filter(i -> coords_cpu[i][2] ≈  0.0, outer_nodes)
     bottom_nodes = filter(i -> coords_cpu[i][2] ≈ -Ly,  outer_nodes)
@@ -148,10 +213,10 @@ function main(; max_area=1e5)
     @printf("\n")
 
     # Element and geometry ------------------------------------------------
-    element = ReferenceElement(LinearElement{2, 3, FP})
+    element = ReferenceElement(QuadraticElement{2, 6, FP})
     geo     = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
-    # Material properties (single homogeneous phase) ----------------------
+    # Material properties -------------------------------------------------
     k   = (FP(3.0),)
     Cp  = (FP(1200.0),)
     ρ0  = (FP(3300.0),)
@@ -161,7 +226,7 @@ function main(; max_area=1e5)
 
     # Solver state --------------------------------------------------------
     dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
-                            CFL = FP(0.9), ϵ = FP(1e-8))
+                            CFL = FP(1.25), ϵ = FP(1e-8))
 
     T_init = FP[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
@@ -172,45 +237,54 @@ function main(; max_area=1e5)
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = FP(0.9), ϵ = FP(1e-2))
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = FP(1.2), ϵ = FP(1e-2))
     copyto!(lp_dr.T, dr.T)
-    P0_litho = FP[ρ0[1] * 9.81 * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
-    copyto!(lp_dr.P, P0_litho)
+    # P0_litho = FP[ρ0[1] * 9.81 * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    # copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])  # P = 0 at free surface
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 50)
+    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 10)
     copyto!(dr.P, lp_dr.P)
 
-    # VTK time-series setup -----------------------------------------------
-    vtk_pts = zeros(3, length(coords_cpu))
-    for (i, p) in enumerate(coords_cpu)
+    # VTK setup -----------------------------------------------------------
+    # Export the same linearized corner-node mesh used by the Makie plot.
+    vtk_nodes = sort!(unique(vec(el2n_cpu[1:3, :])))
+    vtk_node_map = zeros(Int32, length(coords_cpu))
+    for (new_i, old_i) in enumerate(vtk_nodes)
+        vtk_node_map[old_i] = Int32(new_i)
+    end
+
+    vtk_pts = zeros(3, length(vtk_nodes))
+    for (i, old_i) in enumerate(vtk_nodes)
+        p = coords_cpu[old_i]
         vtk_pts[1, i] = p[1]
         vtk_pts[2, i] = p[2]
     end
-    cells = [MeshCell(VTKCellTypes.VTK_TRIANGLE, el2n_cpu[:, i]) for i in axes(el2n_cpu, 2)]
+    cells = [MeshCell(VTKCellTypes.VTK_TRIANGLE, vtk_node_map[el2n_cpu[1:3, i]])
+             for i in axes(el2n_cpu, 2)]
 
-    out_dir = "output"
+    out_dir = "output_T6"
     mkpath(out_dir)
-    t_phys = 0.0   # physical time [s]
+    t_phys = 0.0
 
-    # Build figure once so each time step can update it in-place -----------
-    pts2d  = [Point2f(p[1], p[2]) for p in coords_cpu]
-    faces  = [GeometryBasics.TriangleFace(Int(el2n_cpu[1,i]), Int(el2n_cpu[2,i]), Int(el2n_cpu[3,i]))
-              for i in axes(el2n_cpu, 2)]
-    T_obs  = Observable(Array(dr.T))
-    P_obs  = Observable(Array(lp_dr.P))
-    t_obs  = Observable(0.0)
+    # Build figure --------------------------------------------------------
+    pts2d = [Point2f(p[1], p[2]) for p in coords_cpu]
+    faces = [GeometryBasics.TriangleFace(Int(el2n_cpu[1,i]), Int(el2n_cpu[2,i]), Int(el2n_cpu[3,i]))
+             for i in axes(el2n_cpu, 2)]
+    T_obs = Observable(Array(dr.T))
+    P_obs = Observable(Array(lp_dr.P))
+    t_obs = Observable(0.0)
 
-    P_max = ρ0[1] * 9.81 * Ly   # analytical pressure at max depth
+    P_max = ρ0[1] * 9.81 * Ly   # analytical surface pressure at max depth
 
     fig = Figure(size = (1300, 640))
     θ_c = range(0, 2π; length = 300)
 
     ax_T = Axis(fig[1, 1];
-                title   = @lift("T  t = $(round($t_obs / (1e3*365.25*24*3600); digits=1)) kyr"),
-                aspect  = DataAspect(), xlabel = "x [m]", ylabel = "y [m]")
+                title  = @lift("T (T6)  t = $(round($t_obs / (1e3*365.25*24*3600); digits=1)) kyr"),
+                aspect = DataAspect(), xlabel = "x [m]", ylabel = "y [m]")
     mT = mesh!(ax_T, pts2d, faces;
                color      = T_obs,
                colormap   = :thermal,
@@ -222,8 +296,8 @@ function main(; max_area=1e5)
     Colorbar(fig[1, 2], mT; label = "T [K]")
 
     ax_P = Axis(fig[1, 3];
-                title   = "Lithostatic P",
-                aspect  = DataAspect(), xlabel = "x [m]", ylabel = "y [m]")
+                title  = "Lithostatic P",
+                aspect = DataAspect(), xlabel = "x [m]", ylabel = "y [m]")
     mP = mesh!(ax_P, pts2d, faces;
                color      = P_obs,
                colormap   = :viridis,
@@ -234,41 +308,46 @@ function main(; max_area=1e5)
     end
     Colorbar(fig[1, 4], mP; label = "P [Pa]")
 
-    gif_path = joinpath(out_dir, "heat_diffusion_unstructured.gif")
+    gif_path = joinpath(out_dir, "heat_diffusion_T6.gif")
 
     # Time loop -----------------------------------------------------------
     nsteps = 75
-    to = TimerOutput()
-    pvd = paraview_collection(joinpath(out_dir, "heat_diffusion_unstructured"))
+    to  = TimerOutput()
+    pvd = paraview_collection(joinpath(out_dir, "heat_diffusion_T6"))
     record(fig, gif_path, 1:nsteps; framerate = 15) do step
         @printf("─── time step %2d / %d ───\n", step, nsteps)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
+
+        @printf("--- SOLVING TEMPERATURE ---")
         @timeit to "solver" solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 100)
+        copyto!(lp_dr.T, dr.T)
+    
+        @printf("--- SOLVING LITHOSTATIC PRESSURE ---")
+        @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 50, verbose = false)
+        copyto!(dr.P, lp_dr.P)
+
         t_phys += Δt
 
         @timeit to "update obs" begin
             T_obs[] = Array(dr.T)
-            P_obs[] = Array(dr.P)
+            P_obs[] = Array(lp_dr.P)
             t_obs[] = t_phys
         end
 
-        @timeit to "vtk" vtk_grid(joinpath(out_dir, "heat_diffusion_unstructured_$step"), vtk_pts, cells) do vtk
-            vtk["T"] = Array(dr.T)
-            vtk["P"] = Array(dr.P)
+        @timeit to "vtk" vtk_grid(joinpath(out_dir, "heat_diffusion_T6_$step"), vtk_pts, cells) do vtk
+            vtk["T"] = Array(dr.T)[vtk_nodes]
+            vtk["P"] = Array(lp_dr.P)[vtk_nodes]
             pvd[t_phys] = vtk
         end
     end
     vtk_save(pvd)
-    @printf("saved %s (%d steps)\n", joinpath(out_dir, "heat_diffusion_unstructured.pvd"), nsteps)
+    @printf("saved %s (%d steps)\n", joinpath(out_dir, "heat_diffusion_T6.pvd"), nsteps)
     @printf("saved %s\n", gif_path)
-    print_timer(to; title = "heat diffusion — unstructured", sortby = :firstexec)
+    print_timer(to; title = "heat diffusion T6 — unstructured", sortby = :firstexec)
 
     display(fig)
-
-    @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
-
     return nothing
 end
 
-main(; max_area=1e5/2)
+main()
