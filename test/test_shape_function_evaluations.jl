@@ -174,5 +174,60 @@ for FP in (FP32, FP64)
             @test sum(values) == 1.0
             @test count(!iszero, values) == 1
         end
+
+        @testset "3D gradient partition of unity" begin
+            coords = (FP(0.1), FP(0.2), FP(-0.3))
+            hex_grads = eval_shape_function_gradient(hexahedron, coords)
+            @test sum(g[1] for g in hex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+            @test sum(g[2] for g in hex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+            @test sum(g[3] for g in hex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+
+            qhex_grads = eval_shape_function_gradient(quadratic_hexahedron, coords)
+            @test sum(g[1] for g in qhex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+            @test sum(g[2] for g in qhex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+            @test sum(g[3] for g in qhex_grads) ≈ zero(FP) atol = 100 * eps(FP)
+        end
+
+        @testset "3D jacobian matches analytical gradient" begin
+            coords = (FP(0.1), FP(0.2), FP(-0.3))
+            J   = eval_shape_function_jacobian(hexahedron, coords)
+            ∇Ns = eval_shape_function_gradient(hexahedron, coords)
+            for i in 1:8
+                @test J[i, 1] ≈ ∇Ns[i][1] atol = 100 * eps(FP)
+                @test J[i, 2] ≈ ∇Ns[i][2] atol = 100 * eps(FP)
+                @test J[i, 3] ≈ ∇Ns[i][3] atol = 100 * eps(FP)
+            end
+        end
+    end
+end
+
+for FP in (FP32, FP64)
+    @testset "eval_shape_function SVector dispatch – $FP" begin
+        line = ReferenceElement(LinearElement{1, 2, FP})
+        ξ = FP(0.25)
+        @test eval_shape_function(line, SVector(ξ)) == eval_shape_function(line, (ξ,))
+
+        quad4 = ReferenceElement(LinearElement{2, 4, FP})
+        ξ, η = FP(0.3), FP(-0.2)
+        @test eval_shape_function(quad4, SVector(ξ, η)) == eval_shape_function(quad4, (ξ, η))
+    end
+
+    @testset "shape_function_values – $FP" begin
+        cases = (
+            (LinearElement{1, 2, FP},  2, 2),
+            (QuadraticElement{1, 3, FP}, 3, 3),
+            (LinearElement{2, 4, FP},  4, 4),
+            (LinearElement{3, 8, FP},  8, 8),
+        )
+        for (Element, N, NQ) in cases
+            element = ReferenceElement(Element)
+            Nq = shape_function_values(element)
+
+            @test Nq isa NTuple{NQ}
+            for q in 1:NQ
+                @test Nq[q] isa SVector{N, FP}
+                @test sum(Nq[q]) ≈ one(FP)
+            end
+        end
     end
 end
