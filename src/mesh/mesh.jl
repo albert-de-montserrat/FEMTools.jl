@@ -8,6 +8,7 @@ abstract type AbstractMesh end
 """
     Mesh(Ω, nels)
     Mesh(Ω, element, nels)
+    Mesh(backend, Ω, element, nels)
 
 Construct a structured mesh over domain `Ω` using `element` and `nels`.
 
@@ -15,6 +16,16 @@ The constructor derives the boundary `Γ`, coordinates, degrees of freedom,
 element-to-node connectivity, node-to-element adjacency, boundary nodes,
 boundary elements, and stores the node and element counts. For tensor-product
 domains, `nels` is a tuple such as `(nx, ny)` or `(nx, ny, nz)`.
+
+    Mesh(coords, el2n)
+    Mesh(backend, coords, el2n)
+
+Construct an unstructured mesh from pre-built arrays.
+
+`coords` is a `Vector{SVector{nDim, T}}` of node coordinates and `el2n` is an
+`N × nels` `Matrix{Int32}` of element-to-node connectivity (one column per
+element). Boundary nodes are detected automatically as nodes on mesh edges
+shared by exactly one element. `Ω` and `Γ` are set to `nothing`.
 """
 struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     Ω::D        # model domain
@@ -29,8 +40,8 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     nels::Int   # number of elements
 
     function Mesh(backend, Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
-        
-        TDev       = TA(backend) 
+
+        TDev       = TA(backend)
         Γ          = boundary(Ω)
         coords_cpu = generate_coordinates(element, Ω, nels)
         nnodes     = length(coords_cpu)
@@ -61,9 +72,48 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
             typeof(Γels),
         }(Ω, Γ, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, length(n2el) == 0 ? 0 : size(el2n, 2))
     end
+
+    function Mesh(backend, coords_cpu::Vector{SVector{nDim, T}}, el2n_cpu::Matrix{Int32}; order::Int = 1) where {nDim, T}
+        TDev       = TA(backend)
+        nnodes     = length(coords_cpu)
+        DoFs_cpu   = Int32.(1:nnodes)
+        n2el_cpu   = generate_node2element(el2n_cpu, nnodes)
+        Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu)
+        Γels_cpu   = generate_boundary_elements(Γnodes_cpu, n2el_cpu)
+
+        coords = TDev(coords_cpu)
+        DoFs   = TDev(DoFs_cpu)
+        el2n   = TDev(el2n_cpu)
+        n2el   = n2el_cpu
+        Γnodes = TDev(Γnodes_cpu)
+        Γels   = TDev(Γels_cpu)
+
+        return new{nDim, order, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(n2el), typeof(Γnodes), typeof(Γels)}(
+            nothing, nothing, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, size(el2n_cpu, 2)
+        )
+    end
 end
 
 Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
+Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
+    Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
+
+function _unstructured_boundary_nodes(el2n::Matrix{Int32})
+    N = size(el2n, 1)
+    edge_count = Dict{Tuple{Int32, Int32}, Int}()
+    for iel in axes(el2n, 2)
+        for i in 1:N
+            j = mod1(i + 1, N)
+            a, b = minmax(el2n[i, iel], el2n[j, iel])
+            edge_count[(a, b)] = get(edge_count, (a, b), 0) + 1
+        end
+    end
+    bnd = Int32[]
+    for ((a, b), count) in edge_count
+        count == 1 && push!(bnd, a, b)
+    end
+    return sort!(unique!(bnd))
+end
 
 
 """

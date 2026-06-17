@@ -8,7 +8,7 @@ using FEMTools
 
 # const backend   = CUDABackend()
 const backend   = CPU()
-const workgroup = 64
+const workgroup = 128
 
 # ---------------------------------------------------------------------------
 # Geometry precomputation  (local helper — wraps FEMTools kernel)
@@ -31,8 +31,8 @@ function main(nels)
     FP   = Float64
     TDev = FEMTools.TA(backend)
 
-    Lx, Ly   = 50e3, 100e3
-    Ω        = (-Lx..Lx) × (-Ly..Ly)
+    Lx, Ly   = 10e3, 20e3
+    Ω        = (-Lx..Lx) × (-Ly..0e0)
     element  = ReferenceElement(LinearElement{2, 3, FP})
     mesh     = FEMTools.Mesh(backend, Ω, element, nels)
     mesh_cpu = FEMTools.Mesh(CPU(), Ω, element, nels)
@@ -43,10 +43,10 @@ function main(nels)
     ρ0  = (FP(3300.0), FP(2700.0))  # reference density      [kg m⁻³]
     α   = (FP(3e-5),   FP(2e-5))    # thermal expansivity    [K⁻¹]
     K   = (FP(1e11),   FP(8e10))    # bulk modulus           [Pa]
-    Δt  = FP(100e3 * 365 * 24 * 3600) # time step           [s]
+    Δt  = FP(1e3 * 365 * 24 * 3600) # time step           [s]
 
     # --- Dirichlet BCs: T = 1573 K at bottom wall, T = 273 K at top wall ---
-    T_bot = FP(1300 + 273)   # 1573 K
+    T_bot = FP(600 + 273)   # 1573 K
     T_top = FP(273)           # 273 K
 
     _, J_Ω     = factors(Ω)
@@ -76,9 +76,8 @@ function main(nels)
     # Nodes are on a regular (nx+1)×(ny+1) grid regardless of triangle splitting.
     nx, ny = nels
     xs = LinRange(-Lx, Lx, nx + 1) ./ 1e3
-    ys = LinRange(-Ly, Ly, ny + 1) ./ 1e3
+    ys = LinRange(-Ly, 0e0, ny + 1) ./ 1e3
 
-    fig = Figure(size = (600, 600))
     nsteps = 50
 
     for step in 1:nsteps
@@ -88,15 +87,16 @@ function main(nels)
 
         solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup)
     end
-
+    
+    fig = Figure(size = (600, 600))
     T_host = reshape(Array(dr.T), nx + 1, ny + 1)
     ax = Axis(fig[1, 1]; title = "t = $(nsteps * Δt / (365*24*3600*1e3)) kyr", aspect = DataAspect())
     heatmap!(ax, xs, ys, T_host; colormap = :thermal, colorrange = (T_top, T_bot))
     Colorbar(fig[1, 2]; colormap = :thermal, limits = (T_top, T_bot), label = "T [K]")
     display(fig)
 
-    return dr
+    return nothing #dr
 end
 
 nels = (120, 120)
-main(nels)
+@time main(nels)
