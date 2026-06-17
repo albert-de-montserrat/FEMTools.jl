@@ -1,6 +1,6 @@
 """
     solver!(dr::LithostaticPressureDR, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck=100)
+            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck=100, verbose=true)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
@@ -8,6 +8,7 @@ lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 `dr.T` must be set to the current temperature field before calling.
 `Γ_dofs`, `Γ_zero`, `Γ_vals` enforce Dirichlet boundary conditions on `P`.
 `ncheck` controls how often spectral estimates and convergence are recomputed.
+Set `verbose = false` to suppress per-iteration residual output.
 
 Modifies `dr.P` in-place. Returns `nothing`.
 """
@@ -58,18 +59,4 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
         end
     end
     return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Pseudo-transient update kernels (shared with heat-diffusion DR)
-# ---------------------------------------------------------------------------
-
-@kernel function update_rate_kernel!(∂u∂τ, @Const(R), @Const(PC), β)
-    i = @index(Global)
-    ∂u∂τ[i] = R[i] / PC[i] + β * ∂u∂τ[i]
-end
-
-@kernel function update_variable_kernel!(u, @Const(∂u∂τ), α_dr)
-    i = @index(Global)
-    u[i] += α_dr * ∂u∂τ[i]
 end

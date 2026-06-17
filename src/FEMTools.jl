@@ -3,15 +3,16 @@ module FEMTools
 @doc """
     FEMTools
 
-Finite-element utilities for structured meshes, reference elements, shape
-functions, integration points, sparsity construction, mesh coloring, and simple
-boundary-condition handling.
+Finite-element utilities for structured and unstructured meshes, reference
+elements, shape functions, integration points, sparsity construction, mesh
+coloring, and simple boundary-condition handling.
 
 The package is organized around lightweight reference-element tags such as
 `LinearElement{2, 4, Float64}` and `QuadraticElement{3, 27, Float64}`. A
 `ReferenceElement` bundles the tag-specific shape functions and quadrature rule;
 `Mesh` uses that reference element to generate structured connectivity and
-coordinates.
+coordinates. GPU backend dispatch is handled via `TA(backend)`, which returns
+the array constructor for the target compute backend (e.g. `CuArray` for CUDA).
 """ FEMTools
 
 using Printf

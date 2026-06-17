@@ -98,6 +98,16 @@ Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
 
+"""
+    _unstructured_boundary_nodes(el2n) -> Vector{Int32}
+
+Return sorted unique node indices that lie on the mesh boundary.
+
+A mesh edge (consecutive node pair within an element) is a boundary edge when
+it appears in exactly one element. All nodes incident to such edges are
+collected and returned. Assumes elements are ordered so that consecutive rows
+of `el2n` form edges (i.e. the last node wraps to the first).
+"""
 function _unstructured_boundary_nodes(el2n::Matrix{Int32})
     N = size(el2n, 1)
     edge_count = Dict{Tuple{Int32, Int32}, Int}()

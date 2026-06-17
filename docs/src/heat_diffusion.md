@@ -62,6 +62,46 @@ mesh = Mesh(0.0..1.0, 100)
 dr   = ThermalDiffusionDR(CPU(), mesh.nnodes, k, Cp, ρ0, α, K; CFL=0.9)
 ```
 
+## Structured 2-D Example
+
+The script `examples/heat_diffusion/2D_heat_diffusion.jl` solves transient heat
+diffusion on a structured 2-D quadratic mesh. It uses a hot lower boundary
+(`1573 K`), a cold upper boundary (`273 K`), and insulated side boundaries:
+
+```julia
+using FEMTools, DomainSets, KernelAbstractions, StaticArrays
+using DomainSets: ×
+
+backend   = CPU()
+workgroup = 64
+
+FP      = Float64
+Lx, Ly  = 50e3, 100e3
+Ω       = (-Lx..Lx) × (-Ly..Ly)
+element = ReferenceElement(QuadraticElement{2, 9, FP})
+mesh    = Mesh(backend, Ω, element, (30, 30))
+
+k  = (FP(3.0),    FP(2.5))
+Cp = (FP(1200.0), FP(1100.0))
+ρ0 = (FP(3300.0), FP(2700.0))
+α  = (FP(3e-5),   FP(2e-5))
+K  = (FP(1e11),   FP(8e10))
+
+dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K; CFL=FP(0.9))
+```
+
+The full example also precomputes element geometry, applies Dirichlet boundary
+conditions at the top and bottom, then advances the field with `solver!` for
+50 time steps. Run it from the examples environment:
+
+```sh
+julia --project=examples examples/heat_diffusion/2D_heat_diffusion.jl
+```
+
+The resulting temperature field is:
+
+![2-D heat diffusion result](assets/2d_heat_diffusion_result.svg)
+
 ## Assembly
 
 The residual and Jacobian assembly functions live in

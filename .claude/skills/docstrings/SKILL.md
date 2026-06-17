@@ -2,13 +2,16 @@
 name: docstrings
 description: Generate and update Julia docstrings, inline comments, and module-level documentation for FEMTools.jl source files. Invoke with /docstrings.
 tools: Bash, Glob, Grep, Read, Edit
+metadata:
+  updated: 2026-06-17
 ---
 
 # Docstrings
 
 Add or update docstrings, inline comments, and module documentation across
-`src/`. Apply only to the files named in the invocation arguments, or — when
-called with no arguments — to every file under `src/`.
+`src/` and `docs/src/`. Apply only to the files named in the invocation
+arguments, or — when called with no arguments — to every `.jl` file under
+`src/` and every `.md` file under `docs/src/`.
 
 ## 1. Identify targets
 
@@ -17,6 +20,7 @@ those files. Otherwise:
 
 ```bash
 find src/ -name "*.jl" | sort
+find docs/src/ -name "*.md" | sort
 ```
 
 Read each target file in full before writing anything.
@@ -87,7 +91,20 @@ The `@doc """ ... """ FEMTools` block at the top of `src/FEMTools.jl` must:
 Update it only when the package structure changed since the last edit; otherwise
 leave it unchanged.
 
-## 6. Applying changes
+## 6. Docs pages (`docs/src/*.md`)
+
+Each markdown file in `docs/src/` is a Documenter.jl page that renders
+docstrings via `@docs` blocks. When processing these files:
+
+- Verify that every symbol listed in an `@docs` block has a matching docstring
+  in `src/` (if not, add the docstring in `src/` first).
+- Do not edit prose in `docs/src/` unless it is factually wrong or references a
+  symbol that no longer exists.
+- If a new exported symbol was added to `src/FEMTools.jl` and is missing from
+  all `@docs` blocks, add it to the most appropriate page.
+- Do not create new `.md` files; only edit existing ones.
+
+## 7. Applying changes
 
 - Edit files in place with the `Edit` tool. Do not rewrite entire files unless
   more than half of the content changes.
@@ -103,7 +120,7 @@ julia --project=. -e 'using FEMTools'
 
 to confirm the module still loads without error. Report any load error and stop.
 
-## 7. Output
+## 8. Output
 
 For each file edited, list:
 - File path
