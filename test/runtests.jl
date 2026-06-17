@@ -12,7 +12,7 @@ const FP32 = Float32
 @testset "FEMTools tests" begin
     test_dir = @__DIR__
 
-    for test_file in sort(filter(startswith("test_"), readdir(test_dir)))
+    for test_file in sort(filter(file -> startswith(file, "test_") && endswith(file, ".jl"), readdir(test_dir)))
         include(joinpath(test_dir, test_file))
     end
 end
