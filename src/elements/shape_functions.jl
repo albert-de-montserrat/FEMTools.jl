@@ -413,7 +413,8 @@ Uses `@generated` to unroll the evaluation loop at compile time, so the return
 type is concretely known and the result can be used inside element assembly
 kernels without dynamic dispatch.
 """
-@generated function _eval_shape_function(N::NTuple{M, Any}, coords) where {M}
+@generated function _eval_shape_function(N::T, coords) where {T<:Tuple}
+    M = fieldcount(T)
     quote
         @inline
         Base.@nexprs $M i -> x_i = N[i](coords...)

@@ -9,6 +9,9 @@ lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 `dr.T` must be set to the current temperature field before calling.
 `Γ_dofs`, `Γ_zero`, `Γ_vals` enforce Dirichlet boundary conditions on `P`.
 `Tref` and `g` control the density equation of state and body-force vector.
+`g` must be an `SVector` whose length matches the spatial dimension of the
+mesh (e.g. `SVector(0, -9.81)` for 2-D, `SVector(0, 0, -9.81)` for 3-D).
+The default value `SVector(0, -9.81)` is only appropriate for 2-D problems.
 `ncheck` controls how often spectral estimates and convergence are recomputed.
 Set `verbose = false` to suppress per-iteration residual output.
 
