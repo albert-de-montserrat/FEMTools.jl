@@ -115,6 +115,19 @@ function IntegrationPoints(::QuadraticElement{2, 9, T}) where T
 end
 
 """
+    IntegrationPoints(::LinearElement{3, 4})
+
+Return the one-point centroid rule on the reference tetrahedron.
+"""
+function IntegrationPoints(::LinearElement{3, 4, T}) where T
+    ξ = SVector(T(1/4))
+    η = SVector(T(1/4))
+    ζ = SVector(T(1/4))
+    ω = SVector(T(1/6))
+    return IntegrationPoints{3, 1, T}(ξ, η, ζ, ω)
+end
+
+"""
     IntegrationPoints(::LinearElement{3, 8})
 
 Return the tensor-product two-by-two-by-two Gauss rule on the reference

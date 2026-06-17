@@ -15,7 +15,7 @@ vector in physical coordinates.
 function assemble_lithostatic_pressure_matrices_atomix!(
         R, ∂R∂P, PC, T, P, el2n, geo, nels,
         element::ReferenceElement{Te}, phases, ρ0, α, K, Tref, g,
-        do_∂R∂P, backend, workgroup) where Te <: AbstractElement{2, N} where N
+        do_∂R∂P, backend, workgroup) where Te <: AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)
@@ -59,7 +59,7 @@ All physical arguments, including `Tref` and `g`, match the Atomix assembler.
 function assemble_lithostatic_pressure_matrices_colored!(
         R, ∂R∂P, PC, T, P, el2n, geo, el_groups,
         element::ReferenceElement{Te}, phases, ρ0, α, K, Tref, g,
-        do_∂R∂P, backend, workgroup) where Te <: AbstractElement{2, N} where N
+        do_∂R∂P, backend, workgroup) where Te <: AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)

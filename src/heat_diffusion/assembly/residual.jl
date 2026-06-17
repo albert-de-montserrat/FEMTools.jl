@@ -12,7 +12,7 @@ per-phase intrinsic material properties. When `do_∂R∂T` is true, also assemb
 row-sum Jacobian estimates into `∂R∂T` and the absolute diagonal into `PC`.
 `Tref` is the reference temperature in the density equation of state.
 """
-function assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels, element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{2, N} where N
+function assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels, element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)
@@ -62,7 +62,7 @@ All other arguments are identical to `assemble_diffusion_matrices_atomix!`,
 except that `nels` is replaced by `el_groups`.
 """
 function assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo, el_groups,
-                                               element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{2, N} where N
+                                               element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)

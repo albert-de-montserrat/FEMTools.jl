@@ -204,6 +204,24 @@ function ShapeFunctions(::QuadraticElement{2, 9, T}) where T
 end
 
 """
+    ShapeFunctions(::LinearElement{3, 4})
+
+Return the four linear shape functions and constant gradients on the reference
+tetrahedron `ξ >= 0`, `η >= 0`, `ζ >= 0`, `ξ + η + ζ <= 1`.
+"""
+function ShapeFunctions(::LinearElement{3, 4, T}) where T
+    N1 = (ξ, η, ζ) -> 1 - ξ - η - ζ
+    N2 = (ξ, η, ζ) -> ξ
+    N3 = (ξ, η, ζ) -> η
+    N4 = (ξ, η, ζ) -> ζ
+    ∇N1 = (ξ, η, ζ) -> (-one(T), -one(T), -one(T))
+    ∇N2 = (ξ, η, ζ) -> (+one(T),  zero(T),  zero(T))
+    ∇N3 = (ξ, η, ζ) -> (zero(T), +one(T),  zero(T))
+    ∇N4 = (ξ, η, ζ) -> (zero(T),  zero(T), +one(T))
+    return ShapeFunctions((N1, N2, N3, N4), (∇N1, ∇N2, ∇N3, ∇N4))
+end
+
+"""
     ShapeFunctions(::LinearElement{3, 8})
 
 Return the eight trilinear shape functions and gradients on the reference
