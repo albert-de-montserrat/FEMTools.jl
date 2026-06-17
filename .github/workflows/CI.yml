@@ -25,10 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         julia-version:
+          - "1.12"
           - "1.11"
-          - "1"       # latest stable
         os:
           - ubuntu-latest
+          - macos-latest
           - macos-latest
 
     steps:
