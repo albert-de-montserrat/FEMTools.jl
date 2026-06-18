@@ -11,6 +11,7 @@ import FEMTools
         :ShapeFunctions,
         :IntegrationPoints,
         :Mesh,
+        :MixedMesh,
         :DirichletBoundaryCondition,
         :apply_bc!,
         :generate_element2node,

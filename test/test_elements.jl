@@ -99,8 +99,8 @@ end
         cases = (
             (LinearElement{1, 2, FP}, 1, 2),
             (QuadraticElement{1, 3, FP}, 1, 3),
-            (LinearElement{2, 3, FP}, 2, 1),
-            (QuadraticElement{2, 6, FP}, 2, 3),
+            (LinearElement{2, 3, FP}, 2, 3),
+            (QuadraticElement{2, 6, FP}, 2, 6),
             (LinearElement{2, 4, FP}, 2, 4),
             (QuadraticElement{2, 9, FP}, 2, 9),
             (LinearElement{3, 8, FP}, 3, 8),
@@ -118,6 +118,22 @@ end
             @test nDim == 1 ? ip.η === nothing : ip.η isa SVector{nIp, FP}
             @test nDim < 3 ? ip.ζ === nothing : ip.ζ isa SVector{nIp, FP}
         end
+    end
+end
+
+@testset "triangle integration rules" begin
+    for FP in (FP64, FP32)
+        tri3 = IntegrationPoints(LinearElement{2, 3, FP})
+        @test tri3 isa FEMTools.IntegrationPoints{2, 3, FP}
+        @test tri3.ξ == SVector{3, FP}(1 / 6, 2 / 3, 1 / 6)
+        @test tri3.η == SVector{3, FP}(1 / 6, 1 / 6, 2 / 3)
+        @test tri3.ω == SVector{3, FP}(1 / 6, 1 / 6, 1 / 6)
+        @test sum(tri3.ω) ≈ FP(1 / 2)
+
+        tri6 = IntegrationPoints(QuadraticElement{2, 6, FP})
+        @test tri6 isa FEMTools.IntegrationPoints{2, 6, FP}
+        @test length(tri6.ω) == 6
+        @test sum(tri6.ω) ≈ FP(1 / 2)
     end
 end
 

@@ -13,9 +13,9 @@ abstract type AbstractMesh end
 Construct a structured mesh over domain `Ω` using `element` and `nels`.
 
 The constructor derives the boundary `Γ`, coordinates, degrees of freedom,
-element-to-node connectivity, node-to-element adjacency, boundary nodes,
-boundary elements, and stores the node and element counts. For tensor-product
-domains, `nels` is a tuple such as `(nx, ny)` or `(nx, ny, nz)`.
+element-to-node connectivity, boundary nodes, and stores the node and element
+counts. For tensor-product domains, `nels` is a tuple such as `(nx, ny)` or
+`(nx, ny, nz)`.
 
     Mesh(coords, el2n)
     Mesh(backend, coords, el2n)
@@ -27,17 +27,28 @@ Construct an unstructured mesh from pre-built arrays.
 element). Boundary nodes are detected automatically as nodes on mesh edges
 shared by exactly one element. `Ω` and `Γ` are set to `nothing`.
 """
-struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
+struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     Ω::D        # model domain
     Γ::B        # model boundary
     coords::T1  # vertex coordinates
     DoFs::T2    # degrees of freedom
     el2n::T3    # element-to-node connectivity
-    n2el::T4    # node-to-elements connectivity
-    Γnodes::T5  # boundary nodes
-    Γels::T6    # boundary elements
+    Γnodes::T4  # boundary nodes
     nnodes::Int # number of nodes
     nels::Int   # number of elements
+
+    function Mesh{nDim, O, D, B, T1, T2, T3, T4}(
+        Ω::D,
+        Γ::B,
+        coords::T1,
+        DoFs::T2,
+        el2n::T3,
+        Γnodes::T4,
+        nnodes::Int,
+        nels::Int,
+    ) where {nDim, O, D, B, T1, T2, T3, T4}
+        return new{nDim, O, D, B, T1, T2, T3, T4}(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels)
+    end
 
     function Mesh(backend, Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
 
@@ -47,17 +58,13 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
         nnodes     = length(coords_cpu)
         DoFs_cpu   = generate_dofs(element, nnodes)
         el2n_cpu   = generate_element2node(element, nels)
-        n2el_cpu   = generate_node2element(el2n_cpu, nnodes)
         Γmask       = Bool[p ∈ Γ for p in coords_cpu]
         Γnodes_cpu  = Vector{Int32}(DoFs_cpu[Γmask])
-        Γels_cpu    = generate_boundary_elements(Γnodes_cpu, n2el_cpu)
 
         coords = TDev(coords_cpu)
         DoFs   = TDev(DoFs_cpu)
         el2n   = TDev(el2n_cpu)
-        n2el   = n2el_cpu
         Γnodes = TDev(Γnodes_cpu)
-        Γels   = TDev(Γels_cpu)
 
         return new{
             nDim,
@@ -67,29 +74,23 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, T5, T6} <: AbstractMesh
             typeof(coords),
             typeof(DoFs),
             typeof(el2n),
-            typeof(n2el),
             typeof(Γnodes),
-            typeof(Γels),
-        }(Ω, Γ, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, length(n2el) == 0 ? 0 : size(el2n, 2))
+        }(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2))
     end
 
     function Mesh(backend, coords_cpu::Vector{SVector{nDim, T}}, el2n_cpu::Matrix{Int32}; order::Int = 1) where {nDim, T}
         TDev       = TA(backend)
         nnodes     = length(coords_cpu)
         DoFs_cpu   = Int32.(1:nnodes)
-        n2el_cpu   = generate_node2element(el2n_cpu, nnodes)
         Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu)
-        Γels_cpu   = generate_boundary_elements(Γnodes_cpu, n2el_cpu)
 
         coords = TDev(coords_cpu)
         DoFs   = TDev(DoFs_cpu)
         el2n   = TDev(el2n_cpu)
-        n2el   = n2el_cpu
         Γnodes = TDev(Γnodes_cpu)
-        Γels   = TDev(Γels_cpu)
 
-        return new{nDim, order, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(n2el), typeof(Γnodes), typeof(Γels)}(
-            nothing, nothing, coords, DoFs, el2n, n2el, Γnodes, Γels, nnodes, size(el2n_cpu, 2)
+        return new{nDim, order, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes)}(
+            nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2)
         )
     end
 end
@@ -97,6 +98,29 @@ end
 Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
+
+function Mesh(
+    element::ReferenceElement{T},
+    Ω::D,        # model domain
+    Γ::B,        # model boundary
+    coords::Vector{SVector{nDim, FP}},  # vertex coordinates
+    DoFs::T2,    # degrees of freedom
+    el2n::T3,    # element-to-node connectivity
+    Γnodes::T4,  # boundary nodes
+) where {D, B, nDim, FP, T2, T3, T4, T<:AbstractElement{nDim}}
+
+    return Mesh{
+        nDim,
+        order(element),
+        D,
+        B,
+        typeof(coords),
+        T2,
+        T3,
+        T4,
+    }(Ω, Γ, coords, DoFs, el2n, Γnodes, length(coords), size(el2n, 2))
+
+end
 
 """
     _unstructured_boundary_nodes(el2n) -> Vector{Int32}

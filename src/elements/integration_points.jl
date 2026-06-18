@@ -52,27 +52,34 @@ end
 """
     IntegrationPoints(::LinearElement{2, 3})
 
-Return the one-point centroid rule on the reference triangle.
-"""
-function IntegrationPoints(::LinearElement{2, 3, T}) where T
-    ξ = SVector(T.(1 / 3))
-    η = SVector(T.(1 / 3))
-    ζ = nothing
-    ω = SVector(T.(1 / 2))
-    return IntegrationPoints{2, 1, T}(ξ, η, ζ, ω)
-end
-
-"""
-    IntegrationPoints(::QuadraticElement{2, 6})
-
 Return a three-point degree-two rule on the reference triangle.
 """
-function IntegrationPoints(::QuadraticElement{2, 6, T}) where T
+function IntegrationPoints(::LinearElement{2, 3, T}) where T
     ξ = SVector(T.((1 / 6, 2 / 3, 1 / 6))...)
     η = SVector(T.((1 / 6, 1 / 6, 2 / 3))...)
     ζ = nothing
     ω = SVector(T.((1 / 6, 1 / 6, 1 / 6))...)
     return IntegrationPoints{2, 3, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{2, 6})
+
+Return a six-point degree-four rule on the reference triangle.
+"""
+function IntegrationPoints(::QuadraticElement{2, 6, T}) where T
+    a = T(0.816847572980459)
+    b = T(0.091576213509771)
+    c = T(0.108103018168070)
+    d = T(0.445948490915965)
+    w1 = T(0.054975871827661)
+    w2 = T(0.111690794839005)
+
+    ξ = SVector(b, a, b, d, c, d)
+    η = SVector(b, b, a, d, d, c)
+    ζ = nothing
+    ω = SVector(w1, w1, w1, w2, w2, w2)
+    return IntegrationPoints{2, 6, T}(ξ, η, ζ, ω)
 end
 
 """

@@ -9,12 +9,13 @@ Returns a vector `colors` where `colors[iel]` is the color assigned to element
 """
 function color_mesh_greedy(mesh)
     colors = zeros(Int, mesh.nels)
+    n2el = generate_node2element(Array(mesh.el2n), mesh.nnodes)
 
     for iel in 1:mesh.nels
         # Collect colors already used by node-adjacent elements.
         used_colors = Set{Int}()
         for node in @view mesh.el2n[:, iel]
-            for jel in mesh.n2el[node]
+            for jel in n2el[node]
                 color = colors[jel]
                 if color != 0
                     push!(used_colors, color)

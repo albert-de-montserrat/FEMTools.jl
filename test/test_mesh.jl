@@ -128,9 +128,7 @@ for FP in (FP32, FP64)
         @test mesh.coords ≈ [0.0, 10 / 6, 10 / 3, 5.0, 20 / 3, 50 / 6, 10.0]
         @test mesh.DoFs == Int32[1, 2, 3, 4, 5, 6, 7]
         @test mesh.el2n == Int32[1 3 5; 2 4 6; 3 5 7]
-        @test mesh.n2el == Vector{Int32}[[1], [1], [1, 2], [2], [2, 3], [3], [3]]
         @test mesh.Γnodes == Int32[1, 7]
-        @test mesh.Γels == Int32[1, 3]
         @test mesh.nnodes == 7
         @test mesh.nels == 3
 
@@ -183,9 +181,10 @@ for FP in (FP32, FP64)
         colors = color_mesh(mesh)
 
         function is_valid_coloring(mesh, colors)
+            n2el = generate_node2element(mesh.el2n, mesh.nnodes)
             for iel in 1:mesh.nels
                 for node in @view mesh.el2n[:, iel]
-                    for jel in mesh.n2el[node]
+                    for jel in n2el[node]
                         if jel != iel && colors[jel] == colors[iel]
                             return false
                         end

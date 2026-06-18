@@ -365,6 +365,7 @@ end
     return _eval_shape_function(element.shape_functions.∇N, coords)
 end
 
+
 """
     shape_function_values(element)
 
@@ -375,8 +376,7 @@ entry is an `SVector` of length `N` (number of local nodes) holding `Nᵢ(ξ_q)`
 for node `i` at quadrature point `q`.  Used inside assembly kernels to form the
 consistent mass matrix and source-term integrals.
 """
-@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{1}
-    ip = element.integration_points
+@inline function shape_function_values(element::ReferenceElement{T}, ip) where T<:AbstractElement{1}
     NQ = length(ip.ω)
     coords = ntuple(NQ) do q
         SVector(ip.ξ[q])
@@ -384,8 +384,8 @@ consistent mass matrix and source-term integrals.
     return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
 end
 
-@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{2}
-    ip = element.integration_points
+
+@inline function shape_function_values(element::ReferenceElement{T}, ip) where T<:AbstractElement{2}
     NQ = length(ip.ω)
     coords = ntuple(NQ) do q
         SVector(ip.ξ[q], ip.η[q])
@@ -393,8 +393,7 @@ end
     return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
 end
 
-@inline function shape_function_values(element::ReferenceElement{T}) where T<:AbstractElement{3}
-    ip = element.integration_points
+@inline function shape_function_values(element::ReferenceElement{T}, ip) where T<:AbstractElement{3}
     NQ = length(ip.ω)
     coords = ntuple(NQ) do q
         SVector(ip.ξ[q], ip.η[q], ip.ζ[q])
@@ -402,6 +401,7 @@ end
     return ntuple(q -> eval_shape_function(element, coords[q]), NQ)
 end
 
+@inline shape_function_values(element::ReferenceElement) = shape_function_values(element, element.integration_points)
 
 """
     _eval_shape_function(N, coords)

@@ -52,6 +52,7 @@ include("elements/integration_points.jl")
 # sparsity patterns, and conflict-free element coloring.
 include("mesh/connectivity.jl")
 include("mesh/mesh.jl")
+include("mesh/mixed_mesh.jl")
 include("mesh/sparsity.jl")
 include("mesh/coloring.jl")
 
@@ -80,7 +81,7 @@ export AbstractLinearElement,
 export LinearElement, QuadraticElement, CubicElement
 export ReferenceElement, ShapeFunctions, IntegrationPoints
 export order
-export Mesh
+export Mesh, MixedMesh
 export DirichletBoundaryCondition, apply_bc!
 
 # Mesh construction and graph utilities.
@@ -92,7 +93,8 @@ export generate_element2node,
     generate_sparsity_pattern,
     color_mesh,
     color_mesh_greedy,
-    build_element_groups
+    build_element_groups,
+    build_discontinuous_linear_mesh
 
 # Reference-element evaluation helpers.
 export eval_shape_function,
