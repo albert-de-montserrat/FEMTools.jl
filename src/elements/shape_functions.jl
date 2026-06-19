@@ -150,57 +150,31 @@ Return the nine tensor-product quadratic shape functions and gradients on the
 reference quadrilateral `-1 <= ξ <= 1`, `-1 <= η <= 1`.
 """
 function ShapeFunctions(::QuadraticElement{2, 9, T}) where T
-    N1 = (ξ, η) -> _quadratic_line_N1(ξ) * _quadratic_line_N1(η)
-    N2 = (ξ, η) -> _quadratic_line_N3(ξ) * _quadratic_line_N1(η)
-    N3 = (ξ, η) -> _quadratic_line_N3(ξ) * _quadratic_line_N3(η)
-    N4 = (ξ, η) -> _quadratic_line_N1(ξ) * _quadratic_line_N3(η)
-    N5 = (ξ, η) -> _quadratic_line_N2(ξ) * _quadratic_line_N1(η)
-    N6 = (ξ, η) -> _quadratic_line_N3(ξ) * _quadratic_line_N2(η)
-    N7 = (ξ, η) -> _quadratic_line_N2(ξ) * _quadratic_line_N3(η)
-    N8 = (ξ, η) -> _quadratic_line_N1(ξ) * _quadratic_line_N2(η)
-    N9 = (ξ, η) -> _quadratic_line_N2(ξ) * _quadratic_line_N2(η)
-
-    ∇N1 = (ξ, η) -> (
-        _quadratic_line_∇N1(ξ) * _quadratic_line_N1(η),
-        _quadratic_line_N1(ξ) * _quadratic_line_∇N1(η),
-    )
-    ∇N2 = (ξ, η) -> (
-        _quadratic_line_∇N3(ξ) * _quadratic_line_N1(η),
-        _quadratic_line_N3(ξ) * _quadratic_line_∇N1(η),
-    )
-    ∇N3 = (ξ, η) -> (
-        _quadratic_line_∇N3(ξ) * _quadratic_line_N3(η),
-        _quadratic_line_N3(ξ) * _quadratic_line_∇N3(η),
-    )
-    ∇N4 = (ξ, η) -> (
-        _quadratic_line_∇N1(ξ) * _quadratic_line_N3(η),
-        _quadratic_line_N1(ξ) * _quadratic_line_∇N3(η),
-    )
-    ∇N5 = (ξ, η) -> (
-        _quadratic_line_∇N2(ξ) * _quadratic_line_N1(η),
-        _quadratic_line_N2(ξ) * _quadratic_line_∇N1(η),
-    )
-    ∇N6 = (ξ, η) -> (
-        _quadratic_line_∇N3(ξ) * _quadratic_line_N2(η),
-        _quadratic_line_N3(ξ) * _quadratic_line_∇N2(η),
-    )
-    ∇N7 = (ξ, η) -> (
-        _quadratic_line_∇N2(ξ) * _quadratic_line_N3(η),
-        _quadratic_line_N2(ξ) * _quadratic_line_∇N3(η),
-    )
-    ∇N8 = (ξ, η) -> (
-        _quadratic_line_∇N1(ξ) * _quadratic_line_N2(η),
-        _quadratic_line_N1(ξ) * _quadratic_line_∇N2(η),
-    )
-    ∇N9 = (ξ, η) -> (
-        _quadratic_line_∇N2(ξ) * _quadratic_line_N2(η),
-        _quadratic_line_N2(ξ) * _quadratic_line_∇N2(η),
+    nodes = (
+        (-one(T), -one(T)),
+        (+one(T), -one(T)),
+        (+one(T), +one(T)),
+        (-one(T), +one(T)),
+        (zero(T), -one(T)),
+        (+one(T), zero(T)),
+        (zero(T), +one(T)),
+        (-one(T), zero(T)),
+        (zero(T), zero(T)),
     )
 
-    return ShapeFunctions(
-        (N1, N2, N3, N4, N5, N6, N7, N8, N9),
-        (∇N1, ∇N2, ∇N3, ∇N4, ∇N5, ∇N6, ∇N7, ∇N8, ∇N9),
-    )
+    N = ntuple(Val(9)) do i
+        node = nodes[i]
+        (ξ, η) -> _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2])
+    end
+    ∇N = ntuple(Val(9)) do i
+        node = nodes[i]
+        (ξ, η) -> (
+            _quadratic_line_∇N(ξ, node[1]) * _quadratic_line_N(η, node[2]),
+            _quadratic_line_N(ξ, node[1]) * _quadratic_line_∇N(η, node[2]),
+        )
+    end
+
+    return ShapeFunctions(N, ∇N)
 end
 
 """
