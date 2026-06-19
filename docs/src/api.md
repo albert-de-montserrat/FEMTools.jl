@@ -7,6 +7,7 @@ Modules = [FEMTools]
 ## Heat Diffusion
 
 ```@docs
+ThermalDiffusionDR
 solver!
 apply_dirichlet!
 assemble_diffusion_matrices_atomix!
@@ -30,6 +31,8 @@ FEMTools.lp_integrate_residual
 ## Mesh Helpers
 
 ```@docs
+MixedMesh
+build_discontinuous_linear_mesh
 build_element_groups
 FEMTools.element_coordinate_matrix
 FEMTools._unstructured_boundary_nodes
@@ -40,5 +43,6 @@ FEMTools._unstructured_boundary_nodes
 ```@docs
 shape_function_values
 FEMTools.interp2ip
+FEMTools.interp2ip_phase
 FEMTools._eval_shape_function
 ```

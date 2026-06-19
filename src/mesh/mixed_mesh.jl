@@ -1,4 +1,24 @@
+"""
+    MixedMesh{nDim, O1, O2, ...}
+    MixedMesh(element, elementP, coords, DoFs, el2n, DoFsP, el2nP)
 
+Mixed finite-element mesh storing separate connectivities for two fields.
+
+`O1` is the polynomial order of the primary field (e.g. velocity) and `O2` is
+the order of the secondary field (e.g. pressure). Both fields share the same
+element geometry (`coords`, `nels`) but have independent node numbering and
+degree-of-freedom maps.
+
+Fields:
+- `coords`  : vertex coordinates (`AbstractVector{SVector{nDim, T}}`).
+- `nels`    : number of elements.
+- `DoFs`    : primary-field degree-of-freedom indices.
+- `el2n`    : primary element-to-node connectivity (`N1 × nels`).
+- `nnodes`  : number of primary-field nodes.
+- `DoFsP`   : secondary-field degree-of-freedom indices.
+- `el2nP`   : secondary element-to-node connectivity (`N2 × nels`).
+- `nnodesP` : number of secondary-field nodes.
+"""
 struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5} <: AbstractMesh
     coords::T1  # vertex coordinates
     nels::Int   # number of elements
@@ -67,7 +87,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    build_pressure_mesh_P1disc(coords, el2n)
+    build_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
 Build the linear triangle topology and element-to-DoF map for discontinuous
 linear pressure elements.

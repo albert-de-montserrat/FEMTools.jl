@@ -9,6 +9,8 @@ graph coloring.
 ```@docs
 FEMTools.AbstractMesh
 Mesh
+MixedMesh
+build_discontinuous_linear_mesh
 ```
 
 ## Coordinates and Degrees of Freedom

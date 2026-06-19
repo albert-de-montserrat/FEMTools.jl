@@ -16,6 +16,16 @@ scalar type as the entries of `N`.
     end
 end
 
+"""
+    interp2ip_phase(N, var, phase)
+
+Interpolate a per-phase material property to one integration point.
+
+`N` is the `SVector{M}` of shape-function values at the quadrature point.
+`var` is an `NTuple` of per-phase scalars. `phase` is an `SVector{M, Int}` of
+per-node phase indices (1-based). At node `i`, `var[phase[i]]` is the property
+value, and it is weighted by `N[i]` and accumulated.
+"""
 @generated function interp2ip_phase(N::SVector{M, T}, var, phase) where {M, T}
     quote
         @inline
