@@ -166,14 +166,14 @@ the shape functions, then combined through the linearised EOS:
         ∂N∂x, dΩ = geo_el[q]
         Nv  = Nq[q]
         Tq  = dot(Nv, Tloc)
-        P   = dot(Nv, Ploc)
+        Pq  = dot(Nv, Ploc)
         tmp = ∂N∂x' * Tloc
-        kq  = sum(Nv[p] *  k[phase_loc[p]] for p in eachindex(phase_loc))
-        αq  = sum(Nv[p] *  α[phase_loc[p]] for p in eachindex(phase_loc))
-        Kq  = sum(Nv[p] *  K[phase_loc[p]] for p in eachindex(phase_loc))
-        ρ0q = sum(Nv[p] * ρ0[phase_loc[p]] for p in eachindex(phase_loc))
-        Cpq = sum(Nv[p] * Cp[phase_loc[p]] for p in eachindex(phase_loc))
-        ρq  = ρ0q * (1 - αq * (Tq - Tref) + P / Kq)
+        kq  = interp2ip_phase(Nv,  k, phase_loc)
+        αq  = interp2ip_phase(Nv,  α, phase_loc)
+        Kq  = interp2ip_phase(Nv,  K, phase_loc)
+        ρ0q = interp2ip_phase(Nv, ρ0, phase_loc)
+        Cpq = interp2ip_phase(Nv, Cp, phase_loc)
+        ρq  = ρ0q * (1 - αq * (Tq - Tref) + Pq / Kq)
         KTloc = kq * (∂N∂x * tmp)
         Re   += SVector{N}(ntuple(
             i -> (-Tloc[i] + T0loc[i] + Δt / (ρq * Cpq) * sloc[i]) * Nv[i] * dΩ -

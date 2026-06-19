@@ -42,6 +42,8 @@ available when that package is loaded.
 """
 TA(::CPU) = Array
 
+include("utils.jl")
+
 # Reference-element definitions come first because the remaining source files
 # extend constructors and methods specialized on these tags.
 include("elements/elements.jl")

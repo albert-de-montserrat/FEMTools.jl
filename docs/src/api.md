@@ -39,5 +39,6 @@ FEMTools._unstructured_boundary_nodes
 
 ```@docs
 shape_function_values
+FEMTools.interp2ip
 FEMTools._eval_shape_function
 ```

@@ -57,6 +57,27 @@ end
     @test r ≈ SA[-4.02, 4.02]
 end
 
+@testset "lithostatic element jacobian includes EOS pressure term" begin
+    dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
+    geo = (((dNdx, 1.0),),)
+    Nq = (SA[0.5, 0.5],)
+    el2n = reshape(Int32[1, 2], 2, 1)
+    T = [300.0, 300.0]
+    P = [2.0, 0.0]
+    phases = [1, 1]
+    ρ0 = (2.0,)
+    α = (0.1,)
+    K = (100.0,)
+
+    local_nodes, rowsums, diags = FEMTools.lp_element_jacobian(
+        T, P, el2n, geo, phases, ρ0, α, K, 300.0, SA[0.0, -1.0], Nq, 1, Val(2),
+    )
+
+    @test local_nodes == SA[1, 2]
+    @test rowsums ≈ SA[2.0, 2.0]
+    @test diags ≈ SA[1.01, 0.99]
+end
+
 @testset "lithostatic residual multi-phase" begin
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
     geo_el = ((dNdx, 1.0),)
