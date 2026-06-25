@@ -99,6 +99,17 @@ Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
 
+"""
+    Mesh(element, Ω, Γ, coords, DoFs, el2n, Γnodes)
+
+Construct a `Mesh` from pre-assembled arrays, bypassing the structured generator.
+
+Use this when the coordinates, connectivity, and boundary nodes have already been
+built externally (e.g. from an imported mesh or after manually postprocessing a
+structured mesh). `element` supplies the polynomial order stored in the type
+parameter `O`. The remaining arguments are stored verbatim: no generation, no
+boundary detection.
+"""
 function Mesh(
     element::ReferenceElement{T},
     Ω::D,        # model domain
@@ -225,6 +236,94 @@ function generate_coordinates(
     right = rightendpoint(Ω)
     xs = LinRange(left[1], right[1], nx + 1)
     ys = LinRange(left[2], right[2], ny + 1)
+
+    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
+    inode = 1
+    for y in ys, x in xs
+        coords[inode] = SVector{2, T}(x, y)
+        inode += 1
+    end
+
+    return coords
+end
+
+"""
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 7}}, Ω, nels)
+
+Generate coordinates for a structured T7 mesh (T6 + centroid bubble node).
+
+The first `(2nx+1)×(2ny+1)` entries are the T6 tensor-grid nodes (identical
+to `QuadraticElement{2, 6}`). The remaining `2·nx·ny` entries are the element
+centroids, appended one per element in the same loop order used by
+`generate_element2node(QuadraticElement{2, 7})`: `ey` outer, `ex` inner,
+first triangle then second triangle of each quad cell.
+"""
+function generate_coordinates(
+    ::ReferenceElement{QuadraticElement{2, 7, T}},
+    Ω,
+    nels::NTuple{2, <:Integer},
+) where {T}
+    nx, ny = nels
+    left   = leftendpoint(Ω)
+    right  = rightendpoint(Ω)
+    x0, y0 = left[1], left[2]
+    dx = (right[1] - x0) / nx
+    dy = (right[2] - y0) / ny
+
+    xs = LinRange(x0, right[1], 2nx + 1)
+    ys = LinRange(y0, right[2], 2ny + 1)
+
+    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys) + 2 * nx * ny)
+
+    inode = 1
+    for y in ys, x in xs
+        coords[inode] = SVector{2, T}(x, y)
+        inode += 1
+    end
+
+    # Centroid nodes — one per element, matching generate_element2node order.
+    for ey in 0:(ny - 1), ex in 0:(nx - 1)
+        if iseven(ex + ey)
+            # Triangle A (lower-right): BL + BR + TR centroid
+            coords[inode] = SVector{2, T}(x0 + (3ex + 2) * dx / 3, y0 + (3ey + 1) * dy / 3)
+            inode += 1
+            # Triangle B (upper-left): BL + TR + TL centroid
+            coords[inode] = SVector{2, T}(x0 + (3ex + 1) * dx / 3, y0 + (3ey + 2) * dy / 3)
+            inode += 1
+        else
+            # Triangle C (lower-left): BL + BR + TL centroid
+            coords[inode] = SVector{2, T}(x0 + (3ex + 1) * dx / 3, y0 + (3ey + 1) * dy / 3)
+            inode += 1
+            # Triangle D (upper-right): BR + TR + TL centroid
+            coords[inode] = SVector{2, T}(x0 + (3ex + 2) * dx / 3, y0 + (3ey + 2) * dy / 3)
+            inode += 1
+        end
+    end
+
+    return coords
+end
+
+"""
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 6}}, Ω, nels)
+
+Generate coordinates for a structured quadratic triangular (T6) mesh.
+
+Nodes lie on the same refined `(2nx + 1) × (2ny + 1)` tensor-product grid as
+`QuadraticElement{2, 9}`, with the x-coordinate varying fastest. Corner nodes
+occupy even grid positions, edge-midpoint nodes occupy positions where exactly
+one index is odd, and cell-center nodes (diagonal midpoints) occupy positions
+where both indices are odd.
+"""
+function generate_coordinates(
+    ::ReferenceElement{QuadraticElement{2, 6, T}},
+    Ω,
+    nels::NTuple{2, <:Integer},
+) where {T}
+    nx, ny = nels
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    xs = LinRange(left[1], right[1], 2nx + 1)
+    ys = LinRange(left[2], right[2], 2ny + 1)
 
     coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
     inode = 1

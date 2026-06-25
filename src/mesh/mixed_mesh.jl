@@ -82,6 +82,36 @@ function MixedMesh(
     )
 end
 
+"""
+    MixedMesh(mesh_v, element_P) -> MixedMesh
+
+Construct a mixed velocity–pressure mesh from a pre-built velocity mesh and a
+pressure reference element.
+
+The pressure field is treated as **discontinuous linear** (P1-disc): each
+triangle gets its own three pressure DoFs, built internally via
+`build_discontinuous_linear_mesh`. `mesh_v` supplies coordinates, velocity
+DoF indices, and velocity connectivity; `element_P` supplies the pressure
+polynomial order stored in the `MixedMesh` type parameter.
+
+This constructor always extracts CPU arrays from `mesh_v`, so it works
+transparently regardless of the backend used to build `mesh_v`.
+"""
+function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {nDim, O1}
+    coords_cpu = Array(mesh_v.coords)
+    el2n_cpu   = Array(mesh_v.el2n)
+    DoFs_cpu   = Array(mesh_v.DoFs)
+    el2nP_geo, DoFsP, _ = build_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
+    return MixedMesh{
+        nDim, O1, order(element_P),
+        typeof(coords_cpu), typeof(DoFs_cpu),
+        typeof(el2n_cpu),  typeof(DoFsP), typeof(el2nP_geo),
+    }(
+        coords_cpu, DoFs_cpu, el2n_cpu, length(coords_cpu), size(el2n_cpu, 2),
+        DoFsP, el2nP_geo, prod(size(el2nP_geo)),
+    )
+end
+
 # ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------

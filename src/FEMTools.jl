@@ -72,6 +72,12 @@ include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
 include("lithostatic_pressure/assembly/residual.jl")
 include("lithostatic_pressure/solvers/DR.jl")
 
+# Stokes solver: types and assembly.
+include("stokes/types/stokes_types.jl")
+include("stokes/assemblers/pressure_residual.jl")
+include("stokes/assemblers/pressure_scaling.jl")
+include("stokes/assemblers/momentum_residuals.jl")
+
 # Public type hierarchy and constructors.
 export AbstractElement
 export AbstractLinearElement,
@@ -102,18 +108,30 @@ export generate_element2node,
 export eval_shape_function,
     eval_shape_function_gradient,
     eval_shape_function_jacobian,
-    shape_function_values
+    shape_function_values,
+    gauss_legendre_triangle
 
 # Heat-diffusion solver.
 export ThermalDiffusionDR,
     solver!,
     assemble_diffusion_matrices_atomix!,
     assemble_diffusion_matrices_colored!,
-    apply_dirichlet!
+    apply_dirichlet!,
+    update_rate_kernel!,
+    update_variable_kernel!,
+    precompute_geometry_kernel!
 
 # Lithostatic-pressure solver.
 export LithostaticPressureDR,
     assemble_lithostatic_pressure_matrices_atomix!,
     assemble_lithostatic_pressure_matrices_colored!
+
+# Stokes solver.
+export StokesDR, DruckerPrager,
+    assemble_momentum_residual_matrices_atomix!,
+    assemble_momentum_jacobian_matrices_atomix!,
+    assemble_augmented_momentum_jacobian_matrices_atomix!,
+    assemble_viscosity_weighted_pressure_scaling!,
+    assemble_pressure_residual_matrices_atomix!
 
 end # module FEMTools

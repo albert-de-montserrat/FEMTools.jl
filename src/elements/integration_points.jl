@@ -23,6 +23,75 @@ Construct integration points for element type `T`.
 """
 IntegrationPoints(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = IntegrationPoints(T())
 
+# ---------------------------------------------------------------------------
+# Triangular Gauss-Legendre grid generator (Duffy transform)
+# ---------------------------------------------------------------------------
+
+"""
+    gauss_legendre_triangle([T=Float64,] n) -> IntegrationPoints{2, n², T}
+
+Generate `n²` Gauss-Legendre integration points on the reference triangle
+`{ξ≥0, η≥0, ξ+η≤1}` via the Duffy transform.
+
+The `n`-point Gauss-Legendre rule on `[-1,1]` is collapsed onto the triangle
+using the substitution
+
+    ξ = s,    η = t·(1−s),    dΩ = (1−s)·ds dt
+
+where `s,t ∈ [0,1]`.  Because the Duffy Jacobian `(1−s)` costs one polynomial
+degree in the `s`-direction, the rule is exact for bivariate polynomials of
+total degree ≤ **2n−2**.  Use `n = ceil((d+4)/2)` to integrate degree `d`
+exactly.  For straight-sided T6/T7 elements (affine Jacobian, degree-4
+integrands) `n=3` (9 points) suffices.
+
+The GL abscissas are computed via the Golub–Welsch algorithm (eigendecomposition
+of the symmetric tridiagonal Jacobi matrix); weights are exact to machine
+precision for any `n`.
+"""
+gauss_legendre_triangle(n::Int) = gauss_legendre_triangle(Float64, n)
+
+function gauss_legendre_triangle(::Type{T}, n::Int) where {T <: AbstractFloat}
+    s1d, w1d = _gauss_legendre_01(T, n)
+
+    nq  = n^2
+    ξv  = Vector{T}(undef, nq)
+    ηv  = Vector{T}(undef, nq)
+    ωv  = Vector{T}(undef, nq)
+
+    q = 1
+    for i in 1:n
+        si, wi = s1d[i], w1d[i]
+        for j in 1:n
+            sj, wj = s1d[j], w1d[j]
+            ξv[q] = si
+            ηv[q] = sj * (1 - si)
+            ωv[q] = wi * wj * (1 - si)
+            q += 1
+        end
+    end
+
+    return IntegrationPoints{2, nq, T}(
+        SVector{nq, T}(ξv),
+        SVector{nq, T}(ηv),
+        nothing,
+        SVector{nq, T}(ωv),
+    )
+end
+
+# Compute n Gauss-Legendre abscissas and weights on [0,1] via Golub-Welsch.
+function _gauss_legendre_01(::Type{T}, n::Int) where {T <: AbstractFloat}
+    n == 1 && return (SVector{1,T}(T(1)/2),  SVector{1,T}(one(T)))
+
+    # Off-diagonal entries of the symmetric Jacobi matrix for Legendre polys
+    β = T[i / sqrt(T(4i^2 - 1)) for i in 1:(n - 1)]
+    # Eigendecomposition of the symmetric tridiagonal matrix (diagonal = 0)
+    vals, vecs = eigen(SymTridiagonal(zeros(T, n), β))
+    # GL points on [-1,1] → shift to [0,1]; weights = 2*(v₁ᵢ)² → divide by 2
+    pts = SVector{n,T}((vals .+ 1) ./ 2)
+    wts = SVector{n,T}(vecs[1, :] .^ 2)   # already normalised: sum = 1
+    return pts, wts
+end
+
 """
     IntegrationPoints(::LinearElement{1, 2})
 
@@ -80,6 +149,32 @@ function IntegrationPoints(::QuadraticElement{2, 6, T}) where T
     ζ = nothing
     ω = SVector(w1, w1, w1, w2, w2, w2)
     return IntegrationPoints{2, 6, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{2, 7})
+
+Return the 7-point degree-5 Dunavant rule on the reference triangle.
+
+The rule integrates polynomials of degree ≤ 5 exactly — sufficient for the
+cubic bubble of the T7 element. Points come from two symmetric orbits around
+the centroid plus the centroid itself; weights sum to 1/2 (area of the
+reference triangle).
+"""
+function IntegrationPoints(::QuadraticElement{2, 7, T}) where T
+    a1 = T(0.101286507323456)
+    a2 = T(0.470142064105115)
+    b1 = 1 - 2a1              # 0.797426985353088
+    b2 = 1 - 2a2              # 0.059715871789770
+    w1 = T(0.062969590272414)
+    w2 = T(0.066197076394253)
+    wc = T(0.112500000000000)  # 9/80
+
+    ξ = SVector(a1, b1, a1, a2, b2, a2, T(1/3))
+    η = SVector(a1, a1, b1, a2, a2, b2, T(1/3))
+    ζ = nothing
+    ω = SVector(w1, w1, w1, w2, w2, w2, wc)
+    return IntegrationPoints{2, 7, T}(ξ, η, ζ, ω)
 end
 
 """

@@ -84,6 +84,76 @@ function ShapeFunctions(::QuadraticElement{2, 6, T}) where T
     return ShapeFunctions((N1, N2, N3, N4, N5, N6), (∇N1, ∇N2, ∇N3, ∇N4, ∇N5, ∇N6))
 end
 
+"""
+    ShapeFunctions(::QuadraticElement{2, 7})
+
+Return the seven shape functions and gradients for the T7 element: the
+standard T6 quadratic triangle enriched with a cubic bubble at the centroid.
+
+Node layout (same as T6 for nodes 1–6; node 7 at the centroid):
+
+```
+    3
+    |\\
+    6  5
+    |   \\
+    1--4--2
+       7 (centroid, at ξ=η=1/3)
+```
+
+The bubble function is `N7 = 27·L1·L2·L3` (value 1 at centroid, 0 on all
+edges). Nodes 1–6 are corrected to preserve the Kronecker-delta and
+partition-of-unity properties:
+
+    Nᵢ = Nᵢ_T6 + N7/9    (corner nodes 1–3)
+    Nᵢ = Nᵢ_T6 − 4·N7/9  (edge-midpoint nodes 4–6)
+"""
+function ShapeFunctions(::QuadraticElement{2, 7, T}) where T
+    # Bubble and its partial derivatives
+    bubble(ξ, η)   = T(27) * (1 - ξ - η) * ξ * η
+    ∂b∂ξ(ξ, η)    = T(27) * η * (1 - 2ξ - η)
+    ∂b∂η(ξ, η)    = T(27) * ξ * (1 - ξ - 2η)
+
+    # Corner nodes: T6 function + bubble/9
+    N1 = (ξ, η) -> begin
+        L1 = 1 - ξ - η
+        L1 * (2L1 - 1) + bubble(ξ, η) / 9
+    end
+    N2 = (ξ, η) -> ξ * (2ξ - 1) + bubble(ξ, η) / 9
+    N3 = (ξ, η) -> η * (2η - 1) + bubble(ξ, η) / 9
+
+    # Edge-midpoint nodes: T6 function − 4·bubble/9
+    N4 = (ξ, η) -> 4 * (1 - ξ - η) * ξ - 4 * bubble(ξ, η) / 9
+    N5 = (ξ, η) -> 4 * ξ * η            - 4 * bubble(ξ, η) / 9
+    N6 = (ξ, η) -> 4 * η * (1 - ξ - η) - 4 * bubble(ξ, η) / 9
+
+    # Bubble node
+    N7 = (ξ, η) -> bubble(ξ, η)
+
+    # Gradients — (∂N/∂ξ, ∂N/∂η)
+    ∇N1 = (ξ, η) -> begin
+        L1 = 1 - ξ - η
+        (1 - 4L1 + ∂b∂ξ(ξ, η) / 9,
+         1 - 4L1 + ∂b∂η(ξ, η) / 9)
+    end
+    ∇N2 = (ξ, η) -> (4ξ - 1 + ∂b∂ξ(ξ, η) / 9,
+                           ∂b∂η(ξ, η) / 9)
+    ∇N3 = (ξ, η) -> (      ∂b∂ξ(ξ, η) / 9,
+                      4η - 1 + ∂b∂η(ξ, η) / 9)
+    ∇N4 = (ξ, η) -> (4 * (1 - 2ξ - η) - 4 * ∂b∂ξ(ξ, η) / 9,
+                      -4ξ               - 4 * ∂b∂η(ξ, η) / 9)
+    ∇N5 = (ξ, η) -> (4η - 4 * ∂b∂ξ(ξ, η) / 9,
+                      4ξ - 4 * ∂b∂η(ξ, η) / 9)
+    ∇N6 = (ξ, η) -> (-4η               - 4 * ∂b∂ξ(ξ, η) / 9,
+                      4 * (1 - ξ - 2η) - 4 * ∂b∂η(ξ, η) / 9)
+    ∇N7 = (ξ, η) -> (∂b∂ξ(ξ, η), ∂b∂η(ξ, η))
+
+    return ShapeFunctions(
+        (N1, N2, N3, N4, N5, N6, N7),
+        (∇N1, ∇N2, ∇N3, ∇N4, ∇N5, ∇N6, ∇N7),
+    )
+end
+
 _quadratic_line_N1(ξ::T) where T = ξ * (ξ - 1) * T(1/2)
 _quadratic_line_N2(ξ::T) where T = 1 - ξ^2
 _quadratic_line_N3(ξ::T) where T = ξ * (ξ + 1) * T(1/2)

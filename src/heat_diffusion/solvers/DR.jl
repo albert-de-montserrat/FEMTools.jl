@@ -98,11 +98,29 @@ end
 # Pseudo-transient update kernels
 # ---------------------------------------------------------------------------
 
+"""
+    update_rate_kernel!(∂u∂τ, R, PC, β)
+
+KernelAbstractions kernel for the Chebyshev-accelerated pseudo-transient rate update.
+
+Sets `∂u∂τ[i] = R[i] / PC[i] + β * ∂u∂τ[i]`. With `β = 0` this is a plain
+preconditioned gradient-descent step; with `β > 0` it is the momentum term of
+the Chebyshev recurrence. `PC` is the diagonal preconditioner (units of
+stiffness); `R` is the assembled residual.
+"""
 @kernel function update_rate_kernel!(∂u∂τ, @Const(R), @Const(PC), β)
     i = @index(Global)
     ∂u∂τ[i] = R[i] / PC[i] + β * ∂u∂τ[i]
 end
 
+"""
+    update_variable_kernel!(u, ∂u∂τ, α_dr)
+
+KernelAbstractions kernel that advances the solution by one pseudo-transient step.
+
+Sets `u[i] += α_dr * ∂u∂τ[i]`, where `∂u∂τ` holds the current rate (as
+produced by `update_rate_kernel!`) and `α_dr` is the Chebyshev step size.
+"""
 @kernel function update_variable_kernel!(u, @Const(∂u∂τ), α_dr)
     i = @index(Global)
     u[i] += α_dr * ∂u∂τ[i]
