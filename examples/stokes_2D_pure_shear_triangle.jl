@@ -15,6 +15,14 @@ using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, Da
 const backend   = CPU()
 const workgroup = 128
 
+"""
+    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
+
+Fill per-element geometry data on the configured backend.
+
+This wrapper launches `precompute_geometry_kernel!` with the example-wide
+`backend` and `workgroup` constants, then synchronizes before returning.
+"""
 function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
     precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);
@@ -24,6 +32,11 @@ function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels)
     return nothing
 end
 
+"""
+    update_rate!(∂u∂τ, R, PC, β, ndofs) -> Nothing
+
+Advance a pseudo-transient rate field with diagonal preconditioning.
+"""
 function update_rate!(∂u∂τ, R, PC, β, ndofs)
     update_rate_kernel!(backend, workgroup)(
         ∂u∂τ, R, PC, β;
@@ -33,6 +46,11 @@ function update_rate!(∂u∂τ, R, PC, β, ndofs)
     return nothing
 end
 
+"""
+    update_variable!(u, ∂u∂τ, α_dr, ndofs) -> Nothing
+
+Apply a damped pseudo-transient increment to a solution field.
+"""
 function update_variable!(u, ∂u∂τ, α_dr, ndofs)
     update_variable_kernel!(backend, workgroup)(
         u, ∂u∂τ, α_dr;
@@ -42,6 +60,15 @@ function update_variable!(u, ∂u∂τ, α_dr, ndofs)
     return nothing
 end
 
+"""
+    remove_pressure_mean!(P, MP) -> Number
+
+Remove the mass-weighted mean pressure and return the removed gauge offset.
+
+The Stokes pressure is defined up to an additive constant. Projecting out this
+constant mode prevents the Powell-Hestenes pressure update from drifting by a
+large uniform offset that has no physical content.
+"""
 function remove_pressure_mean!(P, MP)
     p_mean = sum(P .* MP) / sum(MP)
     @. P -= p_mean
@@ -53,6 +80,15 @@ end
 @inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where N =
     SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
 
+"""
+    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v) -> NamedTuple
+
+Compute element-averaged strain-rate and deviatoric-stress diagnostics.
+
+The returned fields are cell averages over the velocity quadrature rule and
+include `εxx`, `εyy`, `εzz`, `εxy`, `εII`, `τxx`, `τyy`, `τzz`, `τxy`, `τII`,
+and the ASCII alias `tauII`.
+"""
 function compute_strain_rate_stress_postprocess(
     vx, vy,
     el2n_v,
@@ -154,6 +190,14 @@ function compute_strain_rate_stress_postprocess(
     )
 end
 
+"""
+    update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v) -> Nothing
+
+Project cell-averaged stresses back to velocity nodes for the next time step.
+
+Each nodal old-stress component is the arithmetic average of all adjacent cell
+diagnostics in `post`.
+"""
 function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
     τxx_nodes = zeros(FP, nnodes_v)
     τyy_nodes = zeros(FP, nnodes_v)
@@ -184,6 +228,14 @@ function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
     return nothing
 end
 
+"""
+    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post) -> Nothing
+
+Write pressure, velocity, strain-rate, and stress fields to an ASCII VTK file.
+
+The VTK mesh uses the pressure triangle corners, while nodal velocity fields are
+sampled from the corresponding velocity nodes.
+"""
 function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
     NP = size(el2nP_cpu, 1)
     vtk_nodes = sort!(unique(vec(el2nP_cpu)))
@@ -264,6 +316,16 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
     return nothing
 end
 
+"""
+    build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
+
+Build an unstructured T7 velocity mesh around a circular inclusion.
+
+Triangulate.jl generates a second-order T6 PSLG mesh with the circle as a
+constrained internal boundary. The local midpoint ordering is remapped to
+FEMTools' T6/T7 convention, then one centroid bubble node is appended per
+element.
+"""
 function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle = 96, max_area = nothing)
     rect_pts  = Cdouble[0.0 Lx  Lx 0.0;
                         0.0 0.0 Ly Ly]
@@ -337,12 +399,23 @@ end
 # ---------------------------------------------------------------------------
 
 const FP = Float64
-function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.167, show_plot = true)
+"""
+    main(; nsteps=19, n_circle=96, max_area=1 / (2 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
+
+Run the unstructured T7/P1-disc pure-shear Stokes example.
+
+The model builds a square domain with a circular inclusion, applies pure-shear
+free-slip boundary conditions, advances the viscoelastic-plastic Stokes solve,
+writes one VTK file per physical step, and returns the stress-history
+diagnostics.
+"""
+function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 / 6, show_plot = true)
     # Domain
     Lx, Ly = 1.0, 1.0
 
     # Background pure-shear strain rate (non-dimensional)
     ε̇_bg = 1.0
+    Δt = FP(Δt)
 
     # Material (2 phases: matrix + inclusion)
     η     = (1.0,     1.0)   # shear viscosity
@@ -351,7 +424,7 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
     K     = (4,         4)   # bulk modulus  (Inf → incompressible)
     G     = (1.0,     0.5)   # Shear modulus  (Inf → purely viscous)
     G_stokes = NTuple{2, FP}(G)
-    τy   = 1.6 /cosd(30) #* Inf
+    τy   = 1.6 / cosd(30)
     plastic = DruckerPrager(
         NTuple{2, FP}((π/6, π/6)),        # friction angle ϕ  [rad]
         NTuple{2, FP}((0,   0)),          # dilation angle Ψ  [rad]
@@ -360,12 +433,7 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
         NTuple{2, FP}(K),                 # Kb ≈ bulk modulus [Pa]
     )
     γfact = 20 
-    ηbi   = if K[1]<Inf 
-        γfact * sum(η) / length(η)
-    else
-        K[1] * Δt
-    end
-    ηb    = (ηbi,     ηbi)   # bulk  viscosity
+    ηb    = K                # pressure storage modulus, matching JustRelax Kb
    
     # plastic = nothing
     g     = (0.0,     0.0)   # gravity vector
@@ -426,6 +494,7 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    cfl_stokes = FP(0.95 / sqrt(2.1))
     dr = StokesDR(
         backend,
         mesh_stokes.nnodes,
@@ -435,7 +504,7 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
         K    = NTuple{2, FP}(K),
         g    = NTuple{2, FP}(g),
         Tref = FP(Tref),
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
+        CFL_v = cfl_stokes, CFL_P = cfl_stokes, c_fact = 0.9,
     )
     τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
 
@@ -476,21 +545,26 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
 
     # ---------------------------------------------------------------------------
     # Boundary conditions — pure shear + free slip
-    #   left/right walls  (x = 0 or Lx): fix Vx = +ε̇·(x − Lx/2),  Vy free
-    #   top/bottom walls  (y = 0 or Ly): fix Vy = −ε̇·(y − Ly/2),  Vx free
+    #   left/right walls  (x = 0 or Lx): fix Vx = +ε̇·x,  Vy free
+    #   top/bottom walls  (y = 0 or Ly): fix Vy = −ε̇·y,  Vx free
     # ---------------------------------------------------------------------------
 
     coords  = Array(mesh_v.coords)
     Γnodes  = Array(mesh_v.Γnodes)
     tol_bc  = 100 * eps(Float64) * max(Lx, Ly)
 
+    vx_bg = FP[ ε̇_bg * coords[n][1] for n in eachindex(coords)]
+    vy_bg = FP[-ε̇_bg * coords[n][2] for n in eachindex(coords)]
+    copyto!(dr.vx, vx_bg)
+    copyto!(dr.vy, vy_bg)
+
     lr_nodes = Int32[n for n in Γnodes if abs(coords[n][1])      ≤ tol_bc ||
                                           abs(coords[n][1] - Lx) ≤ tol_bc]
     tb_nodes = Int32[n for n in Γnodes if abs(coords[n][2])      ≤ tol_bc ||
                                           abs(coords[n][2] - Ly) ≤ tol_bc]
 
-    bc_vx_lr = FP[ ε̇_bg * (coords[n][1] - Lx / 2) for n in lr_nodes]
-    bc_vy_tb = FP[-ε̇_bg * (coords[n][2] - Ly / 2) for n in tb_nodes]
+    bc_vx_lr = FP[ ε̇_bg * coords[n][1] for n in lr_nodes]
+    bc_vy_tb = FP[-ε̇_bg * coords[n][2] for n in tb_nodes]
 
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, lr_nodes, bc_vx_lr))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, tb_nodes, bc_vy_tb))
@@ -500,18 +574,8 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
 
     @info "BCs" n_lr = length(lr_nodes) n_tb = length(tb_nodes) max_vx = maximum(abs, bc_vx_lr)
 
-    # ---------------------------------------------------------------------------
-    # Seed preconditioners — used on the very first kernel call before the
-    # ForwardDiff Jacobian has been assembled.  Overwritten by Jacobian on iter 1.
-    # ---------------------------------------------------------------------------
-
     h    = sqrt(Lx * Ly / mesh_stokes.nels)
     ηmax = FP(maximum(η))
-
-    Δτ_V_seed = dr.CFL_v * h^2 / (4 * ηmax)
-
-    fill!(dr.PC_vx, 1 / Δτ_V_seed)
-    fill!(dr.PC_vy, 1 / Δτ_V_seed)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -536,8 +600,6 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
         backend, workgroup,
     )
 
-    # Δt = Δt === nothing ? FP(0.5 / max(abs(ε̇_bg), eps(FP))) : FP(Δt)
-    Δt = 0.167
     time_history = zeros(FP, nsteps)
     mean_tauII_history = zeros(FP, nsteps)
 
@@ -585,6 +647,23 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
         (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
     end
 
+    assemble_augmented_momentum_jacobian_matrices_atomix!(
+        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+        element_v, element_P,
+        phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+        dr.ηb, Δt, γP, dr.PC_P,
+        backend, workgroup,
+    )
+    λmax_vx0 = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
+    λmax_vy0 = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+    Δτ_vx0   = 2 / √(λmax_vx0) * dr.CFL_v
+    Δτ_vy0   = 2 / √(λmax_vy0) * dr.CFL_v
+    α_vx0, β_vx0 = _cheb(Δτ_vx0, FP(0), dr.c_fact)
+    α_vy0, β_vy0 = _cheb(Δτ_vy0, FP(0), dr.c_fact)
+    @info "Initial momentum preconditioner" λmax_vx=λmax_vx0 λmax_vy=λmax_vy0 Δτ_vx=Δτ_vx0 Δτ_vy=Δτ_vy0
+
     el2n_v_cpu = Array(mesh_stokes.el2n)
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
@@ -601,10 +680,10 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
         fill!(dr.Rv_y0, 0)
         @info "Physical time step" istep nsteps t
 
-    α_vx = FP(0)
-    β_vx = FP(0)
-    α_vy = FP(0)
-    β_vy = FP(0)
+    α_vx = α_vx0
+    β_vx = β_vx0
+    α_vy = α_vy0
+    β_vy = β_vy0
     err_min = FP(Inf)
     err = FP(2ϵ_tol)
     err_v0 = FP(0)
@@ -833,4 +912,4 @@ function main(; nsteps = 20, n_circle = 96, max_area = 1 / (2 * 32^2), Δt = 0.1
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-main(; nsteps = 5)
+main()
