@@ -27,13 +27,33 @@ end
 @inline zero_old_stress(::Type{T}) where T = (zero(T), zero(T), zero(T))
 @inline old_stress_component_at_ip(_, τ::Number) = τ
 @inline old_stress_component_at_ip(Nv, τ) = dot(Nv, τ)
-@inline old_stress_at_ip(_, ::Nothing, ::Type{T}) where T = zero_old_stress(T)
-@inline function old_stress_at_ip(Nv, τ_old::NTuple{3}, ::Type)
+struct IntegrationPointStress{TX, TY, TXY}
+    τxx::TX
+    τyy::TY
+    τxy::TXY
+end
+struct IntegrationPointStressOutput{TX, TY, TXY}
+    τxx::TX
+    τyy::TY
+    τxy::TXY
+    iel::Int
+end
+@inline old_stress_at_ip(_, ::Nothing, ::Type{T}, _) where T = zero_old_stress(T)
+@inline function old_stress_at_ip(Nv, τ_old::NTuple{3}, ::Type, _)
     return (
         old_stress_component_at_ip(Nv, τ_old[1]),
         old_stress_component_at_ip(Nv, τ_old[2]),
         old_stress_component_at_ip(Nv, τ_old[3]),
     )
+end
+@inline old_stress_at_ip(_, τ_old::IntegrationPointStress, ::Type, q) =
+    (τ_old.τxx[q], τ_old.τyy[q], τ_old.τxy[q])
+@inline store_stress_at_ip!(::Nothing, _, _, _, _) = nothing
+@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy)
+    τ_store.τxx[q, τ_store.iel] = τxx
+    τ_store.τyy[q, τ_store.iel] = τyy
+    τ_store.τxy[q, τ_store.iel] = τxy
+    return nothing
 end
 
 """
@@ -47,13 +67,22 @@ Includes the out-of-plane component `τzz = −τxx − τyy` required for
 plane-strain consistency:
 
     τII = √((τxx² + τyy² + τzz²) / 2 + τxy²)
+
+A small `eps²` floor is added under the square root so that the function is
+safe for automatic differentiation (ForwardDiff, Enzyme) when the stress
+components are zero: `d(√x)/dx = 1/(2√x)` diverges at `x = 0`, but
+`d(√(x + ε²))/dx = 1/(2√(x + ε²))` remains finite. The floor is below
+machine epsilon for any physically meaningful stress, so results are
+unchanged in practice.
 """
 @inline second_invariant(axx, ayy, axy) = second_invariant(tuple(axx, ayy, axy))
 
 @inline function second_invariant(A::T) where {T <: Union{SVector{3}, NTuple{3}}}
-    # Include the third diagonal component Tzz = -Txx - Tyy for 2D plane strain
     Azz = -A[1] - A[2]
-    return √((A[1]^2 + A[2]^2 + Azz^2) / 2 + (A[3]^2))
+    # typeof(real(A[1])) recovers the underlying float type when A[1] is a
+    # ForwardDiff Dual (real(::Dual) = value(::Dual) is defined by ForwardDiff).
+    FT  = typeof(real(A[1]))
+    return √((A[1]^2 + A[2]^2 + Azz^2) / 2 + A[3]^2 + eps(FT)^2)
 end
 
 """
@@ -132,15 +161,15 @@ regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
     # Drucker-Prager yield function.
     # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂) = sqrt(SI/2).
     τII      = second_invariant(τij)
-    τII_safe = max(τII, eps(typeof(τII)))
+    τII_safe = τII + eps(typeof(τII))^2
     F        = τII - cosϕ * C - sinϕ * Pq
-    ∂F∂P     = sinϕ
+    ∂F∂P     = -sinϕ
 
-    # Derivatives of plastic potential Q (associated: Ψ = ϕ; non-associated: Ψ ≠ ϕ).
-    ∂Q∂τxx = τxx / τII_safe * 0.5
-    ∂Q∂τyy = τyy / τII_safe * 0.5
-    ∂Q∂τxz = τxy / τII_safe
-    ∂Q∂τ   = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxz
+    # Derivatives of the plane-strain invariant with τzz = -τxx - τyy.
+    ∂Q∂τxx = (2 * τxx + τyy) / (2 * τII_safe)
+    ∂Q∂τyy = (τxx + 2 * τyy) / (2 * τII_safe)
+    ∂Q∂τxy = τxy / τII_safe
+    ∂Q∂τ   = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
     ∂Q∂P   = sinΨ
 
     λ = if F > 0
@@ -211,14 +240,31 @@ end
     Nq,
     NqP,
 ) where {N, T, NP}
+    return integrate_momentum_residual(
+        v, P_loc, geo_v_el, phase_loc, η, G, Δt, τ_old, plastic, nothing, Nq, NqP,
+    )
+end
+
+@inline function integrate_momentum_residual(
+    v::NTuple{2, SVector{N, T}},
+    P_loc::SVector{NP},
+    geo_v_el,
+    phase_loc, η, G, Δt,
+    τ_old,
+    plastic,
+    τ_store,
+    Nq,
+    NqP,
+) where {N, T, NP}
     Rv_x = zero(SVector{N, T})
     Rv_y = zero(SVector{N, T})
     for q in eachindex(geo_v_el)
         ∂N∂x, dΩ = geo_v_el[q]
         Nv = Nq[q]
-        τ_old_q = old_stress_at_ip(Nv, τ_old, T)
+        τ_old_q = old_stress_at_ip(Nv, τ_old, T, q)
         Pq  = dot(NqP[q], P_loc)
         τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+        store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
         # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy) dΩ
         Rv_x += (∂N∂x[:, 1] * (τxx - Pq) + ∂N∂x[:, 2] * τxy) * dΩ
         # y-momentum: ∫ (∂Nᵢ/∂y·(τyy−P) + ∂Nᵢ/∂x·τxy) dΩ
@@ -294,6 +340,28 @@ end
     Nq,
     NqP,
 ) where {N, NP}
+    return integrate_momentum_residual(
+        v, P_loc, Pnum_loc, T_loc,
+        geo_v_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old, plastic, nothing, Nq, NqP,
+    )
+end
+
+@inline function integrate_momentum_residual(
+    v::Tuple{<:SVector{N}, <:SVector{N}},
+    P_loc::SVector{NP},
+    Pnum_loc::Union{SVector{NP}, Nothing},
+    T_loc::SVector{NP},
+    geo_v_el,
+    phase_loc, η, G, α, ρ0, K,
+    g,
+    Tref::Real,
+    Δt,
+    τ_old,
+    plastic,
+    τ_store,
+    Nq,
+    NqP,
+) where {N, NP}
     vxloc, vyloc = v
     T    = promote_type(eltype(vxloc), eltype(vyloc))
     Rv_x = zero(SVector{N, T})
@@ -304,9 +372,10 @@ end
     for q in eachindex(geo_v_el)
         ∂N∂x, dΩ = geo_v_el[q]
         Nv = Nq[q]
-        τ_old_q = old_stress_at_ip(Nv, τ_old, T)
+        τ_old_q = old_stress_at_ip(Nv, τ_old, T, q)
         Pq    = dot(NqP[q], P_loc)
         τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+        store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
         Pnumq = dot_or_zero(NqP[q], Pnum_loc)
         Tq    = dot(NqP[q], T_loc)
         αq    = interp2ip_phase(Nv, α,  phase_loc)
@@ -739,6 +808,32 @@ function assemble_momentum_residual_matrices_atomix!(
     g, Tref, Δt,
     backend, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    return assemble_momentum_residual_matrices_atomix!(
+        Rv_x, Rv_y, vx, vy, P, T, Pnum,
+        el2n_v, el2nP, geo_v, nels, element_v, element_P,
+        phases, τ_old, plastic, nothing, η, G, α, ρ0, K, g, Tref, Δt,
+        backend, workgroup,
+    )
+end
+
+function assemble_momentum_residual_matrices_atomix!(
+    Rv_x, Rv_y,
+    vx, vy,
+    P, T,
+    Pnum,
+    el2n_v, el2nP,
+    geo_v,
+    nels,
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+    phases,
+    τ_old,
+    plastic,
+    τ_store,
+    η, G, α, ρ0, K,
+    g, Tref, Δt,
+    backend, workgroup,
+) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq  = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
 
@@ -746,7 +841,7 @@ function assemble_momentum_residual_matrices_atomix!(
     fill!(Rv_y, 0)
     momentum_residual_atomic_kernel!(backend, workgroup)(
         Rv_x, Rv_y, vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
-        η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP);
+        τ_store, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -762,13 +857,14 @@ end
     @Const(phases),
     τ_old,
     plastic,
+    τ_store,
     η, G, α, ρ0, K, g, Tref, Δt,
     Nq, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Re_x, Re_y = momentum_element_residual(
         vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
-        τ_old, plastic, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, Val(NV), Val(NP),
+        τ_old, plastic, τ_store, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, Val(NV), Val(NP),
     )
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic Rv_x[inod] += Re_x[i]
@@ -811,6 +907,17 @@ end
     τ_old, plastic, η, G, α, ρ0, K, g, Tref, Δt,
     Nq, NqP, iel, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
+    return momentum_element_residual(
+        vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+        τ_old, plastic, nothing, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, Val(NV), Val(NP),
+    )
+end
+
+@inline function momentum_element_residual(
+    vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+    τ_old, plastic, τ_store, η, G, α, ρ0, K, g, Tref, Δt,
+    Nq, NqP, iel, ::Val{NV}, ::Val{NP},
+) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
@@ -819,11 +926,12 @@ end
     P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
     T_loc     = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
     Pnum_loc  = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
-    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, Val(NV))
+    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
+    τ_store_el = _stress_output(τ_store, iel)
     phase_loc = _stokes_phase_loc(phases, local_nodes_v, iel, Val(NV))
     Re_x, Re_y = integrate_momentum_residual(
         (vxloc, vyloc), P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
+        geo_v_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, τ_store_el, Nq, NqP,
     )
     return local_nodes_v, Re_x, Re_y
 end
@@ -833,14 +941,24 @@ _gather_or_nothing(::Nothing, _, ::Val) = nothing
     SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
 end
 
-_gather_old_stress(::Nothing, _, ::Val) = nothing
-@inline function _gather_old_stress(τ_old::NTuple{3}, nodes, ::Val{N}) where N
+_gather_old_stress(::Nothing, _, _, ::Val, ::Val) = nothing
+@inline function _gather_old_stress(τ_old::NTuple{3, <:AbstractMatrix}, _, iel, ::Val, ::Val{NQ}) where NQ
+    return IntegrationPointStress(
+        SVector{NQ}(ntuple(q -> τ_old[1][q, iel], Val(NQ))),
+        SVector{NQ}(ntuple(q -> τ_old[2][q, iel], Val(NQ))),
+        SVector{NQ}(ntuple(q -> τ_old[3][q, iel], Val(NQ))),
+    )
+end
+@inline function _gather_old_stress(τ_old::NTuple{3}, nodes, _, ::Val{N}, ::Val) where N
     return (
         SVector{N}(ntuple(i -> τ_old[1][nodes[i]], Val(N))),
         SVector{N}(ntuple(i -> τ_old[2][nodes[i]], Val(N))),
         SVector{N}(ntuple(i -> τ_old[3][nodes[i]], Val(N))),
     )
 end
+_stress_output(::Nothing, _) = nothing
+@inline _stress_output(τ_store::NTuple{3, <:AbstractMatrix}, iel) =
+    IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
 
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
@@ -889,7 +1007,7 @@ end
     vyloc     = SVector{NV}(ntuple(i -> vy[local_nodes_v[i]], Val(NV)))
     P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
     T_loc     = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
-    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, Val(NV))
+    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
     phase_loc = _stokes_phase_loc(phases, local_nodes_v, iel, Val(NV))
 
     ∂RVx∂vx = ForwardDiff.jacobian(
@@ -1088,7 +1206,7 @@ end
     T0loc     = SVector{NP}(ntuple(i -> T0[local_nodes_P[i]], Val(NP)))
     MP_loc    = SVector{NP}(ntuple(i -> MP[local_nodes_P[i]], Val(NP)))
     γ_eff_loc = _gather_or_scalar(γ_eff, local_nodes_P, Val(NP))
-    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, Val(NV))
+    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
     phase_v   = _stokes_phase_loc(phases_v, local_nodes_v, iel, Val(NV))
     phase_P   = _stokes_phase_loc(phases_P, local_nodes_P, iel, Val(NP))
 

@@ -1,5 +1,17 @@
-using KernelAbstractions: CPU, synchronize
+using Test
+
+using DomainSets
 using DomainSets: ×
+using FEMTools
+using KernelAbstractions: CPU, synchronize
+using StaticArrays
+
+if !isdefined(@__MODULE__, :FP64)
+    const FP64 = Float64
+end
+if !isdefined(@__MODULE__, :FP32)
+    const FP32 = Float32
+end
 
 # ---------------------------------------------------------------------------
 # Helper: precompute physical-space geometry for a mesh element set
@@ -41,12 +53,42 @@ end
         @test eltype(dr.P)  == FP
         @test length(dr.vx) == 10
         @test length(dr.P)  == 12
+        @test length(dr.M_P) == 12
+        @test length(dr.Pnum) == 12
+        @test all(==(1), Array(dr.phases_v))
+        @test all(==(1), Array(dr.phases_P))
+        @test length(dr.τxx) == 10
+        @test length(dr.τyy) == 10
+        @test length(dr.τxy) == 10
         @test length(dr.τxx_old) == 10
         @test length(dr.τyy_old) == 10
         @test length(dr.τxy_old) == 10
+        @test all(iszero, Array(dr.τxx))
+        @test all(iszero, Array(dr.τyy))
+        @test all(iszero, Array(dr.τxy))
         @test all(iszero, Array(dr.τxx_old))
         @test all(iszero, Array(dr.τyy_old))
         @test all(iszero, Array(dr.τxy_old))
+        @test all(iszero, Array(dr.M_P))
+        @test all(iszero, Array(dr.Pnum))
+    end
+end
+
+@testset "StokesDR constructor — integration-point stress storage" begin
+    for FP in (FP32, FP64)
+        η  = NTuple{2, FP}((1.0, 10.0))
+        ηb = NTuple{2, FP}((1.0, 10.0))
+        α  = NTuple{2, FP}((0.0,  0.0))
+        dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
+
+        @test size(dr.τxx) == (3, 4)
+        @test size(dr.τyy) == (3, 4)
+        @test size(dr.τxy) == (3, 4)
+        @test size(dr.τxx_old) == (3, 4)
+        @test size(dr.τyy_old) == (3, 4)
+        @test size(dr.τxy_old) == (3, 4)
+        @test all(iszero, Array(dr.τxx))
+        @test all(iszero, Array(dr.τxx_old))
     end
 end
 
@@ -66,6 +108,75 @@ end
         @test dr.g    == g
         @test dr.Tref == Tref
     end
+end
+
+@testset "DruckerPrager constructor precomputes phase parameters" begin
+    for FP in (FP32, FP64)
+        ϕ     = NTuple{2, FP}((π / 6, π / 4))
+        Ψ     = NTuple{2, FP}((π / 12, π / 8))
+        C     = NTuple{2, FP}((10.0, 20.0))
+        η_reg = NTuple{2, FP}((1.0e18, 2.0e18))
+        Kb    = NTuple{2, FP}((1.0e10, 2.0e10))
+
+        plastic = DruckerPrager(ϕ, Ψ, C, η_reg, Kb)
+
+        @test all(isapprox.(plastic.cosϕ, map(cos, ϕ)))
+        @test all(isapprox.(plastic.sinϕ, map(sin, ϕ)))
+        @test all(isapprox.(plastic.sinΨ, map(sin, Ψ)))
+        @test plastic.C == C
+        @test plastic.η_reg == η_reg
+        @test plastic.Kb == Kb
+    end
+end
+
+@testset "DruckerPrager return uses plane-strain invariant gradient" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    vx = SA[2.0, 0.0, 0.0]
+    vy = SA[0.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    τ_old = (0.0, 0.0, 0.0)
+    plastic = DruckerPrager((0.0,), (0.0,), (0.0,), (1.0,), (1.0,))
+
+    τxx, τyy, τxy = FEMTools.deviatoric_stress(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, 1.0, τ_old, 0.0, plastic,
+    )
+
+    τxx_trial = 8 / 3
+    τyy_trial = -4 / 3
+    τxy_trial = 0.0
+    τII = sqrt((τxx_trial^2 + τyy_trial^2 + (-τxx_trial - τyy_trial)^2) / 2 + τxy_trial^2)
+    λ = τII / 2
+    @test τxx ≈ τxx_trial - 2 * λ * (2 * τxx_trial + τyy_trial) / (2 * τII)
+    @test τyy ≈ τyy_trial - 2 * λ * (τxx_trial + 2 * τyy_trial) / (2 * τII)
+    @test τxy ≈ τxy_trial
+end
+
+@testset "DruckerPrager pressure derivative sign in plastic denominator" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    vx = SA[2.0, 0.0, 0.0]
+    vy = SA[0.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    τ_old = (0.0, 0.0, 0.0)
+    plastic = DruckerPrager((π / 6,), (π / 6,), (0.0,), (3.0,), (2.0,))
+
+    τxx, τyy, τxy = FEMTools.deviatoric_stress(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, 1.0, τ_old, 0.0, plastic,
+    )
+
+    τxx_trial = 8 / 3
+    τyy_trial = -4 / 3
+    τxy_trial = 0.0
+    τII = sqrt((τxx_trial^2 + τyy_trial^2 + (-τxx_trial - τyy_trial)^2) / 2 + τxy_trial^2)
+    ∂Q∂τxx = (2 * τxx_trial + τyy_trial) / (2 * τII)
+    ∂Q∂τyy = (τxx_trial + 2 * τyy_trial) / (2 * τII)
+    ∂Q∂τxy = τxy_trial / τII
+    λ = τII / (1.0 + 3.0 - 2.0 * sin(π / 6) * sin(π / 6))
+
+    @test τxx ≈ τxx_trial - 2 * λ * ∂Q∂τxx
+    @test τyy ≈ τyy_trial - 2 * λ * ∂Q∂τyy
+    @test τxy ≈ τxy_trial - 2 * λ * ∂Q∂τxy
 end
 
 # ---------------------------------------------------------------------------
@@ -252,6 +363,56 @@ end
 # Assembler integration tests (small 2×2 T6 mesh)
 # ---------------------------------------------------------------------------
 
+@testset "assemble_viscosity_weighted_pressure_scaling! — homogeneous viscosity" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 6, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
+    mesh      = MixedMesh(mesh_v, element_P)
+    geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+
+    M_P      = zeros(FP, mesh.nnodesP)
+    γP       = zeros(FP, mesh.nnodesP)
+    phases_v = ones(Int, mesh.nnodes)
+
+    assemble_viscosity_weighted_pressure_scaling!(
+        M_P, γP,
+        mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P,
+        phases_v, (6.0, 99.0), 2.0,
+        CPU(), 1,
+    )
+
+    @test sum(M_P) ≈ one(FP) atol = 1e-12
+    @test all(>(0), M_P)
+    @test γP ≈ fill(6.0, mesh.nnodesP) atol = 1e-12
+end
+
+@testset "assemble_viscosity_weighted_pressure_scaling! — finite bulk modulus" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 6, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
+    mesh      = MixedMesh(mesh_v, element_P)
+    geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+
+    M_P      = zeros(FP, mesh.nnodesP)
+    γP       = zeros(FP, mesh.nnodesP)
+    phases_v = ones(Int, mesh.nnodes)
+
+    assemble_viscosity_weighted_pressure_scaling!(
+        M_P, γP,
+        mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P,
+        phases_v, (6.0, 99.0), 2.0, (4.0, 99.0), 0.5,
+        CPU(), 1,
+    )
+
+    @test sum(M_P) ≈ one(FP) atol = 1e-12
+    @test all(>(0), M_P)
+    @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1e-12
+end
+
 @testset "assemble_momentum_residual_matrices_atomix! — zero velocity + zero gravity" begin
     FP        = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
@@ -277,6 +438,38 @@ end
 
     @test Rv_x ≈ zeros(FP, mesh.nnodes) atol = 1e-14
     @test Rv_y ≈ zeros(FP, mesh.nnodes) atol = 1e-14
+end
+
+@testset "assemble_momentum_residual_matrices_atomix! — quadrature old stress" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 6, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
+    mesh      = MixedMesh(mesh_v, element_P)
+    geo_v     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    nq        = length(element_v.integration_points.ω)
+
+    vx     = zeros(FP, mesh.nnodes);  vy  = zeros(FP, mesh.nnodes)
+    P      = zeros(FP, mesh.nnodesP); T   = zeros(FP, mesh.nnodesP)
+    phases = ones(Int, mesh.nnodes)
+    τ_old  = (fill(FP(0.2), nq, mesh.nels), fill(FP(-0.1), nq, mesh.nels), fill(FP(0.15), nq, mesh.nels))
+    τ_new  = (zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels))
+    Rv_x   = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
+
+    assemble_momentum_residual_matrices_atomix!(
+        Rv_x, Rv_y, vx, vy, P, T, nothing,
+        mesh.el2n, mesh.DoFsP, geo_v, mesh.nels,
+        element_v, element_P,
+        phases, τ_old, nothing, τ_new, (1.0, 1.0), (4.0, 4.0), (0.0, 0.0), (1.0, 1.0), (Inf, Inf),
+        (0.0, 0.0), FP(0), FP(0.25),
+        CPU(), 1,
+    )
+
+    @test sum(abs2, Rv_x) > 0
+    @test sum(abs2, Rv_y) > 0
+    @test sum(abs2, τ_new[1]) > 0
+    @test sum(abs2, τ_new[2]) > 0
+    @test sum(abs2, τ_new[3]) > 0
 end
 
 @testset "assemble_momentum_residual_matrices_atomix! — gravity body force" begin

@@ -1,9 +1,16 @@
-using Aqua
+using Test
+
+using FEMTools
 
 @testset "Aqua.jl" begin
-    Aqua.test_all(
-        FEMTools;
-        unbound_args = false,
-        deps_compat = (check_weakdeps = false,),
-    )
+    if Base.find_package("Aqua") === nothing
+        @test_skip false
+    else
+        @eval using Aqua
+        Aqua.test_all(
+            FEMTools;
+            unbound_args = false,
+            deps_compat = (check_weakdeps = false,),
+        )
+    end
 end

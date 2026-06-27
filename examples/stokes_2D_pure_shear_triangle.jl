@@ -81,21 +81,20 @@ end
     SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
 
 """
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v) -> NamedTuple
+    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v) -> NamedTuple
 
 Compute element-averaged strain-rate and deviatoric-stress diagnostics.
 
 The returned fields are cell averages over the velocity quadrature rule and
 include `εxx`, `εyy`, `εzz`, `εxy`, `εII`, `τxx`, `τyy`, `τzz`, `τxy`, `τII`,
-and the ASCII alias `tauII`.
+and the ASCII alias `tauII`. Stresses are averaged from quadrature-point
+history written by the momentum residual assembly.
 """
 function compute_strain_rate_stress_postprocess(
     vx, vy,
     el2n_v,
     geo_v,
-    phases_v,
-    τ_old,
-    η, G, Δt,
+    τ_ip,
     element_v::ReferenceElement{TV},
 ) where {TV <: AbstractElement{2, NV}} where NV
     nels = size(el2n_v, 2)
@@ -116,10 +115,6 @@ function compute_strain_rate_stress_postprocess(
         local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
         vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
         vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
-        τxx_old_loc = SVector{NV}(ntuple(i -> τ_old[1][local_nodes[i]], Val(NV)))
-        τyy_old_loc = SVector{NV}(ntuple(i -> τ_old[2][local_nodes[i]], Val(NV)))
-        τxy_old_loc = SVector{NV}(ntuple(i -> τ_old[3][local_nodes[i]], Val(NV)))
-        phase_loc = _phase_loc_postprocess(phases_v, local_nodes, iel, Val(NV))
         geo_el = geo_v[iel]
         volume = zero(FP)
 
@@ -140,20 +135,10 @@ function compute_strain_rate_stress_postprocess(
             εyy_dev = εyy_q - tr
             εzz_dev = εzz_q - tr
 
-            ηq = FEMTools.interp2ip_phase(Nv, η, phase_loc)
-            invGq = FEMTools.interp2ip_phase(Nv, map(inv, G), phase_loc)
-            ηeff_q = inv(inv(ηq) + invGq / Δt)
-            inv_2Gdt = invGq / (2 * Δt)
-
-            τxx_old_q = dot(Nv, τxx_old_loc)
-            τyy_old_q = dot(Nv, τyy_old_loc)
-            τxy_old_q = dot(Nv, τxy_old_loc)
-            τzz_old_q = -(τxx_old_q + τyy_old_q)
-
-            τxx_q = 2 * ηeff_q * (εxx_dev + τxx_old_q * inv_2Gdt)
-            τyy_q = 2 * ηeff_q * (εyy_dev + τyy_old_q * inv_2Gdt)
-            τzz_q = 2 * ηeff_q * (εzz_dev + τzz_old_q * inv_2Gdt)
-            τxy_q = 2 * ηeff_q * (εxy_q   + τxy_old_q * inv_2Gdt)
+            τxx_q = τ_ip[1][q, iel]
+            τyy_q = τ_ip[2][q, iel]
+            τxy_q = τ_ip[3][q, iel]
+            τzz_q = -(τxx_q + τyy_q)
 
             εII_q = sqrt((εxx_dev^2 + εyy_dev^2 + εzz_dev^2) / 2 + εxy_q^2)
             τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
@@ -188,44 +173,6 @@ function compute_strain_rate_stress_postprocess(
         τxx, τyy, τzz, τxy, τII,
         tauII = τII,
     )
-end
-
-"""
-    update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v) -> Nothing
-
-Project cell-averaged stresses back to velocity nodes for the next time step.
-
-Each nodal old-stress component is the arithmetic average of all adjacent cell
-diagnostics in `post`.
-"""
-function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
-    τxx_nodes = zeros(FP, nnodes_v)
-    τyy_nodes = zeros(FP, nnodes_v)
-    τxy_nodes = zeros(FP, nnodes_v)
-    counts = zeros(Int, nnodes_v)
-
-    for iel in axes(el2n_v, 2)
-        for a in axes(el2n_v, 1)
-            inode = el2n_v[a, iel]
-            τxx_nodes[inode] += post.τxx[iel]
-            τyy_nodes[inode] += post.τyy[iel]
-            τxy_nodes[inode] += post.τxy[iel]
-            counts[inode] += 1
-        end
-    end
-
-    for inode in eachindex(counts)
-        if counts[inode] > 0
-            τxx_nodes[inode] /= counts[inode]
-            τyy_nodes[inode] /= counts[inode]
-            τxy_nodes[inode] /= counts[inode]
-        end
-    end
-
-    copyto!(τ_old[1], τxx_nodes)
-    copyto!(τ_old[2], τyy_nodes)
-    copyto!(τ_old[3], τxy_nodes)
-    return nothing
 end
 
 """
@@ -505,7 +452,9 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         g    = NTuple{2, FP}(g),
         Tref = FP(Tref),
         CFL_v = cfl_stokes, CFL_P = cfl_stokes, c_fact = 0.9,
+        stress_size = (NQ_v, mesh_stokes.nels),
     )
+    τ = (dr.τxx, dr.τyy, dr.τxy)
     τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
 
     # ---------------------------------------------------------------------------
@@ -593,7 +542,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         dr.M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        phases_v_el, dr.η, FP(γfact),
+        phases_v_el, dr.η, FP(γfact), dr.K, Δt,
         backend, workgroup,
     )
 
@@ -718,8 +667,8 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         if itPH == 2
             err_P0 = err_P + eps(err_P)
         end
-        err_v_rel = min(err_v / err_v0, err_v)
-        err_P_rel = min(err_P / err_P0, err_P)
+        err_v_rel = max(err_v / err_v0, err_v)
+        err_P_rel = max(err_P / err_P0, err_P)
         err = max(err_v_rel, err_P_rel)
 
         isnan(err) && error("NaN detected in outer loop at PH=$itPH")
@@ -792,7 +741,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
-                err = err_v_inner / err_v00
+                err = max(err_v_inner / err_v00, err_v_inner)
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > FP(1e10) && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
@@ -834,6 +783,15 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         iter > total_iterMax && break
     end  # outer PH loop
 
+        assemble_momentum_residual_matrices_atomix!(
+            dr.Rv_x, dr.Rv_y,
+            dr.vx, dr.vy, dr.P, dr.T, nothing,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+            element_v, element_P,
+            phases_v_el, τ_old, plastic, τ, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            backend, workgroup,
+        )
+
         P_cpu  = Array(dr.P)
         vx_cpu = Array(dr.vx)
         vy_cpu = Array(dr.vy)
@@ -841,13 +799,13 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
             vx_cpu, vy_cpu,
             el2n_v_cpu,
             Array(geo_v),
-            phases_v_el,
-            τ_old,
-            dr.η, G_stokes, Δt,
+            τ,
             element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII)
-        update_old_stress_from_cells!(τ_old, post, el2n_v_cpu, mesh_stokes.nnodes)
+        copyto!(dr.τxx_old, dr.τxx)
+        copyto!(dr.τyy_old, dr.τyy)
+        copyto!(dr.τxy_old, dr.τxy)
 
         vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
         write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)

@@ -473,8 +473,8 @@ function main(;
                 err_P0 = err_P + eps(err_P)
             end
 
-            err_v_rel = min(err_v / err_v0, err_v)
-            err_P_rel = min(err_P / err_P0, err_P)
+            err_v_rel = max(err_v / err_v0, err_v)
+            err_P_rel = max(err_P / err_P0, err_P)
             err = max(err_v_rel, err_P_rel)
 
             isnan(err) && error("NaN detected in outer loop at step=$istep PH=$itPH")
@@ -548,7 +548,7 @@ function main(;
                     if iter == 1
                         err_v00 = err_v_inner + eps(err_v_inner)
                     end
-                    err = err_v_inner / err_v00
+                    err = max(err_v_inner / err_v00, err_v_inner)
                     isnan(err) && error("NaN detected in inner loop step=$istep PH=$itPH PT=$itPT")
                     err > FP(1e10) && error("Kaboom! Error > 1e10 in inner loop step=$istep PH=$itPH PT=$itPT")
 

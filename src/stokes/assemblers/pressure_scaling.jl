@@ -3,7 +3,7 @@
         MP, γP,
         el2n_v, dofs_P, geo_P, nels,
         element_v, element_P,
-        phases_v, η, γfact,
+        phases_v, η, γfact, K, Δt,
         backend, workgroup,
     )
 
@@ -16,12 +16,13 @@ The pressure residual assembled by FEMTools is weak/integrated,
 
 so `MP_i = ∫ N_i dΩ` converts it to a pointwise residual `RP_i / MP_i`.
 For the Arrow-Hurwicz/DYREL pressure update, this helper also computes a local
-viscosity scale
+pressure scale
 
-    γP_i = (∫ N_i (γfact * η_q / 2) dΩ) / MP_i,
+    γP_i = (∫ N_i γ_eff(q) dΩ) / MP_i,
 
-where `η_q` is interpolated from the velocity-node phase field.  The factor
-`1/2` matches the incompressible JustRelax penalty branch where
+where `γ_num = γfact * η_q`, `γ_phy = K_q * Δt`, and
+`γ_eff = γ_num * γ_phy / (γ_num + γ_phy)`. If `K` is omitted, this falls back
+to the incompressible JustRelax penalty branch where
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)` and `γ_num = γ_phy = γfact * η`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
@@ -36,13 +37,33 @@ function assemble_viscosity_weighted_pressure_scaling!(
     γfact,
     backend, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    return assemble_viscosity_weighted_pressure_scaling!(
+        MP, γP, el2n_v, dofs_P, geo_P, nels, element_v, element_P,
+        phases_v, η, γfact, nothing, nothing, backend, workgroup,
+    )
+end
+
+function assemble_viscosity_weighted_pressure_scaling!(
+    MP, γP,
+    el2n_v, dofs_P,
+    geo_P,
+    nels,
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+    phases_v,
+    η,
+    γfact,
+    K,
+    Δt,
+    backend, workgroup,
+) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqV = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
 
     fill!(MP, 0)
     fill!(γP, 0)
     viscosity_weighted_pressure_scaling_kernel!(backend, workgroup)(
-        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, NqV, NqP, Val(NV), Val(NP);
+        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, K, Δt, NqV, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -56,14 +77,14 @@ end
 
 """
     viscosity_weighted_pressure_scaling_kernel!(MP, γP, el2n_v, dofs_P, geo_P,
-                                                phases_v, η, γfact, NqV, NqP,
+                                                phases_v, η, γfact, K, Δt, NqV, NqP,
                                                 Val(NV), Val(NP))
 
 KernelAbstractions kernel that accumulates the lumped pressure mass `MP` and
 viscosity-weighted pressure scale `γP` by numerical quadrature.
 
 At each quadrature point `q` in element `iel`, accumulates
-`MP_a += N_a(q) dΩ` and `γP_a += N_a(q) (γfact η_q / 2) dΩ` for every
+`MP_a += N_a(q) dΩ` and `γP_a += N_a(q) γ_eff(q) dΩ` for every
 pressure DoF `a`. Atomix atomics are used unconditionally for correctness
 when pressure DoFs are shared across elements (continuous pressure spaces).
 """
@@ -72,7 +93,7 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
     @Const(el2n_v), @Const(dofs_P),
     @Const(geo_P),
     @Const(phases_v),
-    η, γfact,
+    η, γfact, K, Δt,
     NqV, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
@@ -86,7 +107,7 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
         Nv = NqV[q]
         NPq = NqP[q]
         ηq = interp2ip_phase(Nv, η, phase_loc)
-        γq = γfact * ηq / 2
+        γq = pressure_scale_at_ip(Nv, ηq, phase_loc, γfact, K, Δt)
 
         for a in 1:NP
             inod = local_dofs_P[a]
@@ -95,6 +116,14 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
             Atomix.@atomic :monotonic γP[inod] += weight * γq
         end
     end
+end
+
+@inline pressure_scale_at_ip(_, ηq, _, γfact, ::Nothing, _) = γfact * ηq / 2
+@inline function pressure_scale_at_ip(Nv, ηq, phase_loc, γfact, K, Δt)
+    γ_num = γfact * ηq
+    βq = interp2ip_phase(Nv, map(inv, K), phase_loc)
+    γ_phy = iszero(βq) ? γ_num : Δt / βq
+    return γ_phy * γ_num / (γ_phy + γ_num)
 end
 
 @kernel function pressure_scaling_finalize_kernel!(γP, @Const(MP))
