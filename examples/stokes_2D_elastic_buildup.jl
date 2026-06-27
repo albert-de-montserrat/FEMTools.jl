@@ -370,7 +370,7 @@ function main(;
 
     γP = KernelAbstractions.zeros(backend, FP, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        dr.PC_P, γP,
+        dr.M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
         dr.phases_v, dr.η, FP(γfact),
@@ -423,7 +423,7 @@ function main(;
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-            dr.ηb, Δt, γP, dr.PC_P,
+            dr.ηb, Δt, γP, dr.M_P,
             backend, workgroup,
         )
         λmax_vx0 = max(maximum(dr.∂Rv_x∂vx ./ dr.PC_vx), eps(FP))
@@ -464,7 +464,7 @@ function main(;
                 backend, workgroup,
             )
 
-            err_P = norm(dr.RP ./ dr.PC_P) / (sqrt(mesh_stokes.nnodesP) * RP_ref)
+            err_P = norm(dr.RP ./ dr.M_P) / (sqrt(mesh_stokes.nnodesP) * RP_ref)
             err_v = (norm(dr.Rv_x) + norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes) * Rv_ref)
             if itPH == 1
                 err_P0 = err_P + eps(err_P)
@@ -507,7 +507,7 @@ function main(;
                     backend, workgroup,
                 )
 
-                @. dr.Pnum = γP * dr.RP / dr.PC_P
+                @. dr.Pnum = γP * dr.RP / dr.M_P
 
                 assemble_momentum_residual_matrices_atomix!(
                     dr.Rv_x, dr.Rv_y,
@@ -525,7 +525,7 @@ function main(;
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
                         dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                        dr.ηb, Δt, γP, dr.PC_P,
+                        dr.ηb, Δt, γP, dr.M_P,
                         backend, workgroup,
                     )
                 end
@@ -571,7 +571,7 @@ function main(;
                 iter > total_iterMax && break
             end
 
-            @. dr.P += γP * dr.RP / dr.PC_P
+            @. dr.P += γP * dr.RP / dr.M_P
             iter > total_iterMax && break
         end
 

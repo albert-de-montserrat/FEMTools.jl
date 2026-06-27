@@ -409,7 +409,7 @@ free-slip boundary conditions, advances the viscoelastic-plastic Stokes solve,
 writes one VTK file per physical step, and returns the stress-history
 diagnostics.
 """
-function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
     # Domain
     Lx, Ly = 1.0, 1.0
 
@@ -432,7 +432,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
         NTuple{2, FP}((8.0e-3,  8.0e-3)), # η_reg             [Pa s]
         NTuple{2, FP}(K),                 # Kb ≈ bulk modulus [Pa]
     )
-    γfact = 20 
+    γfact = 20
     ηb    = K                # pressure storage modulus, matching JustRelax Kb
    
     # plastic = nothing
@@ -574,9 +574,6 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
 
     @info "BCs" n_lr = length(lr_nodes) n_tb = length(tb_nodes) max_vx = maximum(abs, bc_vx_lr)
 
-    h    = sqrt(Lx * Ly / mesh_stokes.nels)
-    ηmax = FP(maximum(η))
-
     # FEM pressure residuals are assembled in weak form:
     #
     #     RP_i = ∫ N_i (-∇⋅v) dΩ
@@ -587,13 +584,13 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
     # volume and pressure convergence stalls/refines incorrectly.
     #
     # Use the helper to assemble both:
-    #   dr.PC_P = M_P = ∫ N_i dΩ
+    #   dr.M_P = ∫ N_i dΩ
     #   γP      = local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
     # adapts the pressure step to viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, FP, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        dr.PC_P, γP,
+        dr.M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
         phases_v_el, dr.η, FP(γfact),
@@ -621,14 +618,14 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
     #   └─ P += γP·RP/M_P  (Arrow-Hurwicz pressure update)
     # ---------------------------------------------------------------------------
 
-    niter_PH      = 20       # max outer PH iterations
-    niter_inner   = 50_000    # max inner DR iterations per PH step
+    iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
-    rel_drop0     = FP(0.75) # inner convergence: velocity residual drops by this factor
-    # rel_drop0     = FP(1e-2) # inner convergence: velocity residual drops by this factor
+    nout          = ncheck   # residual / spectral update cadence
+    rel_drop0     = FP(1e-2) # inner convergence: velocity residual drops by this factor
+    verbose_PH    = true
     verbose_DR    = false
 
-    @info "Starting PH/DYREL-style Stokes solver" nsteps Δt niter_PH niter_inner ncheck ϵ_tol
+    @info "Starting PH/DYREL-style Stokes solver" nsteps Δt iterMax total_iterMax nout ϵ_tol
 
     # λ_min helper (Rayleigh quotient from consecutive residual snapshots).
     # JustRelax computes this with the actual velocity increment, dV = βV*dτV*dVdτ.
@@ -639,30 +636,10 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
     end
 
     # Damped DYREL/Chebyshev step from spectral step Δτ and damping λmin.
-    # Clamp c so that β = (2-c·Δτ)/(2+c·Δτ) ≥ 0; without the clamp the row-sum
-    # preconditioner (λmax≈1, λmin≈1) drives c·Δτ > 2, flipping momentum sign and
-    # causing a divergence spike when free-slip boundary DOFs have large rates.
     _cheb(Δτ, λmin, c_fact) = begin
         c = 2 * √(λmin) * c_fact
         (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
     end
-
-    assemble_augmented_momentum_jacobian_matrices_atomix!(
-        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-        element_v, element_P,
-        phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, dr.PC_P,
-        backend, workgroup,
-    )
-    λmax_vx0 = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
-    λmax_vy0 = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
-    Δτ_vx0   = 2 / √(λmax_vx0) * dr.CFL_v
-    Δτ_vy0   = 2 / √(λmax_vy0) * dr.CFL_v
-    α_vx0, β_vx0 = _cheb(Δτ_vx0, FP(0), dr.c_fact)
-    α_vy0, β_vy0 = _cheb(Δτ_vy0, FP(0), dr.c_fact)
-    @info "Initial momentum preconditioner" λmax_vx=λmax_vx0 λmax_vy=λmax_vy0 Δτ_vx=Δτ_vx0 Δτ_vy=Δτ_vy0
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
     out_dir = joinpath(@__DIR__, "output_stokes")
@@ -680,21 +657,44 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
         fill!(dr.Rv_y0, 0)
         @info "Physical time step" istep nsteps t
 
-    α_vx = α_vx0
-    β_vx = β_vx0
-    α_vy = α_vy0
-    β_vy = β_vy0
-    err_min = FP(Inf)
-    err = FP(2ϵ_tol)
-    err_v0 = FP(0)
-    err_P0 = FP(0)
-    err_v00 = FP(0)
-    iter = 0
-    rel_drop = rel_drop0
+        assemble_augmented_momentum_jacobian_matrices_atomix!(
+            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P,
+            phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            dr.ηb, Δt, γP, dr.M_P,
+            backend, workgroup,
+        )
+        λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
+        λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+        Δτ_vx   = 2 / √(λmax_vx) * dr.CFL_v
+        Δτ_vy   = 2 / √(λmax_vy) * dr.CFL_v
+        α_vx, β_vx = _cheb(Δτ_vx, FP(0), dr.c_fact)
+        α_vy, β_vy = _cheb(Δτ_vy, FP(0), dr.c_fact)
+        @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
-    for itPH in 1:niter_PH
+        err_min = FP(Inf)
+        ϵ = FP(ϵ_tol)
+        err = 2 * ϵ
+        err_v0 = FP(1)
+        err_P0 = FP(1)
+        err_v00 = FP(1)
+        iter = 0
+        rel_drop = rel_drop0
+
+        for itPH in 1:1000
 
         # ── Outer residuals (fresh momentum + pressure) for convergence check ────
+        assemble_pressure_residual_matrices_atomix!(
+            dr.RP,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P,
+            phases_P_el, dr.α, dr.ηb, Δt,
+            backend, workgroup,
+        )
+
         assemble_momentum_residual_matrices_atomix!(
             dr.Rv_x, dr.Rv_y,
             dr.vx, dr.vy, dr.P, dr.T, nothing,
@@ -706,19 +706,10 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
         apply_dirichlet!(dr.Rv_x, lr_nodes, zero_lr, backend, workgroup)
         apply_dirichlet!(dr.Rv_y, tb_nodes, zero_tb, backend, workgroup)
 
-        assemble_pressure_residual_matrices_atomix!(
-            dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-            element_v, element_P,
-            phases_P_el, dr.α, dr.ηb, Δt,
-            backend, workgroup,
-        )
-
         # ── Outer convergence check ─────────────────────────────────────────────
         # Compare the FD-like, pointwise pressure residual RP/M_P, not the weak
         # integrated residual RP.
-        err_P = norm(dr.RP ./ dr.PC_P) / √mesh_stokes.nnodesP
+        err_P = norm(dr.RP ./ dr.M_P) / √mesh_stokes.nnodesP
         err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
         if itPH == 1
             err_P0 = err_P + eps(err_P)
@@ -734,10 +725,11 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
         isnan(err) && error("NaN detected in outer loop at PH=$itPH")
         err > FP(1e10) && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
 
-        @printf("itPH = %02d iter = %06d err = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
-                itPH, iter, err, err_v, err_v / err_v0, err_P, err_P / err_P0)
-        err_P / err_P0 < ϵ_tol && err_v / err_v0 < ϵ_tol &&
-            (@info "PH converged at outer iteration $itPH"; break)
+        if verbose_PH
+            @printf("itPH = %02d iter = %06d err = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
+                    itPH, iter, err, err_v, err_v / err_v0, err_P, err_P / err_P0)
+        end
+        err < ϵ && break
 
         if err > err_min * FP(1.05)
             rel_drop = max(rel_drop * FP(0.1), FP(1e-3))
@@ -748,10 +740,12 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
         itPT  = 0
 
         # ── Inner DR loop for velocity (P held fixed) ───────────────────────────
-        while err > ϵ_vel && itPT ≤ niter_inner
+        while err > ϵ_vel && itPT ≤ iterMax
             itPT += 1
             iter += 1
-            do_jac = (mod(itPT, ncheck) == 0) || (itPT == 1)
+
+            copyto!(dr.Rv_x0, dr.Rv_x)
+            copyto!(dr.Rv_y0, dr.Rv_y)
 
             # Reassemble pressure residual (v is changing → ∇·v changes → RP changes)
             assemble_pressure_residual_matrices_atomix!(
@@ -765,7 +759,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
 
             # Numerical pressure correction
             # P_num = γP * RP.  Here RP is weak, so use γP*RP/M_P.
-            @. dr.Pnum = γP * dr.RP / dr.PC_P
+            @. dr.Pnum = γP * dr.RP / dr.M_P
 
             # Momentum residuals with pressure correction
             assemble_momentum_residual_matrices_atomix!(
@@ -776,19 +770,6 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
                 phases_v_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
-
-            # Momentum Jacobian (ForwardDiff — expensive; every ncheck)
-            if do_jac
-                assemble_augmented_momentum_jacobian_matrices_atomix!(
-                    dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-                    element_v, element_P,
-                    phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                    dr.ηb, Δt, γP, dr.PC_P,
-                    backend, workgroup,
-                )
-            end
 
             # Enforce Dirichlet BCs on residuals and rates
             apply_dirichlet!(dr.Rv_x,  lr_nodes, zero_lr, backend, workgroup)
@@ -805,10 +786,10 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
             apply_dirichlet!(dr.vx, lr_nodes, bc_vx_lr, backend, workgroup)
             apply_dirichlet!(dr.vy, tb_nodes, bc_vy_tb, backend, workgroup)
 
-            # Inner convergence check + damped step-size update (every ncheck)
-            if do_jac
+            # Inner convergence check + damped step-size update
+            if iszero(iter % nout)
                 err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
-                if iter == 1
+                if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
                 err = err_v_inner / err_v00
@@ -817,38 +798,38 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (2 * 64^2), Δt = 1 /
 
                 verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
-                # λmax → Δτ → λmin → damped step for velocity.
-                # Cap Δτ at the elastic VE limit (h²/4η_max) to prevent the plastic
-                # softening from inflating the step size when λmax drops.
+                λmin_vx = _λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
+                λmin_vy = _λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+
+                assemble_augmented_momentum_jacobian_matrices_atomix!(
+                    dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                    element_v, element_P,
+                    phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                    dr.ηb, Δt, γP, dr.M_P,
+                    backend, workgroup,
+                )
+
+                # λmax → Δτ → damped step for velocity.
                 λmax_vx  = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
                 λmax_vy  = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
-                # Δτ_v_max = h^2 / (4 * ηmax)
-                # Δτ_vx    = min(2 / √(λmax_vx) * dr.CFL_v, Δτ_v_max)
-                # Δτ_vy    = min(2 / √(λmax_vy) * dr.CFL_v, Δτ_v_max)
-
                 Δτ_vx    = 2 / √(λmax_vx) * dr.CFL_v
                 Δτ_vy    = 2 / √(λmax_vy) * dr.CFL_v
 
-                λmin_vx = itPT == 1 ? FP(0) : _λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
-                λmin_vy = itPT == 1 ? FP(0) : _λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
-
                 α_vx, β_vx = _cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = _cheb(Δτ_vy, λmin_vy, dr.c_fact)
-
-                # Snapshot residuals so ΔR in the next do_jac spans the full ncheck block.
-                copyto!(dr.Rv_x0, dr.Rv_x)
-                copyto!(dr.Rv_y0, dr.Rv_y)
             end
 
-            itPT == niter_inner && @printf("  inner: max iters (%d) reached at PH=%d\n", niter_inner, itPH)
+            itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
             iter > total_iterMax && break
         end  # inner PT loop
 
         # ── Arrow-Hurwicz pressure update (after inner velocity convergence) ─────
         # Same mass-lumped residual as Pnum: pressure is updated from the
         # pointwise divergence residual, not from the weak residual integral.
-        @. dr.P += γP * dr.RP / dr.PC_P
-        remove_pressure_mean!(dr.P, dr.PC_P)
+        @. dr.P += γP * dr.RP / dr.M_P
+        remove_pressure_mean!(dr.P, dr.M_P)
 
         iter > total_iterMax && break
     end  # outer PH loop

@@ -54,6 +54,19 @@ function assemble_viscosity_weighted_pressure_scaling!(
     return nothing
 end
 
+"""
+    viscosity_weighted_pressure_scaling_kernel!(MP, γP, el2n_v, dofs_P, geo_P,
+                                                phases_v, η, γfact, NqV, NqP,
+                                                Val(NV), Val(NP))
+
+KernelAbstractions kernel that accumulates the lumped pressure mass `MP` and
+viscosity-weighted pressure scale `γP` by numerical quadrature.
+
+At each quadrature point `q` in element `iel`, accumulates
+`MP_a += N_a(q) dΩ` and `γP_a += N_a(q) (γfact η_q / 2) dΩ` for every
+pressure DoF `a`. Atomix atomics are used unconditionally for correctness
+when pressure DoFs are shared across elements (continuous pressure spaces).
+"""
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
     MP, γP,
     @Const(el2n_v), @Const(dofs_P),

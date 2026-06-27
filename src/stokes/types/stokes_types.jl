@@ -41,8 +41,8 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `T0`       | Temperature at previous time step         |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
-| `PC_P`     | Diagonal preconditioner for pressure      |
-| `Pnum`     | Arrow-Hurwicz numerical pressure correction (`γ_eff·RP`) passed to the momentum equation |
+| `M_P`      | Lumped pressure mass (`∫ N_i dΩ`)         |
+| `Pnum`     | Arrow-Hurwicz numerical pressure correction (`γP·RP/M_P`) passed to the momentum equation |
 | `phases_P` | Per-node phase index (1-based integer)    |
 
 # Per-phase scalar tuples (`NTuple{nphases, FP}`)
@@ -96,8 +96,8 @@ struct StokesDR{nphases, _T, _TI, FP}
     # pressure-node residual and DR work arrays
     RP::_T
     RP0::_T
-    PC_P::_T
-    Pnum::_T   # Arrow-Hurwicz numerical pressure correction (γ_eff·RP) fed into momentum equation
+    M_P::_T
+    Pnum::_T   # Arrow-Hurwicz numerical pressure correction (γP·RP/M_P) fed into momentum equation
     # pressure-node phase assignment
     phases_P::_TI
     # physical parameters – one scalar per phase
@@ -139,7 +139,7 @@ struct StokesDR{nphases, _T, _TI, FP}
             newiv(),                                  # phases_v
             newv(), newv(), newv(),                   # τxx_old, τyy_old, τxy_old
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
-            newP(), newP(), newP(), newP(),           # RP, RP0, PC_P, Pnum
+            newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _g, _Tref,
             FP(CFL_v), FP(CFL_P), FP(c_fact), FP(ϵ),
@@ -176,6 +176,16 @@ struct DruckerPrager{nphases, FP}
     Kb    :: NTuple{nphases, FP}
 end
 
+"""
+    DruckerPrager(ϕ, Ψ, C, η_reg, Kb) -> DruckerPrager
+
+Construct Drucker-Prager elasto-viscoplastic parameters from friction angle
+`ϕ`, dilation angle `Ψ`, cohesion `C`, regularization viscosity `η_reg`, and
+volumetric bulk modulus `Kb`. All arguments are `NTuple{nphases, FP}`.
+
+Stores `cos(ϕ)` and `sin(ϕ)` / `sin(Ψ)` precomputed so that yield-function
+evaluations inside assembly kernels avoid repeated trigonometric calls.
+"""
 function DruckerPrager(
     ϕ     :: NTuple{nphases, FP},
     Ψ     :: NTuple{nphases, FP},

@@ -78,7 +78,14 @@ function gauss_legendre_triangle(::Type{T}, n::Int) where {T <: AbstractFloat}
     )
 end
 
-# Compute n Gauss-Legendre abscissas and weights on [0,1] via Golub-Welsch.
+"""
+    _gauss_legendre_01(T, n) -> (pts, wts)
+
+Compute `n` Gauss-Legendre abscissas and weights on `[0,1]` using the
+Golub-Welsch algorithm: eigendecompose the symmetric tridiagonal Jacobi matrix
+whose off-diagonal entries are `β_i = i/√(4i²−1)`, then shift from `[-1,1]`
+and normalize. Weights sum to 1.
+"""
 function _gauss_legendre_01(::Type{T}, n::Int) where {T <: AbstractFloat}
     n == 1 && return (SVector{1,T}(T(1)/2),  SVector{1,T}(one(T)))
 

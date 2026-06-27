@@ -3,6 +3,17 @@ dot_or_zero(a, b) = dot(a, b)
 @inline pressure_scale(γ_eff::Number, RP, MP) = γ_eff * RP ./ MP
 @inline pressure_scale(γ_eff::SVector, RP, MP) = γ_eff .* RP ./ MP
 @inline effective_viscosity(η, G, Δt) = inv(inv(η) + inv(G * Δt))
+"""
+    viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt) -> (ηve, inv_2Gdt)
+
+Interpolate shear viscosity and elastic shear modulus to a quadrature point
+and return the Maxwell viscoelastic effective viscosity `ηve` and the elastic
+correction coefficient `1/(2G Δt)`.
+
+Compliance `1/G` is interpolated (rather than `G` itself) so that the purely
+viscous limit `G = Inf` stays numerically stable, including at quadratic
+integration points where shape functions can be negative.
+"""
 @inline function viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
     ηq  = interp2ip_phase(Nv, η, phase_loc)
     # Interpolate compliance so G=Inf stays finite at quadratic IPs.
@@ -25,6 +36,18 @@ end
     )
 end
 
+"""
+    second_invariant(τxx, τyy, τxy) -> τII
+    second_invariant(A) -> τII
+
+Compute the second invariant `τII = √J₂` of a 2-D symmetric deviatoric
+stress tensor.
+
+Includes the out-of-plane component `τzz = −τxx − τyy` required for
+plane-strain consistency:
+
+    τII = √((τxx² + τyy² + τzz²) / 2 + τxy²)
+"""
 @inline second_invariant(axx, ayy, axy) = second_invariant(tuple(axx, ayy, axy))
 
 @inline function second_invariant(A::T) where {T <: Union{SVector{3}, NTuple{3}}}
@@ -33,6 +56,17 @@ end
     return √((A[1]^2 + A[2]^2 + Azz^2) / 2 + (A[3]^2))
 end
 
+"""
+    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old) -> (τxx, τyy, τxy)
+
+Compute the viscoelastic deviatoric stress at a quadrature point.
+
+`v = (vxloc, vyloc)` are element velocity `SVector`s. Strain rates are
+computed from the velocity gradients `∇v = ∂N∂x' * vloc`. The Maxwell
+effective viscosity `ηve` and elastic correction term `τ_old / (2GΔt)` are
+evaluated via `viscoelastic_coefficients_phase`. Pass `(0, 0, 0)` for
+`τ_old` on the first time step.
+"""
 # Pure viscoelastic stress — no yield criterion.
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
     vxloc, vyloc = v
@@ -57,6 +91,17 @@ end
 @inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing) =
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
 
+"""
+    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
+
+Compute the elasto-viscoplastic deviatoric stress at a quadrature point with
+Drucker-Prager return mapping.
+
+Computes the trial viscoelastic stress, evaluates the yield function
+`F = τII − C·cos(ϕ) − P·sin(ϕ)`, and applies the plastic return
+`τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
+regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
+"""
 # Viscoelastic–Drucker-Prager plastic stress.
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager)
     vxloc, vyloc = v
@@ -982,6 +1027,26 @@ function assemble_momentum_jacobian_matrices_atomix!(
     KA.synchronize(backend)
 end
 
+"""
+    element_augmented_momentum_jacobians(vx, vy, P, P0, T, T0,
+                                          el2n_v, el2nP, geo_v, geo_P,
+                                          phases_v, phases_P,
+                                          η, G, α, ρ0, K, g, Tref,
+                                          ηb, Δt, γ_eff, MP, Nq, NqP,
+                                          iel, Val(NV), Val(NP))
+
+Compute per-element Jacobian diagnostics for the augmented Stokes momentum
+residuals via ForwardDiff, accounting for the DYREL/Arrow-Hurwicz numerical
+pressure correction computed inline.
+
+The pressure correction `Pnum = γ_eff * RP(v) / M_P` is re-evaluated inside
+each ForwardDiff call from the current velocity, capturing the
+velocity-to-pressure-to-velocity coupling introduced by the Arrow-Hurwicz
+scheme. This makes the preconditioner more effective than
+`element_momentum_jacobians` for problems where that coupling is significant.
+
+Returns `(local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y)`.
+"""
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
     phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
@@ -1074,6 +1139,25 @@ end
     return local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y
 end
 
+"""
+    assemble_augmented_momentum_jacobian_matrices_atomix!(
+        ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
+        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
+        element_v, element_P, phases_v, phases_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP,
+        backend, workgroup)
+
+Assemble the augmented Stokes momentum Jacobian diagnostics using
+Atomix-backed atomic scatter.
+
+Compared to `assemble_momentum_jacobian_matrices_atomix!`, this assembler
+includes the DYREL/Arrow-Hurwicz numerical pressure correction in the
+Jacobian by computing `Pnum = γ_eff * RP(v) / M_P` inline inside each
+ForwardDiff call via `element_augmented_momentum_jacobians`. This captures
+the velocity–pressure coupling and produces a more effective preconditioner
+for incompressible Stokes flows. `P0`, `T0`, `ηb`, `γ_eff`, and `MP` are
+the additional arguments relative to the non-augmented assembler.
+"""
 function assemble_augmented_momentum_jacobian_matrices_atomix!(
     ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
     vx, vy,
