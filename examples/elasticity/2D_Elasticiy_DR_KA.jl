@@ -10,7 +10,6 @@ using KernelAbstractions
 import KernelAbstractions as KA
 using GLMakie
 using FEMTools
-using Metal
 # ---------------------------------------------------------------------------
 # 2D linear elasticity (plane strain) of a cantilever clamped on the left
 # face, loaded by gravity, solved with dynamic relaxation (second-order
@@ -19,11 +18,8 @@ using Metal
 # and diagonal preconditioner (PCx, PCy). Assembly is atomics-based only.
 # ---------------------------------------------------------------------------
 
-# const backend   = CPU()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
-const backend   = MetalBackend()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
+const backend   = CPU()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
 const workgroup = 64
-const FP        = Float32 # floating-point precision: Float32 required on Metal
-                          # (no Float64 on Apple GPUs), Float64 fine on CPU/CUDA
 
 @inline function element_coordinate_matrix(coords, local_nodes::SVector{N, Int}) where {N}
     data = ntuple(Val(2N)) do k
@@ -31,7 +27,7 @@ const FP        = Float32 # floating-point precision: Float32 required on Metal
         row = k - (col - 1) * N
         coords[local_nodes[row]][col]
     end
-    return SMatrix{N, 2, FP, 2N}(data)
+    return SMatrix{N, 2, Float64, 2N}(data)
 end
 
 @inline local_nodes_of(el2n, iel, ::Val{N}) where N =
@@ -242,7 +238,7 @@ end
 
 function precompute_geometry(coords, el2n, nels, element::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
     NQ = length(element.integration_points.ω)
-    geo = KA.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 2, FP, 2N}, FP}}, nels)
+    geo = KA.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 2, Float64, 2N}, Float64}}, nels)
     return precompute_geometry!(geo, coords, el2n, nels, element)
 end
 
@@ -296,20 +292,18 @@ function solve_increment!(Ux, Uy, Rx, Ry, Rx0, Ry0, ∂Ux∂τ, ∂Uy∂τ, ∂R
     # estimate λmax on the current configuration
     assemble_elasticity_colored!(Rx, Ry, ∂R∂Ux, ∂R∂Uy, PCx, PCy, Ux, Uy, el2n, geo, element, λ, μ, bx, by, true, colors)
 
-    # all iteration scalars in FP: they enter kernels and device broadcasts,
-    # and Float64 ops are unavailable on Metal
-    CFL    = FP(0.99)
-    c_fact = FP(0.9)
+    CFL    = 0.99
+    c_fact = 0.9
 
     λmax = max(maximum(∂R∂Ux ./ PCx), maximum(∂R∂Uy ./ PCy))
     Δτ   = 2 / √(λmax) * CFL
-    λmin = zero(FP)
+    λmin = 0.0
     c    = 2 * √(λmin) * c_fact
     α    = 2 * Δτ^2 / (2 + c * Δτ)
     β    = (2 - c * Δτ) / (2 + c * Δτ)
 
-    nr0    = zero(FP)
-    relres = FP(NaN)
+    nr0    = 0.0
+    relres = NaN
     iters  = 0
     ncheck = 1000
     for it = 1:200_000
@@ -353,7 +347,7 @@ function solve_increment!(Ux, Uy, Rx, Ry, Rx0, Ry0, ∂Ux∂τ, ∂Uy∂τ, ∂R
             Δτ   = 2 / √(λmax) * CFL
             denom = sum( (Δτ.*∂Ux∂τ).^2 ) + sum( (Δτ.*∂Uy∂τ).^2 )
             λmin  = if it == 1 || denom == 0
-                zero(FP) # R0 not valid yet at it==1; denom==0 at convergence
+                0.0 # R0 not valid yet at it==1; denom==0 at convergence
             else
                 abs( sum(Δτ.*∂Ux∂τ.*( (Rx .- Rx0) ./ PCx )) +
                      sum(Δτ.*∂Uy∂τ.*( (Ry .- Ry0) ./ PCy )) ) / denom
@@ -371,20 +365,20 @@ function main(nels)
     Lx, Ly = 4.0, 1.0                           # cantilever: length x thickness
 
     Ω = (0.0..Lx) × (0.0..Ly)
-    element = ReferenceElement(LinearElement{2, 4, FP})
-    # element = ReferenceElement(QuadraticElement{2, 9, FP})
+    element = ReferenceElement(LinearElement{2, 4, Float64})
+    # element = ReferenceElement(QuadraticElement{2, 9, Float64})
     mesh = FEMTools.Mesh(Ω, element, nels)
 
-    # material (plane strain) and gravity load, all in FP
-    E      = FP(1.0)                            # Young's modulus
-    ν      = FP(0.3)                            # Poisson ratio
+    # material (plane strain) and gravity load
+    E      = 1.0                                # Young's modulus
+    ν      = 0.3                                # Poisson ratio
     μ      = E / (2 * (1 + ν))                  # shear modulus
     λ      = E * ν / ((1 + ν) * (1 - 2ν))       # Lamé parameter
-    bx       = FP(0.0)                          # body force x
-    by_total = FP(-1e-3)                        # total gravity, applied incrementally
+    bx       = 0.0                              # body force x
+    by_total = -1e-3                            # total gravity, applied incrementally
     nsteps   = 1                                # load/time steps (Lagrangian advection)
     Δby      = by_total / nsteps                # gravity increment per step
-    epsi     = FP === Float32 ? FP(1e-6) : FP(1e-9)  # FP32 cannot resolve 1e-9 relative
+    epsi     = 1e-9
 
     # clamped on the left face: ux = uy = 0; all other faces traction-free
     clamped(p, D) = begin
@@ -399,21 +393,21 @@ function main(nels)
     coords  = to_backend(mesh.coords)
     el2n    = to_backend(mesh.el2n)
     Γ_dofs  = to_backend(Γ_dofs_host)
-    Γ_zero  = to_backend(zeros(FP, length(Γ_dofs_host)))
-    Ux      = KA.zeros(backend, FP, mesh.nnodes)
-    Uy      = KA.zeros(backend, FP, mesh.nnodes)
-    Uxtot   = KA.zeros(backend, FP, mesh.nnodes)
-    Uytot   = KA.zeros(backend, FP, mesh.nnodes)
-    Rx      = KA.zeros(backend, FP, mesh.nnodes)
-    Ry      = KA.zeros(backend, FP, mesh.nnodes)
-    Rx0     = KA.zeros(backend, FP, mesh.nnodes)
-    Ry0     = KA.zeros(backend, FP, mesh.nnodes)
-    ∂Ux∂τ   = KA.zeros(backend, FP, mesh.nnodes)
-    ∂Uy∂τ   = KA.zeros(backend, FP, mesh.nnodes)
-    ∂R∂Ux   = KA.zeros(backend, FP, mesh.nnodes)
-    ∂R∂Uy   = KA.zeros(backend, FP, mesh.nnodes)
-    PCx     = KA.zeros(backend, FP, mesh.nnodes)
-    PCy     = KA.zeros(backend, FP, mesh.nnodes)
+    Γ_zero  = to_backend(zeros(Float64, length(Γ_dofs_host)))
+    Ux      = KA.zeros(backend, Float64, mesh.nnodes)
+    Uy      = KA.zeros(backend, Float64, mesh.nnodes)
+    Uxtot   = KA.zeros(backend, Float64, mesh.nnodes)
+    Uytot   = KA.zeros(backend, Float64, mesh.nnodes)
+    Rx      = KA.zeros(backend, Float64, mesh.nnodes)
+    Ry      = KA.zeros(backend, Float64, mesh.nnodes)
+    Rx0     = KA.zeros(backend, Float64, mesh.nnodes)
+    Ry0     = KA.zeros(backend, Float64, mesh.nnodes)
+    ∂Ux∂τ   = KA.zeros(backend, Float64, mesh.nnodes)
+    ∂Uy∂τ   = KA.zeros(backend, Float64, mesh.nnodes)
+    ∂R∂Ux   = KA.zeros(backend, Float64, mesh.nnodes)
+    ∂R∂Uy   = KA.zeros(backend, Float64, mesh.nnodes)
+    PCx     = KA.zeros(backend, Float64, mesh.nnodes)
+    PCy     = KA.zeros(backend, Float64, mesh.nnodes)
 
     geo = precompute_geometry(coords, el2n, mesh.nels, element)
     colors = color_element_batches(mesh)
@@ -439,8 +433,8 @@ function main(nels)
         precompute_geometry!(geo, coords, el2n, mesh.nels, element)
 
         # accumulate total displacement
-        update_variable_kernel!(backend, workgroup)(Uxtot, Ux, one(FP); ndrange = mesh.nnodes)
-        update_variable_kernel!(backend, workgroup)(Uytot, Uy, one(FP); ndrange = mesh.nnodes)
+        update_variable_kernel!(backend, workgroup)(Uxtot, Ux, 1.0; ndrange = mesh.nnodes)
+        update_variable_kernel!(backend, workgroup)(Uytot, Uy, 1.0; ndrange = mesh.nnodes)
         KA.synchronize(backend)
 
         @printf("step %02d: %6d DR iters (relres %.1e), tip uy = %+.4e\n",

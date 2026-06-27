@@ -59,23 +59,23 @@ function compute_strain_rate_stress_postprocess(
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
 
-    εxx = zeros(FP, nels)
-    εyy = zeros(FP, nels)
-    εzz = zeros(FP, nels)
-    εxy = zeros(FP, nels)
-    εII = zeros(FP, nels)
-    τxx = zeros(FP, nels)
-    τyy = zeros(FP, nels)
-    τzz = zeros(FP, nels)
-    τxy = zeros(FP, nels)
-    τII = zeros(FP, nels)
+    εxx = zeros(Float64, nels)
+    εyy = zeros(Float64, nels)
+    εzz = zeros(Float64, nels)
+    εxy = zeros(Float64, nels)
+    εII = zeros(Float64, nels)
+    τxx = zeros(Float64, nels)
+    τyy = zeros(Float64, nels)
+    τzz = zeros(Float64, nels)
+    τxy = zeros(Float64, nels)
+    τII = zeros(Float64, nels)
 
     for iel in 1:nels
         local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
         vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
         vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
         geo_el = geo_v[iel]
-        volume = zero(FP)
+        volume = 0.0
 
         for q in eachindex(geo_el)
             ∂N∂x, dΩ = geo_el[q]
@@ -142,7 +142,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
         vtk_node_map[old_i] = Int32(new_i)
     end
 
-    vtk_P = zeros(FP, length(vtk_nodes))
+    vtk_P = zeros(Float64, length(vtk_nodes))
     vtk_P_count = zeros(Int, length(vtk_nodes))
     for iel in 1:mesh_stokes.nels
         for a in 1:NP
@@ -218,7 +218,6 @@ end
 # Parameters
 # ---------------------------------------------------------------------------
 
-const FP = Float64
 function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = true)
     # Domain
     Lx, Ly = 1.0, 1.0
@@ -229,22 +228,22 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
 
     # Material (2 phases: matrix + inclusion)
     η     = (1.0,     1.0)   # shear viscosity
-    γfact = 20 
+    γfact = 20.0
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     1.0)   # reference density
     K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
     ηb    = K                # pressure storage modulus; residual uses ηb * Δt
     G     = (1e0,     0.5)   # Shear modulus
-    G_stokes = NTuple{2, FP}(G)
+    G_stokes = G
     # Cohesion chosen so the yield stress C·cosϕ = 1.6 at zero pressure.
     # Background deviatoric stress in pure shear is 2η·ε̇_bg = 2, so the
     # inclusion (lower G) will enter the plastic regime after a few steps.
-    τy      =  FP(1.6 / cosd(30))              # cohesion C; yield stress = C·cosϕ = 1.6
+    τy      = 1.6 / cosd(30)                   # cohesion C; yield stress = C·cosϕ = 1.6
     plastic = DruckerPrager(
-        NTuple{2, FP}((π/6, π/6)),             # friction angle ϕ = 30° [rad]
-        NTuple{2, FP}((0,   0)),               # dilation angle Ψ = 0°  [rad] (non-associated)
-        NTuple{2, FP}((τy, τy)),               # cohesion C [same for both phases]
-        NTuple{2, FP}((8.0e-3, 8.0e-3)),       # plastic regularisation viscosity η_reg
+        (π/6, π/6),                            # friction angle ϕ = 30° [rad]
+        (0.0, 0.0),                            # dilation angle Ψ = 0°  [rad] (non-associated)
+        (τy, τy),                              # cohesion C [same for both phases]
+        (8.0e-3, 8.0e-3),                      # plastic regularisation viscosity η_reg
         K,                               # Kb (passed separately from elastic K)
     )
     g     = (0.0,     0.0)   # gravity vector
@@ -259,8 +258,8 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     # ---------------------------------------------------------------------------
 
     Ω         = (0.0..Lx) × (0.0..Ly)
-    element_v = ReferenceElement(QuadraticElement{2, 7, FP})   # T7 (bubble)
-    element_P = ReferenceElement(LinearElement{2, 3, FP})      # P1-disc
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
     mesh_v      = Mesh(backend, Ω, element_v, (nx, ny))
     mesh_stokes = MixedMesh(mesh_v, element_P)
@@ -280,8 +279,8 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
     ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}}(undef, mesh_stokes.nels)
+    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
+    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
 
     precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
     precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
@@ -294,11 +293,11 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        NTuple{2, FP}(η), NTuple{2, FP}(ηb), NTuple{2, FP}(α);
-        ρ0   = NTuple{2, FP}(ρ0),
-        K    = NTuple{2, FP}(K),
-        g    = NTuple{2, FP}(g),
-        Tref = FP(Tref),
+        η, ηb, α;
+        ρ0,
+        K,
+        g,
+        Tref,
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
@@ -311,9 +310,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     # Phase assignment — circular inclusion
     # ---------------------------------------------------------------------------
 
-    r_incl = FP(0.1)
-    cx     = FP(Lx / 2)
-    cy     = FP(Ly / 2)
+    r_incl = 0.1
+    cx     = Lx / 2
+    cy     = Ly / 2
 
     in_incl(c) = (c[1] - cx)^2 + (c[2] - cy)^2 ≤ r_incl^2
 
@@ -339,17 +338,17 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
 
-    x_bc = FP[coords[n][1] for n in Γnodes]
-    y_bc = FP[coords[n][2] for n in Γnodes]
+    x_bc = Float64[coords[n][1] for n in Γnodes]
+    y_bc = Float64[coords[n][2] for n in Γnodes]
 
-    bc_vx_vals = FP[@.( ε̇_bg * (x_bc - Lx / 2))...]
-    bc_vy_vals = FP[@.(-ε̇_bg * (y_bc - Ly / 2))...]
+    bc_vx_vals = Float64[@.( ε̇_bg * (x_bc - Lx / 2))...]
+    bc_vy_vals = Float64[@.(-ε̇_bg * (y_bc - Ly / 2))...]
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
     # by apply_bc! below; the result is identical on those nodes).
-    copyto!(dr.vx, FP[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
-    copyto!(dr.vy, FP[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
+    copyto!(dr.vx, Float64[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
+    copyto!(dr.vy, Float64[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, Γnodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, Γnodes, bc_vy_vals))
@@ -372,18 +371,18 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     #   γP      = local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
     # adapts the pressure step to viscosity contrasts.
-    γP = KernelAbstractions.zeros(backend, FP, mesh_stokes.nnodesP)
+    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
         M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        dr.phases_v, dr.η, FP(γfact), dr.K, Δt,
+        dr.phases_v, dr.η, γfact, dr.K, Δt,
         backend, workgroup,
     )
 
-    Δt = Δt === nothing ? FP(0.5 / max(abs(ε̇_bg), eps(FP))) : FP(Δt)
-    time_history = zeros(FP, nsteps)
-    mean_tauII_history = zeros(FP, nsteps)
+    Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
+    time_history = zeros(Float64, nsteps)
+    mean_tauII_history = zeros(Float64, nsteps)
 
     # ---------------------------------------------------------------------------
     # Powell-Hestenes / DYREL-style Stokes solver
@@ -406,7 +405,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
     nout          = ncheck   # residual / spectral update cadence
-    rel_drop0     = FP(1e-2) # inner convergence: velocity residual drops by this factor
+    rel_drop0     = 1e-2     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
 
@@ -417,7 +416,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     _λmin(step, rate, ΔR, PC) = begin
         dV = step .* rate
         denom = sum(dV .^ 2)
-        denom == 0 ? FP(0) : abs(sum(dV .* (ΔR ./ PC))) / denom
+        denom == 0 ? 0.0 : abs(sum(dV .* (ΔR ./ PC))) / denom
     end
 
     # Damped DYREL/Chebyshev step from spectral step Δτ and damping λmin.
@@ -455,16 +454,16 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
         λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
         Δτ_vx   = 2 / √(λmax_vx) * dr.CFL_v
         Δτ_vy   = 2 / √(λmax_vy) * dr.CFL_v
-        α_vx, β_vx = _cheb(Δτ_vx, FP(0), dr.c_fact)
-        α_vy, β_vy = _cheb(Δτ_vy, FP(0), dr.c_fact)
+        α_vx, β_vx = _cheb(Δτ_vx, 0.0, dr.c_fact)
+        α_vy, β_vy = _cheb(Δτ_vy, 0.0, dr.c_fact)
         @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
-        err_min = FP(Inf)
-        ϵ = FP(ϵ_tol)
+        err_min = Inf
+        ϵ = Float64(ϵ_tol)
         err = 2 * ϵ
-        err_v0 = FP(1)
-        err_P0 = FP(1)
-        err_v00 = FP(1)
+        err_v0 = 1.0
+        err_P0 = 1.0
+        err_v00 = 1.0
         iter = 0
         rel_drop = rel_drop0
 
@@ -503,21 +502,23 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
             if itPH == 2
                 err_P0 = err_P + eps(err_P)
             end
-            err_v_rel = max(err_v / err_v0, err_v)
-            err_P_rel = max(err_P / err_P0, err_P)
-            err = max(err_v_rel, err_P_rel)
+            err_v_rel = err_v / err_v0
+            err_P_rel = err_P / err_P0
+            err_abs = max(err_v, err_P)
+            err_rel = max(err_v_rel, err_P_rel)
+            err = min(err_abs, err_rel)
 
             isnan(err) && error("NaN detected in outer loop at PH=$itPH")
-            err > FP(1e10) && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
+            err > 1e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
 
             if verbose_PH
-                @printf("itPH = %02d iter = %06d err = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
-                        itPH, iter, err, err_v, err_v / err_v0, err_P, err_P / err_P0)
+                @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
+                        itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
             end
             err < ϵ && break
 
-            if err > err_min * FP(1.05)
-                rel_drop = max(rel_drop * FP(0.1), FP(1e-3))
+            if err > err_min * 1.05
+                rel_drop = max(rel_drop * 0.1, 1e-3)
             end
             err_min = min(err_min, err)
 
@@ -579,7 +580,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                     end
                     err = max(err_v_inner / err_v00, err_v_inner)
                     isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
-                    err > FP(1e10) && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+                    err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
                     verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 

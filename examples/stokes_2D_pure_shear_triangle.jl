@@ -75,6 +75,8 @@ function remove_pressure_mean!(P, MP)
     return p_mean
 end
 
+pressure_mass(dr) = hasproperty(dr, :M_P) ? getproperty(dr, :M_P) : getproperty(dr, :PC_P)
+
 @inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
 @inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
 @inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where N =
@@ -100,23 +102,23 @@ function compute_strain_rate_stress_postprocess(
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
 
-    εxx = zeros(FP, nels)
-    εyy = zeros(FP, nels)
-    εzz = zeros(FP, nels)
-    εxy = zeros(FP, nels)
-    εII = zeros(FP, nels)
-    τxx = zeros(FP, nels)
-    τyy = zeros(FP, nels)
-    τzz = zeros(FP, nels)
-    τxy = zeros(FP, nels)
-    τII = zeros(FP, nels)
+    εxx = zeros(Float64, nels)
+    εyy = zeros(Float64, nels)
+    εzz = zeros(Float64, nels)
+    εxy = zeros(Float64, nels)
+    εII = zeros(Float64, nels)
+    τxx = zeros(Float64, nels)
+    τyy = zeros(Float64, nels)
+    τzz = zeros(Float64, nels)
+    τxy = zeros(Float64, nels)
+    τII = zeros(Float64, nels)
 
     for iel in 1:nels
         local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
         vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
         vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
         geo_el = geo_v[iel]
-        volume = zero(FP)
+        volume = 0.0
 
         for q in eachindex(geo_el)
             ∂N∂x, dΩ = geo_el[q]
@@ -191,7 +193,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
         vtk_node_map[old_i] = Int32(new_i)
     end
 
-    vtk_P = zeros(FP, length(vtk_nodes))
+    vtk_P = zeros(Float64, length(vtk_nodes))
     vtk_P_count = zeros(Int, length(vtk_nodes))
     for iel in 1:mesh_stokes.nels
         for a in 1:NP
@@ -345,44 +347,42 @@ end
 # Parameters
 # ---------------------------------------------------------------------------
 
-const FP = Float64
 """
-    main(; nsteps=19, n_circle=96, max_area=1 / (2 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
+    main(; nsteps=15, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
 
 Run the unstructured T7/P1-disc pure-shear Stokes example.
 
 The model builds a square domain with a circular inclusion, applies pure-shear
-free-slip boundary conditions, advances the viscoelastic-plastic Stokes solve,
-writes one VTK file per physical step, and returns the stress-history
-diagnostics.
+boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
+VTK file per physical step, and returns the stress-history diagnostics.
 """
-function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
     # Domain
     Lx, Ly = 1.0, 1.0
 
     # Background pure-shear strain rate (non-dimensional)
     ε̇_bg = 1.0
-    Δt = FP(Δt)
 
     # Material (2 phases: matrix + inclusion)
     η     = (1.0,     1.0)   # shear viscosity
+    γfact = 20.0
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
-    ρ0    = (0.0,     0.0)   # reference density
-    K     = (4,         4)   # bulk modulus  (Inf → incompressible)
-    G     = (1.0,     0.5)   # Shear modulus  (Inf → purely viscous)
-    G_stokes = NTuple{2, FP}(G)
-    τy   = 1.6 / cosd(30)
+    ρ0    = (1.0,     1.0)   # reference density
+    K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
+    ηb    = K                # pressure storage modulus; residual uses ηb * Δt
+    G     = (1e0,     0.5)   # Shear modulus
+    G_stokes = G
+    # Cohesion chosen so the yield stress C·cosϕ = 1.6 at zero pressure.
+    # Background deviatoric stress in pure shear is 2η·ε̇_bg = 2, so the
+    # inclusion (lower G) will enter the plastic regime after a few steps.
+    τy      = 1.6 / cosd(30)                   # cohesion C; yield stress = C·cosϕ = 1.6
     plastic = DruckerPrager(
-        NTuple{2, FP}((π/6, π/6)),        # friction angle ϕ  [rad]
-        NTuple{2, FP}((0,   0)),          # dilation angle Ψ  [rad]
-        NTuple{2, FP}((τy, τy)),          # cohesion C        [Pa]
-        NTuple{2, FP}((8.0e-3,  8.0e-3)), # η_reg             [Pa s]
-        NTuple{2, FP}(K),                 # Kb ≈ bulk modulus [Pa]
+        (π/6, π/6),                            # friction angle ϕ = 30° [rad]
+        (0.0, 0.0),                            # dilation angle Ψ = 0°  [rad] (non-associated)
+        (τy, τy),                              # cohesion C [same for both phases]
+        (8.0e-3,  8.0e-3),                     # plastic regularisation viscosity η_reg
+        K,                                     # Kb (passed separately from elastic K)
     )
-    γfact = 20
-    ηb    = K                # pressure storage modulus, matching JustRelax Kb
-   
-    # plastic = nothing
     g     = (0.0,     0.0)   # gravity vector
     Tref  = 0.0
 
@@ -392,19 +392,19 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
 
     # Inclusion geometry. The Triangle PSLG uses this circle as an internal
     # constrained boundary, so no element crosses the material interface.
-    r_incl = FP(0.1)
-    cx     = FP(Lx / 2)
-    cy     = FP(Ly / 2)
+    r_incl = 0.1
+    cx     = Lx / 2
+    cy     = Ly / 2
 
     # ---------------------------------------------------------------------------
     # Meshes
     # ---------------------------------------------------------------------------
 
-    element_v = ReferenceElement(QuadraticElement{2, 7, FP})   # T7 (bubble)
-    element_P = ReferenceElement(LinearElement{2, 3, FP})      # P1-disc
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
     coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_triangle_t7_inclusion_mesh(;
-        Lx = FP(Lx), Ly = FP(Ly),
+        Lx, Ly,
         cx, cy, r = r_incl,
         n_circle,
         max_area,
@@ -431,8 +431,8 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
     ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}}(undef, mesh_stokes.nels)
+    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
+    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
 
     precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
     precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
@@ -441,19 +441,20 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
-    cfl_stokes = FP(0.95 / sqrt(2.1))
     dr = StokesDR(
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        NTuple{2, FP}(η), NTuple{2, FP}(ηb), NTuple{2, FP}(α);
-        ρ0   = NTuple{2, FP}(ρ0),
-        K    = NTuple{2, FP}(K),
-        g    = NTuple{2, FP}(g),
-        Tref = FP(Tref),
-        CFL_v = cfl_stokes, CFL_P = cfl_stokes, c_fact = 0.9,
+        η, ηb, α;
+        ρ0,
+        K,
+        g,
+        Tref,
+        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
+        # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
     )
+    M_P = pressure_mass(dr)
     τ = (dr.τxx, dr.τyy, dr.τxy)
     τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
 
@@ -464,7 +465,6 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     in_incl(c) = (c[1] - cx)^2 + (c[2] - cy)^2 ≤ r_incl^2
 
     coords_v     = Array(mesh_stokes.coords)
-    el2n_v_cpu   = Array(mesh_stokes.el2n)
     phases_v_cpu = Int[in_incl(c) ? 2 : 1 for c in coords_v]
     copyto!(dr.phases_v, phases_v_cpu)
 
@@ -476,52 +476,34 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     ]
     copyto!(dr.phases_P, phases_P_cpu)
 
-    element_phases = Vector{Int}(undef, mesh_stokes.nels)
-    for iel in 1:mesh_stokes.nels
-        c1 = coords_v[el2n_v_cpu[1, iel]]
-        c2 = coords_v[el2n_v_cpu[2, iel]]
-        c3 = coords_v[el2n_v_cpu[3, iel]]
-        element_phases[iel] = in_incl((c1 + c2 + c3) / 3) ? 2 : 1
-    end
-    phases_v_el = Matrix{Int}(undef, NV, mesh_stokes.nels)
-    phases_P_el = Matrix{Int}(undef, NP, mesh_stokes.nels)
-    for iel in 1:mesh_stokes.nels
-        phases_v_el[:, iel] .= element_phases[iel]
-        phases_P_el[:, iel] .= element_phases[iel]
-    end
-
-    @info "Phases" n_incl_nodes=count(==(2), phases_v_cpu) n_incl_elements=count(==(2), element_phases)
+    @info "Phases" n_incl_v=count(==(2), phases_v_cpu) n_incl_P=count(==(2), phases_P_cpu)
 
     # ---------------------------------------------------------------------------
-    # Boundary conditions — pure shear + free slip
-    #   left/right walls  (x = 0 or Lx): fix Vx = +ε̇·x,  Vy free
-    #   top/bottom walls  (y = 0 or Ly): fix Vy = −ε̇·y,  Vx free
+    # Boundary conditions — pure shear
+    #   vx = +ε̇_bg * (x - Lx/2),   vy = -ε̇_bg * (y - Ly/2)
     # ---------------------------------------------------------------------------
 
-    coords  = Array(mesh_v.coords)
-    Γnodes  = Array(mesh_v.Γnodes)
-    tol_bc  = 100 * eps(Float64) * max(Lx, Ly)
+    Γnodes = Array(mesh_v.Γnodes)
+    coords = Array(mesh_v.coords)
 
-    vx_bg = FP[ ε̇_bg * coords[n][1] for n in eachindex(coords)]
-    vy_bg = FP[-ε̇_bg * coords[n][2] for n in eachindex(coords)]
-    copyto!(dr.vx, vx_bg)
-    copyto!(dr.vy, vy_bg)
+    x_bc = Float64[coords[n][1] for n in Γnodes]
+    y_bc = Float64[coords[n][2] for n in Γnodes]
 
-    lr_nodes = Int32[n for n in Γnodes if abs(coords[n][1])      ≤ tol_bc ||
-                                          abs(coords[n][1] - Lx) ≤ tol_bc]
-    tb_nodes = Int32[n for n in Γnodes if abs(coords[n][2])      ≤ tol_bc ||
-                                          abs(coords[n][2] - Ly) ≤ tol_bc]
+    bc_vx_vals = Float64[@.( ε̇_bg * (x_bc - Lx / 2))...]
+    bc_vy_vals = Float64[@.(-ε̇_bg * (y_bc - Ly / 2))...]
 
-    bc_vx_lr = FP[ ε̇_bg * coords[n][1] for n in lr_nodes]
-    bc_vy_tb = FP[-ε̇_bg * coords[n][2] for n in tb_nodes]
+    # Seed the full interior with the analytical pure-shear field so the
+    # solver starts with a good initial guess (boundary nodes are overwritten
+    # by apply_bc! below; the result is identical on those nodes).
+    copyto!(dr.vx, Float64[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
+    copyto!(dr.vy, Float64[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, lr_nodes, bc_vx_lr))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, tb_nodes, bc_vy_tb))
+    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, Γnodes, bc_vx_vals))
+    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, Γnodes, bc_vy_vals))
 
-    zero_lr = zero(bc_vx_lr)
-    zero_tb = zero(bc_vy_tb)
+    zero_vbc = zero(bc_vx_vals)
 
-    @info "BCs" n_lr = length(lr_nodes) n_tb = length(tb_nodes) max_vx = maximum(abs, bc_vx_lr)
+    @info "BCs" n_bc = length(Γnodes) max_vx = maximum(abs, bc_vx_vals)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -537,17 +519,18 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     #   γP      = local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
     # adapts the pressure step to viscosity contrasts.
-    γP = KernelAbstractions.zeros(backend, FP, mesh_stokes.nnodesP)
+    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        dr.M_P, γP,
+        M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        phases_v_el, dr.η, FP(γfact), dr.K, Δt,
+        dr.phases_v, dr.η, γfact, dr.K, Δt,
         backend, workgroup,
     )
 
-    time_history = zeros(FP, nsteps)
-    mean_tauII_history = zeros(FP, nsteps)
+    Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
+    time_history = zeros(Float64, nsteps)
+    mean_tauII_history = zeros(Float64, nsteps)
 
     # ---------------------------------------------------------------------------
     # Powell-Hestenes / DYREL-style Stokes solver
@@ -570,7 +553,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
     nout          = ncheck   # residual / spectral update cadence
-    rel_drop0     = FP(1e-2) # inner convergence: velocity residual drops by this factor
+    rel_drop0     = 1e-2     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
 
@@ -581,7 +564,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     _λmin(step, rate, ΔR, PC) = begin
         dV = step .* rate
         denom = sum(dV .^ 2)
-        denom == 0 ? FP(0) : abs(sum(dV .* (ΔR ./ PC))) / denom
+        denom == 0 ? 0.0 : abs(sum(dV .* (ΔR ./ PC))) / denom
     end
 
     # Damped DYREL/Chebyshev step from spectral step Δτ and damping λmin.
@@ -611,184 +594,186 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-            dr.ηb, Δt, γP, dr.M_P,
+            dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            dr.ηb, Δt, γP, M_P,
             backend, workgroup,
         )
         λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
         λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
         Δτ_vx   = 2 / √(λmax_vx) * dr.CFL_v
         Δτ_vy   = 2 / √(λmax_vy) * dr.CFL_v
-        α_vx, β_vx = _cheb(Δτ_vx, FP(0), dr.c_fact)
-        α_vy, β_vy = _cheb(Δτ_vy, FP(0), dr.c_fact)
+        α_vx, β_vx = _cheb(Δτ_vx, 0.0, dr.c_fact)
+        α_vy, β_vy = _cheb(Δτ_vy, 0.0, dr.c_fact)
         @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
-        err_min = FP(Inf)
-        ϵ = FP(ϵ_tol)
+        err_min = Inf
+        ϵ = Float64(ϵ_tol)
         err = 2 * ϵ
-        err_v0 = FP(1)
-        err_P0 = FP(1)
-        err_v00 = FP(1)
+        err_v0 = 1.0
+        err_P0 = 1.0
+        err_v00 = 1.0
         iter = 0
         rel_drop = rel_drop0
 
         for itPH in 1:1000
 
-        # ── Outer residuals (fresh momentum + pressure) for convergence check ────
-        assemble_pressure_residual_matrices_atomix!(
-            dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-            element_v, element_P,
-            phases_P_el, dr.α, dr.ηb, Δt,
-            backend, workgroup,
-        )
-
-        assemble_momentum_residual_matrices_atomix!(
-            dr.Rv_x, dr.Rv_y,
-            dr.vx, dr.vy, dr.P, dr.T, nothing,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
-            element_v, element_P,
-            phases_v_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-            backend, workgroup,
-        )
-        apply_dirichlet!(dr.Rv_x, lr_nodes, zero_lr, backend, workgroup)
-        apply_dirichlet!(dr.Rv_y, tb_nodes, zero_tb, backend, workgroup)
-
-        # ── Outer convergence check ─────────────────────────────────────────────
-        # Compare the FD-like, pointwise pressure residual RP/M_P, not the weak
-        # integrated residual RP.
-        err_P = norm(dr.RP ./ dr.M_P) / √mesh_stokes.nnodesP
-        err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
-        if itPH == 1
-            err_P0 = err_P + eps(err_P)
-            err_v0 = err_v + eps(err_v)
-        end
-        if itPH == 2
-            err_P0 = err_P + eps(err_P)
-        end
-        err_v_rel = max(err_v / err_v0, err_v)
-        err_P_rel = max(err_P / err_P0, err_P)
-        err = max(err_v_rel, err_P_rel)
-
-        isnan(err) && error("NaN detected in outer loop at PH=$itPH")
-        err > FP(1e10) && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
-
-        if verbose_PH
-            @printf("itPH = %02d iter = %06d err = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
-                    itPH, iter, err, err_v, err_v / err_v0, err_P, err_P / err_P0)
-        end
-        err < ϵ && break
-
-        if err > err_min * FP(1.05)
-            rel_drop = max(rel_drop * FP(0.1), FP(1e-3))
-        end
-        err_min = min(err_min, err)
-
-        ϵ_vel = err * rel_drop
-        itPT  = 0
-
-        # ── Inner DR loop for velocity (P held fixed) ───────────────────────────
-        while err > ϵ_vel && itPT ≤ iterMax
-            itPT += 1
-            iter += 1
-
-            copyto!(dr.Rv_x0, dr.Rv_x)
-            copyto!(dr.Rv_y0, dr.Rv_y)
-
-            # Reassemble pressure residual (v is changing → ∇·v changes → RP changes)
+            # ── Outer residuals (fresh momentum + pressure) for convergence check ────
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
                 dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
-                phases_P_el, dr.α, dr.ηb, Δt,
+                dr.phases_P, dr.α, dr.ηb, Δt,
                 backend, workgroup,
             )
 
-            # Numerical pressure correction
-            # P_num = γP * RP.  Here RP is weak, so use γP*RP/M_P.
-            @. dr.Pnum = γP * dr.RP / dr.M_P
-
-            # Momentum residuals with pressure correction
             assemble_momentum_residual_matrices_atomix!(
                 dr.Rv_x, dr.Rv_y,
-                dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                dr.vx, dr.vy, dr.P, dr.T, nothing,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
-                phases_v_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                dr.phases_v, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
+            apply_dirichlet!(dr.Rv_x, Γnodes, zero_vbc, backend, workgroup)
+            apply_dirichlet!(dr.Rv_y, Γnodes, zero_vbc, backend, workgroup)
 
-            # Enforce Dirichlet BCs on residuals and rates
-            apply_dirichlet!(dr.Rv_x,  lr_nodes, zero_lr, backend, workgroup)
-            apply_dirichlet!(dr.∂vx∂τ, lr_nodes, zero_lr, backend, workgroup)
-            apply_dirichlet!(dr.Rv_y,  tb_nodes, zero_tb, backend, workgroup)
-            apply_dirichlet!(dr.∂vy∂τ, tb_nodes, zero_tb, backend, workgroup)
-            # DYREL-style velocity update
-            update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
-            update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)
-            update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes)
-            update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes)
+            # ── Outer convergence check ─────────────────────────────────────────────
+            # Compare the FD-like, pointwise pressure residual RP/M_P, not the weak
+            # integrated residual RP.
+            err_P = norm(dr.RP ./ M_P) / √mesh_stokes.nnodesP
+            err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
+            if itPH == 1
+                err_P0 = err_P + eps(err_P)
+                err_v0 = err_v + eps(err_v)
+            end
+            if itPH == 2
+                err_P0 = err_P + eps(err_P)
+            end
+            err_v_rel = err_v / err_v0
+            err_P_rel = err_P / err_P0
+            err_abs = max(err_v, err_P)
+            err_rel = max(err_v_rel, err_P_rel)
+            err = min(err_abs, err_rel)
 
-            # Re-pin Dirichlet values
-            apply_dirichlet!(dr.vx, lr_nodes, bc_vx_lr, backend, workgroup)
-            apply_dirichlet!(dr.vy, tb_nodes, bc_vy_tb, backend, workgroup)
+            isnan(err) && error("NaN detected in outer loop at PH=$itPH")
+            err > 1e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
 
-            # Inner convergence check + damped step-size update
-            if iszero(iter % nout)
-                err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
-                if iter == nout
-                    err_v00 = err_v_inner + eps(err_v_inner)
-                end
-                err = max(err_v_inner / err_v00, err_v_inner)
-                isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
-                err > FP(1e10) && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+            if verbose_PH
+                @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
+                        itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
+            end
+            err < ϵ && break
 
-                verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
+            if err > err_min * 1.05
+                rel_drop = max(rel_drop * 0.1, 1e-3)
+            end
+            err_min = min(err_min, err)
 
-                λmin_vx = _λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
-                λmin_vy = _λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+            ϵ_vel = err * rel_drop
+            itPT  = 0
 
-                assemble_augmented_momentum_jacobian_matrices_atomix!(
-                    dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+            # ── Inner DR loop for velocity (P held fixed) ───────────────────────────
+            while err > ϵ_vel && itPT ≤ iterMax
+                itPT += 1
+                iter += 1
+
+                copyto!(dr.Rv_x0, dr.Rv_x)
+                copyto!(dr.Rv_y0, dr.Rv_y)
+
+                # Reassemble pressure residual (v is changing → ∇·v changes → RP changes)
+                assemble_pressure_residual_matrices_atomix!(
+                    dr.RP,
                     dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
-                    phases_v_el, phases_P_el, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                    dr.ηb, Δt, γP, dr.M_P,
+                    dr.phases_P, dr.α, dr.ηb, Δt,
                     backend, workgroup,
                 )
 
-                # λmax → Δτ → damped step for velocity.
-                λmax_vx  = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
-                λmax_vy  = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
-                Δτ_vx    = 2 / √(λmax_vx) * dr.CFL_v
-                Δτ_vy    = 2 / √(λmax_vy) * dr.CFL_v
+                # Numerical pressure correction, matching JustRelax's pointwise DYREL
+                # P_num = γP * RP.  Here RP is weak, so use γP*RP/M_P.
+                @. dr.Pnum = γP * dr.RP / M_P
 
-                α_vx, β_vx = _cheb(Δτ_vx, λmin_vx, dr.c_fact)
-                α_vy, β_vy = _cheb(Δτ_vy, λmin_vy, dr.c_fact)
-            end
+                # Momentum residuals with pressure correction
+                assemble_momentum_residual_matrices_atomix!(
+                    dr.Rv_x, dr.Rv_y,
+                    dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+                    element_v, element_P,
+                    dr.phases_v, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                    backend, workgroup,
+                )
 
-            itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
+                # Enforce Dirichlet BCs on residuals and rates
+                for field in (dr.Rv_x, dr.Rv_y, dr.∂vx∂τ, dr.∂vy∂τ)
+                    apply_dirichlet!(field, Γnodes, zero_vbc, backend, workgroup)
+                end
+
+                # DYREL-style velocity update
+                update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
+                update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)
+                update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes)
+                update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes)
+
+                # Re-pin Dirichlet values
+                apply_dirichlet!(dr.vx, Γnodes, bc_vx_vals, backend, workgroup)
+                apply_dirichlet!(dr.vy, Γnodes, bc_vy_vals, backend, workgroup)
+
+                # Inner convergence check + damped step-size update
+                if iszero(iter % nout)
+                    err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
+                    if iter == nout
+                        err_v00 = err_v_inner + eps(err_v_inner)
+                    end
+                    err = max(err_v_inner / err_v00, err_v_inner)
+                    isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
+                    err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+
+                    verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
+
+                    λmin_vx = _λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
+                    λmin_vy = _λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+
+                    assemble_augmented_momentum_jacobian_matrices_atomix!(
+                        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+                        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                        element_v, element_P,
+                        dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        dr.ηb, Δt, γP, M_P,
+                        backend, workgroup,
+                    )
+
+                    # λmax → Δτ → damped step for velocity.
+                    λmax_vx  = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
+                    λmax_vy  = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+                    Δτ_vx    = 2 / √(λmax_vx) * dr.CFL_v
+                    Δτ_vy    = 2 / √(λmax_vy) * dr.CFL_v
+
+                    α_vx, β_vx = _cheb(Δτ_vx, λmin_vx, dr.c_fact)
+                    α_vy, β_vy = _cheb(Δτ_vy, λmin_vy, dr.c_fact)
+                end
+
+                itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
+                iter > total_iterMax && break
+            end  # inner PT loop
+
+            # ── Arrow-Hurwicz pressure update (after inner velocity convergence) ─────
+            # Same mass-lumped residual as Pnum: pressure is updated from the
+            # pointwise divergence residual, not from the weak residual integral.
+            @. dr.P += γP * dr.RP / M_P
+            remove_pressure_mean!(dr.P, M_P)
+
             iter > total_iterMax && break
-        end  # inner PT loop
-
-        # ── Arrow-Hurwicz pressure update (after inner velocity convergence) ─────
-        # Same mass-lumped residual as Pnum: pressure is updated from the
-        # pointwise divergence residual, not from the weak residual integral.
-        @. dr.P += γP * dr.RP / dr.M_P
-        remove_pressure_mean!(dr.P, dr.M_P)
-
-        iter > total_iterMax && break
-    end  # outer PH loop
+        end  # outer PH loop
 
         assemble_momentum_residual_matrices_atomix!(
             dr.Rv_x, dr.Rv_y,
             dr.vx, dr.vy, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_el, τ_old, plastic, τ, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            dr.phases_v, τ_old, plastic, τ, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             backend, workgroup,
         )
 
@@ -846,8 +831,7 @@ function main(; nsteps = 19, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     ys_c = cy .+ r_incl .* sin.(θ)
     lines!(ax1, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
-    # show_plot && display(fig)
-    display(fig)
+    show_plot && display(fig)
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 

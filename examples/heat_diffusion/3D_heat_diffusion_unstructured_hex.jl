@@ -127,14 +127,13 @@ end
 # ---------------------------------------------------------------------------
 
 function main(; mesh_size = 3e3)
-    FP   = Float64
     TDev = FEMTools.TA(backend)
 
     # Domain geometry (same x-y footprint as 2D unstructured example)
     Lx, Ly, Lz = 15e3, 30e3, 10e3
     cylinders   = [(-7e3,  -10e3, 2.5e3),    # (cx, cy, r)
                    (  0.0, -11.5e3, 2e3)]
-    T_holes = FP[873, 1173]
+    T_holes = Float64[873, 1173]
 
     # Generate mesh
     @printf("Generating Gmsh mesh …\n")
@@ -145,8 +144,8 @@ function main(; mesh_size = 3e3)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
-    T_top    = FP(273)    # cold top wall  [K]
-    T_bottom = FP(873)    # hot bottom wall [K]
+    T_top    = 273.0    # cold top wall  [K]
+    T_bottom = 873.0    # hot bottom wall [K]
 
     hole_dof_vecs = [fill(T_holes[h], length(cyl_nodes_per_cyl[h]))
                      for h in eachindex(cylinders)]
@@ -166,32 +165,32 @@ function main(; mesh_size = 3e3)
     @printf("\n")
 
     # Element and geometry ------------------------------------------------
-    element = ReferenceElement(LinearElement{3, 4, FP})
+    element = ReferenceElement(LinearElement{3, 4, Float64})
     @timeit to "geo" geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # Material properties (single homogeneous phase) ----------------------
-    k    = (FP(3.0),)
-    Cp   = (FP(1200.0),)
-    ρ0   = (FP(3300.0),)
-    α    = (FP(3e-5),)
-    K    = (FP(1e11),)
-    Tref = FP(273.0)
-    g    = SA[FP(0.0), -FP(9.81), FP(0.0)]
-    Δt   = FP(20e3 * 365.25 * 24 * 3600)   # 20 kyr time step [s]
+    k    = (3.0,)
+    Cp   = (1200.0,)
+    ρ0   = (3300.0,)
+    α    = (3e-5,)
+    K    = (1e11,)
+    Tref = 273.0
+    g    = SA[0.0, -9.81, 0.0]
+    Δt   = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
     dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
-                            CFL = FP(0.9), ϵ = FP(1e-8))
+                            CFL = 0.9, ϵ = 1e-8)
 
-    T_init = FP[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
+    T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
     apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
     copyto!(dr.T0, dr.T)
 
     # Lithostatic pressure: solve ∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ on the initial T.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = FP(0.9), ϵ = FP(1e-2))
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
-    P0_litho = FP[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs      = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])
@@ -209,7 +208,7 @@ function main(; mesh_size = 3e3)
     end
     cells = [MeshCell(VTKCellTypes.VTK_TETRA, el2n_cpu[:, i]) for i in axes(el2n_cpu, 2)]
     pvd    = paraview_collection(joinpath(out_dir, "heat_diffusion_3d_tet"))
-    t_phys = FP(0)
+    t_phys = 0.0
 
     # Time loop -----------------------------------------------------------
     nsteps = 75

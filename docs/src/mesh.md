@@ -34,6 +34,7 @@ generate_boundary_elements
 generate_sparsity_pattern
 color_mesh
 color_mesh_greedy
+build_element_groups
 ```
 
 ## Geometry Precomputation

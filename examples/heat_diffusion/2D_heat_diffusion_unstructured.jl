@@ -105,14 +105,13 @@ end
 # ---------------------------------------------------------------------------
 
 function main(; max_area=1e5)
-    FP   = Float64
     TDev = FEMTools.TA(backend)
 
     # Domain geometry
     Lx, Ly = 15e3, 30e3
     holes  = [(-7e3, -10e3, 2.5e3),   # (cx, cy, r), T = 1173 K
               (  0e0, -11.5e3, 2e3)] # (cx, cy, r), T = 1273 K
-    T_holes = FP[873, 1173]
+    T_holes = Float64[873, 1173]
 
     # Generate mesh
     coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_mesh(;
@@ -124,8 +123,8 @@ function main(; max_area=1e5)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
-    T_top    = FP(273)   # cold top wall  [K]
-    T_bottom = FP(873)   # hot bottom wall [K]
+    T_top    = 273.0   # cold top wall  [K]
+    T_bottom = 873.0   # hot bottom wall [K]
 
     top_nodes    = filter(i -> coords_cpu[i][2] ≈  0.0, outer_nodes)
     bottom_nodes = filter(i -> coords_cpu[i][2] ≈ -Ly,  outer_nodes)
@@ -148,24 +147,24 @@ function main(; max_area=1e5)
     @printf("\n")
 
     # Element and geometry ------------------------------------------------
-    element = ReferenceElement(LinearElement{2, 3, FP})
+    element = ReferenceElement(LinearElement{2, 3, Float64})
     geo     = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # Material properties (single homogeneous phase) ----------------------
-    k   = (FP(3.0),)
-    Cp  = (FP(1200.0),)
-    ρ0  = (FP(3300.0),)
-    α   = (FP(3e-5),)
-    K   = (FP(1e11),)
-    Tref = FP(273.0)
-    g    = SA[FP(0.0), -FP(9.81)]
-    Δt  = FP(20e3 * 365.25 * 24 * 3600)   # 20 kyr time step [s]
+    k   = (3.0,)
+    Cp  = (1200.0,)
+    ρ0  = (3300.0,)
+    α   = (3e-5,)
+    K   = (1e11,)
+    Tref = 273.0
+    g    = SA[0.0, -9.81]
+    Δt  = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
     dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
-                            CFL = FP(0.9), ϵ = FP(1e-8))
+                            CFL = 0.9, ϵ = 1e-8)
 
-    T_init = FP[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
+    T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
     apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
     copyto!(dr.T0, dr.T)
@@ -174,9 +173,9 @@ function main(; max_area=1e5)
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = FP(0.9), ϵ = FP(1e-2))
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
-    P0_litho = FP[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])  # P = 0 at free surface

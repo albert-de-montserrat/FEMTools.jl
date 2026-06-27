@@ -32,4 +32,5 @@ eval_shape_function_jacobian
 ```@docs
 FEMTools.AbstractIntegrationPoints
 IntegrationPoints
+gauss_legendre_triangle
 ```
