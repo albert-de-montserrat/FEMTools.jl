@@ -77,6 +77,9 @@ include("stokes/types/stokes_types.jl")
 include("stokes/assemblers/pressure_residual.jl")
 include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/momentum_residuals.jl")
+include("stokes/helpers.jl")
+include("stokes/postprocess.jl")
+include("stokes/solvers/DR.jl")
 
 # Public type hierarchy and constructors.
 export AbstractElement
@@ -89,7 +92,7 @@ export AbstractLinearElement,
 export LinearElement, QuadraticElement, CubicElement
 export ReferenceElement, ShapeFunctions, IntegrationPoints
 export order
-export Mesh, MixedMesh
+export Mesh, MixedMesh, MixedMeshCache
 export DirichletBoundaryCondition, apply_bc!
 
 # Mesh construction and graph utilities.
@@ -132,6 +135,16 @@ export StokesDR, DruckerPrager,
     assemble_momentum_jacobian_matrices_atomix!,
     assemble_augmented_momentum_jacobian_matrices_atomix!,
     assemble_viscosity_weighted_pressure_scaling!,
-    assemble_pressure_residual_matrices_atomix!
+    assemble_pressure_residual_matrices_atomix!,
+    precompute_stokes_geometry!,
+    stokes_update_rate!,
+    stokes_update_variable!,
+    remove_pressure_mean!,
+    pressure_mass,
+    compute_strain_rate_stress_postprocess,
+    update_old_stress_from_cells!,
+    write_stokes_vtk,
+    solve_stokes_dyrel!,
+    update_stokes_current_stress!
 
 end # module FEMTools
