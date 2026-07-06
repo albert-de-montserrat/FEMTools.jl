@@ -14,19 +14,55 @@ abstract type AbstractBoundaryCondition end
 
 Container for Dirichlet boundary data.
 
-`DoFs` and `vals` are expected to have matching order and length: `vals[i]` is
-the prescribed value for degree of freedom `DoFs[i]`.
+`DoFs` and `vals` must have the same length: `vals[i]` is the prescribed value
+for degree of freedom `DoFs[i]`.
 
 Fields:
-- `Γ`: boundary domain or boundary marker.
-- `DoFs`: degrees of freedom constrained on `Γ`.
-- `vals`: prescribed values for each constrained degree of freedom.
+- `Γ`    : boundary domain or boundary marker (stored for reference).
+- `DoFs` : constrained degree-of-freedom indices.
+- `vals` : prescribed values aligned with `DoFs`.
 """
-struct DirichletBoundaryCondition{T, D, V} <: AbstractBoundaryCondition
-    Γ::T
-    DoFs::D
+struct DirichletBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
+    Γ::D
+    DoFs::T
     vals::V
-    function DirichletBoundaryCondition(Γ::T, DoFs::D, vals::V) where {T, D, V}
-        new{T, D, V}(Γ, DoFs, vals)
+    function DirichletBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
+        new{D, T, V}(Γ, DoFs, vals)
+    end
+end
+
+"""
+    TangentialFreeSlipBoundaryCondition(Γ, DoFs, vals)
+
+Container for a tangential free-slip boundary condition.
+
+Structure mirrors `DirichletBoundaryCondition`: `Γ` is the boundary marker,
+`DoFs` are the constrained degrees of freedom, and `vals` are the prescribed
+tangential values.
+"""
+struct TangentialFreeSlipBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
+    Γ::D
+    DoFs::T
+    vals::V
+    function TangentialFreeSlipBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
+        new{D, T, V}(Γ, DoFs, vals)
+    end
+end
+
+"""
+    TractionBoundaryCondition(Γ, DoFs, vals)
+
+Container for a traction (Neumann) boundary condition.
+
+Structure mirrors `DirichletBoundaryCondition`: `Γ` is the boundary marker,
+`DoFs` are the traction degrees of freedom, and `vals` are the prescribed
+traction values.
+"""
+struct TractionBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
+    Γ::D
+    DoFs::T
+    vals::V
+    function TractionBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
+        new{D, T, V}(Γ, DoFs, vals)
     end
 end

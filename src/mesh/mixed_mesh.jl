@@ -11,6 +11,7 @@ degree-of-freedom maps.
 
 Fields:
 - `coords`  : vertex coordinates (`AbstractVector{SVector{nDim, T}}`).
+- `normals` : outward nodal normals; interior nodes store the zero vector.
 - `nels`    : number of elements.
 - `DoFs`    : primary-field degree-of-freedom indices.
 - `el2n`    : primary element-to-node connectivity (`N1 × nels`).
@@ -19,8 +20,9 @@ Fields:
 - `el2nP`   : secondary element-to-node connectivity (`N2 × nels`).
 - `nnodesP` : number of secondary-field nodes.
 """
-struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5} <: AbstractMesh
+struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     coords::T1  # vertex coordinates
+    normals::T6 # outward nodal normals
     nels::Int   # number of elements
     # Field 1: Velocity
     DoFs::T2    # degrees of freedom
@@ -31,8 +33,9 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5} <: AbstractMesh
     el2nP::T5    # element-to-node connectivity
     nnodesP::Int # number of nodes
 
-    function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5}(
+    function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6}(
         coords::T1,
+        normals::T6,
         DoFs::T2,
         el2n::T3,
         nnodes::Int,
@@ -40,15 +43,66 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5} <: AbstractMesh
         DoFsP::T4,
         el2nP::T5,
         nnodesP::Int,
-    ) where {nDim, O1, O2, T1, T2, T3, T4, T5}
+    ) where {nDim, O1, O2, T1, T2, T3, T4, T5, T6}
+        length(normals) == nnodes || throw(ArgumentError("normal vector has the wrong number of nodes"))
         size(el2n, 2) == nels || throw(ArgumentError("velocity connectivity has the wrong number of elements"))
         size(el2nP, 2) == nels || throw(ArgumentError("pressure connectivity has the wrong number of elements"))
-        return new{nDim, O1, O2, T1, T2, T3, T4, T5}(
-            coords, nels,
+        return new{nDim, O1, O2, T1, T2, T3, T4, T5, T6}(
+            coords, normals, nels,
             DoFs, el2n, nnodes,
             DoFsP, el2nP, nnodesP,
         )
     end
+end
+
+function _boundary_edge_paths_2d(nlocal::Int)
+    if nlocal == 3
+        return ((1, 2), (2, 3), (3, 1))
+    elseif nlocal == 4
+        return ((1, 2), (2, 3), (3, 4), (4, 1))
+    elseif nlocal == 6 || nlocal == 7
+        return ((1, 4, 2), (2, 5, 3), (3, 6, 1))
+    elseif nlocal == 8 || nlocal == 9
+        return ((1, 5, 2), (2, 6, 3), (3, 7, 4), (4, 8, 1))
+    else
+        throw(ArgumentError("cannot infer 2D boundary edge paths for elements with $nlocal local nodes"))
+    end
+end
+
+function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::AbstractMatrix{<:Integer}) where FP
+    normals = fill(zero(SVector{2, FP}), length(coords))
+    edge_paths = _boundary_edge_paths_2d(size(el2n, 1))
+    corner_lids = unique(first.(edge_paths))
+
+    edge_count = Dict{Tuple{Int32, Int32}, Int}()
+    for iel in axes(el2n, 2), path in edge_paths
+        a = Int32(el2n[first(path), iel])
+        b = Int32(el2n[last(path), iel])
+        key = minmax(a, b)
+        edge_count[key] = get(edge_count, key, 0) + 1
+    end
+
+    for iel in axes(el2n, 2)
+        centroid = sum(coords[Int(el2n[lid, iel])] for lid in corner_lids) / length(corner_lids)
+        for path in edge_paths
+            a = Int32(el2n[first(path), iel])
+            b = Int32(el2n[last(path), iel])
+            get(edge_count, minmax(a, b), 0) == 1 || continue
+
+            for i in 1:(length(path) - 1)
+                ia = Int(el2n[path[i], iel])
+                ib = Int(el2n[path[i + 1], iel])
+                tangent = coords[ib] - coords[ia]
+                normal = SVector{2, FP}(tangent[2], -tangent[1])
+                midpoint = (coords[ia] + coords[ib]) / 2
+                dot(normal, centroid - midpoint) > 0 && (normal = -normal)
+                normals[ia] += normal
+                normals[ib] += normal
+            end
+        end
+    end
+
+    return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
 
@@ -61,6 +115,10 @@ function MixedMesh(
     DoFsP,
     el2nP,
 ) where {nDim}
+    coords_cpu = Array(coords)
+    el2n_cpu = Array(el2n)
+    normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
+    normals = typeof(coords)(normals_cpu)
     return MixedMesh{
         nDim,
         order(element),
@@ -70,8 +128,10 @@ function MixedMesh(
         typeof(el2n),
         typeof(DoFsP),
         typeof(el2nP),
+        typeof(normals),
     }(
         coords,
+        normals,
         DoFs,
         el2n,
         length(coords),
@@ -94,22 +154,90 @@ triangle gets its own three pressure DoFs, built internally via
 DoF indices, and velocity connectivity; `element_P` supplies the pressure
 polynomial order stored in the `MixedMesh` type parameter.
 
-This constructor always extracts CPU arrays from `mesh_v`, so it works
-transparently regardless of the backend used to build `mesh_v`.
+The pressure topology is built from CPU copies, then moved back to the same
+array backend as `mesh_v`.
 """
 function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {nDim, O1}
     coords_cpu = Array(mesh_v.coords)
     el2n_cpu   = Array(mesh_v.el2n)
-    DoFs_cpu   = Array(mesh_v.DoFs)
-    el2nP_geo, DoFsP, _ = build_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
+    el2nP_cpu, DoFsP_cpu, _ = build_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
+    normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
+    normals = typeof(mesh_v.coords)(normals_cpu)
+    DoFsP = typeof(mesh_v.el2n)(DoFsP_cpu)
+    el2nP = typeof(mesh_v.el2n)(el2nP_cpu)
     return MixedMesh{
-        nDim, O1, order(element_P),
-        typeof(coords_cpu), typeof(DoFs_cpu),
-        typeof(el2n_cpu),  typeof(DoFsP), typeof(el2nP_geo),
+        nDim,
+        O1,
+        order(element_P),
+        typeof(mesh_v.coords),
+        typeof(mesh_v.DoFs),
+        typeof(mesh_v.el2n),
+        typeof(DoFsP),
+        typeof(el2nP),
+        typeof(normals),
     }(
-        coords_cpu, DoFs_cpu, el2n_cpu, length(coords_cpu), size(el2n_cpu, 2),
-        DoFsP, el2nP_geo, prod(size(el2nP_geo)),
+        mesh_v.coords,
+        normals,
+        mesh_v.DoFs,
+        mesh_v.el2n,
+        length(coords_cpu),
+        size(el2n_cpu, 2),
+        DoFsP,
+        el2nP,
+        prod(size(el2nP_cpu)),
     )
+end
+
+"""
+    MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+
+Precompute geometry for both fields of a 2D mixed mesh at the velocity
+integration points.
+
+Fields:
+- `geo_v`: primary-field shape-function gradients and weighted volumes.
+- `geo_P`: secondary-field shape-function gradients and weighted volumes.
+"""
+struct MixedMeshCache{GV, GP}
+    geo_v::GV
+    geo_P::GP
+end
+
+function MixedMeshCache(
+    backend,
+    workgroup,
+    mesh::MixedMesh{2},
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+    ip_v = element_v.integration_points
+    NQ_v = length(ip_v.ω)
+
+    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
+    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
+    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
+
+    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}
+    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}
+    geo_v = KA.allocate(backend, GeoV, mesh.nels)
+    geo_P = KA.allocate(backend, GeoP, mesh.nels)
+
+    TDev   = TA(backend)
+    coords = TDev(mesh.coords)
+    el2n   = TDev(mesh.el2n)
+    el2nP  = TDev(mesh.el2nP)
+
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo_v, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
+        ndrange = mesh.nels,
+    )
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo_P, coords, el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP);
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+
+    return MixedMeshCache(geo_v, geo_P)
 end
 
 # ---------------------------------------------------------------------------

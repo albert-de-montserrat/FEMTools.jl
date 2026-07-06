@@ -12,6 +12,7 @@ import FEMTools
         :IntegrationPoints,
         :Mesh,
         :MixedMesh,
+        :MixedMeshCache,
         :DirichletBoundaryCondition,
         :apply_bc!,
         :generate_element2node,

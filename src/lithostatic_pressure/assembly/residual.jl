@@ -160,7 +160,7 @@ Density uses the linearised EOS `ρ = ρ0 (1 − α(T−Tref) + P/K)`.
         ρ0q = interp2ip_phase(Nv, ρ0, phase_loc)
         ρq  = ρ0q * (1 - αq * (Tq - Tref) + Pq / Kq)
         ∇P_N = ∂N∂x * (∂N∂x' * Ploc)   # N-vector: ∇Nᵢ · ∇P  (stiffness)
-        ρg_N = ρq * (∂N∂x * g)         # N-vector: ρ ∇Nᵢ · g  (body force)
+        ρg_N = ρq * (∂N∂x * SVector(g)) # N-vector: ρ ∇Nᵢ · g  (body force)
         Re  += (ρg_N - ∇P_N) * dΩ      # sign: f − K·P, consistent with thermal DR convention
     end
     return Re

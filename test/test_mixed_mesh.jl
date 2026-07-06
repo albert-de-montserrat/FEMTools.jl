@@ -1,3 +1,6 @@
+using KernelAbstractions: CPU
+using LinearAlgebra: dot, norm
+
 for FP in (FP32, FP64)
     @testset "mixed mesh constructor" begin
         velocity_element = ReferenceElement(QuadraticElement{2, 6, FP})
@@ -42,6 +45,11 @@ for FP in (FP32, FP64)
         @test mesh.DoFsP == DoFsP
         @test mesh.el2nP == el2nP
         @test mesh.nnodesP == 6
+        @test length(mesh.normals) == mesh.nnodes
+        @test norm(mesh.normals[1]) ≈ one(FP)
+        @test dot(mesh.normals[1], SVector{2, FP}(-1, -1) / sqrt(FP(2))) ≈ one(FP)
+        @test mesh.normals[5] ≈ SVector{2, FP}(0, -1)
+        @test iszero(norm(mesh.normals[6]))
     end
 
     @testset "mixed mesh rejects inconsistent pressure connectivity" begin
@@ -72,5 +80,24 @@ for FP in (FP32, FP64)
             Int32.(1:length(bad_el2nP)),
             bad_el2nP,
         )
+    end
+
+    @testset "mixed mesh cache" begin
+        velocity_element = ReferenceElement(QuadraticElement{2, 7, FP})
+        pressure_element = ReferenceElement(LinearElement{2, 3, FP})
+        mesh_v = Mesh(CPU(), (FP(0)..FP(1)) × (FP(0)..FP(1)), velocity_element, (1, 1))
+        mesh = MixedMesh(mesh_v, pressure_element)
+
+        cache = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
+
+        @test cache isa MixedMeshCache
+        @test length(cache.geo_v) == mesh.nels
+        @test length(cache.geo_P) == mesh.nels
+        @test length(cache.geo_v[1]) == length(velocity_element.integration_points.ω)
+        @test length(cache.geo_P[1]) == length(velocity_element.integration_points.ω)
+        @test cache.geo_v[1][1][2] isa FP
+        @test cache.geo_P[1][1][2] isa FP
+        @test length(mesh.normals) == mesh.nnodes
+        @test eltype(mesh.normals) == SVector{2, FP}
     end
 end

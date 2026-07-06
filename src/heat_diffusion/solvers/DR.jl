@@ -52,7 +52,7 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
 
         if do_∂R∂T || it == 1
             nr = norm(R)
-            it == 1 && (nr0 = nr)
+            it == 1 && (nr0 = max(nr, eps(nr)))   # guard against exact-zero initial residual
             isnan(nr / nr0) && error("NaNs at PT iter $it")
 
             λmax  = maximum(∂R∂T ./ PC)

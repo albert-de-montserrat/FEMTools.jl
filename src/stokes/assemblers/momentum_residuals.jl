@@ -27,11 +27,27 @@ end
 @inline zero_old_stress(::Type{T}) where T = (zero(T), zero(T), zero(T))
 @inline old_stress_component_at_ip(_, τ::Number) = τ
 @inline old_stress_component_at_ip(Nv, τ) = dot(Nv, τ)
+"""
+    IntegrationPointStress{TX, TY, TXY}
+
+Old deviatoric-stress components stored at integration points for viscoelastic
+memory. Each field is an `NQ × nels` matrix (integration-point index × element
+index). Used by `_gather_old_stress` to recover `(τxx_q, τyy_q, τxy_q)` at
+quadrature point `q` without going through nodal interpolation.
+"""
 struct IntegrationPointStress{TX, TY, TXY}
     τxx::TX
     τyy::TY
     τxy::TXY
 end
+
+"""
+    IntegrationPointStressOutput{TX, TY, TXY}
+
+Scratch buffer for writing the *current* deviatoric stress to integration
+points during momentum-residual assembly. `iel` pins the buffer to a specific
+element so that `store_stress_at_ip!` can index `τxx[q, iel]` directly.
+"""
 struct IntegrationPointStressOutput{TX, TY, TXY}
     τxx::TX
     τyy::TY
@@ -145,9 +161,12 @@ regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
     ηve, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
     τxx_o, τyy_o, τxy_o = τ_old
 
-    τxx = 2 * ηve * ((εxx - tr) + τxx_o * inv_2Gdt)
-    τyy = 2 * ηve * ((εyy - tr) + τyy_o * inv_2Gdt)
-    τxy = 2 * ηve * (εxy + τxy_o * inv_2Gdt)
+    εxx_eff = (εxx - tr) + τxx_o * inv_2Gdt
+    εyy_eff = (εyy - tr) + τyy_o * inv_2Gdt
+    εxy_eff = εxy + τxy_o * inv_2Gdt
+    τxx = 2 * ηve * εxx_eff
+    τyy = 2 * ηve * εyy_eff
+    τxy = 2 * ηve * εxy_eff
     τij = τxx, τyy, τxy
 
     # Interpolate per-phase plastic parameters to the quadrature point.
@@ -170,7 +189,7 @@ regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
     ∂Q∂τyy = (τxx + 2 * τyy) / (2 * τII_safe)
     ∂Q∂τxy = τxy / τII_safe
     ∂Q∂τ   = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
-    ∂Q∂P   = sinΨ
+    ∂Q∂P   = -sinΨ
 
     λ = if F > 0
         F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P)
@@ -178,11 +197,9 @@ regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
         zero(F)
     end
 
-    τij = if λ > 0
-        map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ)
-    else
+    τij = λ > 0 ?
+        map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) :
         τij
-    end
 
     return τij
 end

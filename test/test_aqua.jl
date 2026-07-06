@@ -11,6 +11,7 @@ using FEMTools
             FEMTools;
             unbound_args = false,
             deps_compat = (check_weakdeps = false,),
+            stale_deps = (ignore = [:Triangulate],),
         )
     end
 end
