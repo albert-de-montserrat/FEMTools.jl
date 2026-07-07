@@ -79,6 +79,7 @@ include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/momentum_residuals.jl")
 include("stokes/helpers.jl")
 include("stokes/postprocess.jl")
+include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
 
 # Public type hierarchy and constructors.
@@ -143,6 +144,7 @@ export StokesDR, DruckerPrager,
     pressure_mass,
     compute_strain_rate_stress_postprocess,
     update_old_stress_from_cells!,
+    rotate_stress!,
     write_stokes_vtk,
     solve_stokes_dyrel!,
     update_stokes_current_stress!
