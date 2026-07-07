@@ -95,6 +95,10 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     end
 end
 
+function Base.show(io::IO, mesh::Mesh{nDim, O}) where {nDim, O}
+    print(io, "Mesh{", nDim, ", ", O, "}(nnodes=", mesh.nnodes, ", nels=", mesh.nels, ")")
+end
+
 Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
 Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)

@@ -50,6 +50,7 @@ for FP in (FP32, FP64)
         @test dot(mesh.normals[1], SVector{2, FP}(-1, -1) / sqrt(FP(2))) ≈ one(FP)
         @test mesh.normals[5] ≈ SVector{2, FP}(0, -1)
         @test iszero(norm(mesh.normals[6]))
+        @test sprint(show, mesh) == "MixedMesh{2, 2, 1}(nnodes=9, nnodesP=6, nels=2)"
     end
 
     @testset "mixed mesh rejects inconsistent pressure connectivity" begin

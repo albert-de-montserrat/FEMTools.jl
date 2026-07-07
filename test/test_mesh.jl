@@ -131,6 +131,7 @@ for FP in (FP32, FP64)
         @test mesh.Γnodes == Int32[1, 7]
         @test mesh.nnodes == 7
         @test mesh.nels == 3
+        @test sprint(show, mesh) == "Mesh{1, 2}(nnodes=7, nels=3)"
 
         quad4 = ReferenceElement(LinearElement{2, 4, FP})
         mesh2D = Mesh((FP(0.0) .. FP(2.0)) × (FP(0.0) .. FP(1.0)), quad4, (2, 1))
@@ -146,6 +147,7 @@ for FP in (FP32, FP64)
         @test mesh2D.el2n == Int32[1 2; 2 3; 5 6; 4 5]
         @test mesh2D.nnodes == 6
         @test mesh2D.nels == 2
+        @test sprint(show, mesh2D) == "Mesh{2, 1}(nnodes=6, nels=2)"
     end
 
     @testset "mesh sparsity pattern" begin

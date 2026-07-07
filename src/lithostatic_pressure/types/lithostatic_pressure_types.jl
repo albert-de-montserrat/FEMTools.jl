@@ -82,5 +82,7 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP}
     end
 end
 
+pressure(dr::LithostaticPressureDR) = dr.P
+
 LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, ρ0, α, K; kwargs...)

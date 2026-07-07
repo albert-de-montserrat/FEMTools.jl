@@ -222,6 +222,11 @@ struct ReferenceElement{Element<:AbstractElement, SF, IP}
     end
 end
 
+function Base.show(io::IO, element::ReferenceElement{Element}) where Element
+    print(io, "ReferenceElement{", Element, "}(order=", order(element),
+          ", nodes=", length(element), ", nips=", length(element.integration_points.ω), ")")
+end
+
 ReferenceElement(::Type{T}) where {T<:AbstractElement} = ReferenceElement(T())
 
 """

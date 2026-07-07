@@ -22,6 +22,25 @@ end
 @inline SymmetricTensor(xx, yy, xy)             = SymmetricTensor2D(xx, yy, xy, zero(xx))
 @inline SymmetricTensor(xx, yy, zz, yz, xz, xy) = SymmetricTensor3D(xx, yy, zz, yz, xz, xy, zero(xx))
 
+_show_component(x) = x isa Number ? repr(x) : summary(x)
+
+function Base.show(io::IO, τ::SymmetricTensor2D)
+    print(io, "SymmetricTensor2D(xx=", _show_component(τ.xx),
+          ", yy=", _show_component(τ.yy),
+          ", xy=", _show_component(τ.xy),
+          ", II=", _show_component(τ.II), ")")
+end
+
+function Base.show(io::IO, τ::SymmetricTensor3D)
+    print(io, "SymmetricTensor3D(xx=", _show_component(τ.xx),
+          ", yy=", _show_component(τ.yy),
+          ", zz=", _show_component(τ.zz),
+          ", yz=", _show_component(τ.yz),
+          ", xz=", _show_component(τ.xz),
+          ", xy=", _show_component(τ.xy),
+          ", II=", _show_component(τ.II), ")")
+end
+
 # Unpack the independent in-plane components `(xx, yy, xy)` (dropping the derived
 # `II`) so the struct plugs straight into assemblers that dispatch on `NTuple{3}`.
 @inline Base.Tuple(τ::SymmetricTensor2D) = (τ.xx, τ.yy, τ.xy)

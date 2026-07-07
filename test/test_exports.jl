@@ -63,6 +63,10 @@ import FEMTools
         :color_mesh_greedy,
         :pressure_mass,
         :remove_pressure_mean!,
+        :velocity,
+        :stress,
+        :pressure,
+        :temperature,
     )
 
     for name in exported_names

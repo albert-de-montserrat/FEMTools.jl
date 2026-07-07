@@ -91,5 +91,7 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP}
     end
 end
 
+temperature(dr::ThermalDiffusionDR) = dr.T
+
 ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K; kwargs...) =
     ThermalDiffusionDR(CPU(), nnodes, k, Cp, ρ0, α, K; kwargs...)

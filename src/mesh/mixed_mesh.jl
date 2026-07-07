@@ -55,6 +55,11 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     end
 end
 
+function Base.show(io::IO, mesh::MixedMesh{nDim, O1, O2}) where {nDim, O1, O2}
+    print(io, "MixedMesh{", nDim, ", ", O1, ", ", O2, "}(nnodes=", mesh.nnodes,
+          ", nnodesP=", mesh.nnodesP, ", nels=", mesh.nels, ")")
+end
+
 function _boundary_edge_paths_2d(nlocal::Int)
     if nlocal == 3
         return ((1, 2), (2, 3), (3, 1))

@@ -143,5 +143,6 @@ public assemble_diffusion_matrices_atomix!,
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, pressure_mass, remove_pressure_mean!
+public velocity, stress, pressure, temperature
 
 end # module FEMTools

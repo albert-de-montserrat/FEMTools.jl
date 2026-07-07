@@ -55,6 +55,8 @@ end
         @test element_from_type isa ReferenceElement{Element}
         @test element_from_type.shape_functions isa FEMTools.AbstractShapeFunction
         @test element_from_type.integration_points isa FEMTools.AbstractIntegrationPoints
+        @test sprint(show, element_from_type) ==
+            "ReferenceElement{$Element}(order=$(order(element_from_type)), nodes=$(length(element_from_type)), nips=$(length(element_from_type.integration_points.ω)))"
     end
 end
 

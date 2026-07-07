@@ -73,6 +73,16 @@ end
         @test all(iszero, Array(dr.τxy_old))
         @test all(iszero, Array(dr.M_P))
         @test all(iszero, Array(dr.Pnum))
+
+        vx, vy = FEMTools.velocity(dr)
+        τxx, τyy, τxy = FEMTools.stress(dr)
+        @test vx === dr.vx
+        @test vy === dr.vy
+        @test τxx === dr.τxx
+        @test τyy === dr.τyy
+        @test τxy === dr.τxy
+        @test FEMTools.pressure(dr) === dr.P
+        @test FEMTools.temperature(dr) === dr.T
     end
 end
 
@@ -129,6 +139,15 @@ end
         @test plastic.η_reg == η_reg
         @test plastic.Kb == Kb
     end
+end
+
+@testset "symmetric tensor display" begin
+    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0)) ==
+        "SymmetricTensor2D(xx=1.0, yy=2.0, xy=3.0, II=0.0)"
+    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)) ==
+        "SymmetricTensor3D(xx=1.0, yy=2.0, zz=3.0, yz=4.0, xz=5.0, xy=6.0, II=0.0)"
+    @test sprint(show, FEMTools.SymmetricTensor(zeros(2, 3), zeros(2, 3), zeros(2, 3))) ==
+        "SymmetricTensor2D(xx=2×3 Matrix{Float64}, yy=2×3 Matrix{Float64}, xy=2×3 Matrix{Float64}, II=2×3 Matrix{Float64})"
 end
 
 @testset "DruckerPrager return uses plane-strain invariant gradient" begin

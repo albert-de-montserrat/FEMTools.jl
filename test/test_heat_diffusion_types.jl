@@ -82,5 +82,9 @@ for FP in (FP32, FP64)
             @test length(dr.phases) == nnodes
             @test all(==(1), dr.phases)   # defaults to phase 1 everywhere
         end
+
+        @testset "result accessors" begin
+            @test FEMTools.temperature(dr) === dr.T
+        end
     end
 end

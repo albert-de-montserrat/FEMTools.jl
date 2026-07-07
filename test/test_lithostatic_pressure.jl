@@ -162,5 +162,9 @@ for FP in (FP32, FP64)
             @test length(dr.phases) == nnodes
             @test all(==(1), dr.phases)
         end
+
+        @testset "result accessors" begin
+            @test FEMTools.pressure(dr) === dr.P
+        end
     end
 end

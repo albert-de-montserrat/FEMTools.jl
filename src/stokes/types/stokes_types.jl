@@ -164,6 +164,11 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     end
 end
 
+velocity(dr::StokesDR) = (dr.vx, dr.vy)
+stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
+pressure(dr::StokesDR) = dr.P
+temperature(dr::StokesDR) = dr.T
+
 StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
 
