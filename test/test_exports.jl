@@ -22,7 +22,6 @@ import FEMTools
         :generate_dofs,
         :generate_sparsity_pattern,
         :color_mesh,
-        :color_mesh_greedy,
         :build_element_groups,
         :eval_shape_function,
         :eval_shape_function_gradient,
@@ -31,12 +30,7 @@ import FEMTools
         :order,
         :ThermalDiffusionDR,
         :solver!,
-        :assemble_diffusion_matrices_atomix!,
-        :assemble_diffusion_matrices_colored!,
-        :apply_dirichlet!,
         :LithostaticPressureDR,
-        :assemble_lithostatic_pressure_matrices_atomix!,
-        :assemble_lithostatic_pressure_matrices_colored!,
         :AbstractElement,
         :AbstractLinearElement,
         :AbstractQuadraticElement,
@@ -46,7 +40,30 @@ import FEMTools
         :AbstractBoundaryCondition,
     )
 
-    public_only_names = ()
+    public_only_names = (
+        :TA,
+        :interp2ip,
+        :interp2ip_phase,
+        :apply_dirichlet!,
+        :assemble_diffusion_matrices_atomix!,
+        :assemble_diffusion_matrices_colored!,
+        :assemble_lithostatic_pressure_matrices_atomix!,
+        :assemble_lithostatic_pressure_matrices_colored!,
+        :assemble_momentum_residual_matrices_atomix!,
+        :assemble_momentum_jacobian_matrices_atomix!,
+        :assemble_augmented_momentum_jacobian_matrices_atomix!,
+        :assemble_viscosity_weighted_pressure_scaling!,
+        :assemble_pressure_residual_matrices_atomix!,
+        :update_rate_kernel!,
+        :update_variable_kernel!,
+        :precompute_geometry_kernel!,
+        :stokes_update_rate!,
+        :stokes_update_variable!,
+        :precompute_stokes_geometry!,
+        :color_mesh_greedy,
+        :pressure_mass,
+        :remove_pressure_mean!,
+    )
 
     for name in exported_names
         @test Base.isexported(FEMTools, name)

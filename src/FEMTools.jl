@@ -104,7 +104,6 @@ export generate_element2node,
     generate_dofs,
     generate_sparsity_pattern,
     color_mesh,
-    color_mesh_greedy,
     build_element_groups,
     build_discontinuous_linear_mesh
 
@@ -115,38 +114,34 @@ export eval_shape_function,
     shape_function_values,
     gauss_legendre_triangle
 
-# Heat-diffusion solver.
-export ThermalDiffusionDR,
-    solver!,
-    assemble_diffusion_matrices_atomix!,
-    assemble_diffusion_matrices_colored!,
-    apply_dirichlet!,
-    update_rate_kernel!,
-    update_variable_kernel!,
-    precompute_geometry_kernel!
-
-# Lithostatic-pressure solver.
-export LithostaticPressureDR,
-    assemble_lithostatic_pressure_matrices_atomix!,
-    assemble_lithostatic_pressure_matrices_colored!
-
-# Stokes solver.
+# Solver types and user-facing entry points.
+export ThermalDiffusionDR, solver!
+export LithostaticPressureDR
 export StokesDR, DruckerPrager,
-    assemble_momentum_residual_matrices_atomix!,
-    assemble_momentum_jacobian_matrices_atomix!,
-    assemble_augmented_momentum_jacobian_matrices_atomix!,
-    assemble_viscosity_weighted_pressure_scaling!,
-    assemble_pressure_residual_matrices_atomix!,
-    precompute_stokes_geometry!,
-    stokes_update_rate!,
-    stokes_update_variable!,
-    remove_pressure_mean!,
-    pressure_mass,
     compute_strain_rate_stress_postprocess,
     update_old_stress_from_cells!,
     rotate_stress!,
     write_stokes_vtk,
     solve_stokes_dyrel!,
     update_stokes_current_stress!
+
+# Extension-API surface: documented and callable as `FEMTools.foo`, but not
+# brought into scope by `using FEMTools`. Assembly kernels, boundary-condition
+# application, the raw KernelAbstractions kernels, the DR-loop step wrappers, and
+# solver-loop utilities live here rather than in the exported user API.
+public TA, interp2ip, interp2ip_phase
+public apply_dirichlet!
+public assemble_diffusion_matrices_atomix!,
+    assemble_diffusion_matrices_colored!,
+    assemble_lithostatic_pressure_matrices_atomix!,
+    assemble_lithostatic_pressure_matrices_colored!,
+    assemble_momentum_residual_matrices_atomix!,
+    assemble_momentum_jacobian_matrices_atomix!,
+    assemble_augmented_momentum_jacobian_matrices_atomix!,
+    assemble_viscosity_weighted_pressure_scaling!,
+    assemble_pressure_residual_matrices_atomix!
+public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
+public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
+public color_mesh_greedy, pressure_mass, remove_pressure_mean!
 
 end # module FEMTools

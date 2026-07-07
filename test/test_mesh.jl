@@ -177,7 +177,7 @@ for FP in (FP32, FP64)
     @testset "mesh coloring" begin
         element = ReferenceElement(QuadraticElement{1, 3, FP})
         mesh = Mesh(FP(0) .. FP(10), element, 6)
-        greedy_colors = color_mesh_greedy(mesh)
+        greedy_colors = FEMTools.color_mesh_greedy(mesh)
         colors = color_mesh(mesh)
 
         function is_valid_coloring(mesh, colors)

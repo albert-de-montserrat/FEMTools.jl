@@ -3,6 +3,8 @@ using Test
 using DomainSets
 using DomainSets: ×
 using FEMTools
+using FEMTools: assemble_momentum_residual_matrices_atomix!,
+    assemble_viscosity_weighted_pressure_scaling!
 using KernelAbstractions: CPU, synchronize
 using StaticArrays
 
