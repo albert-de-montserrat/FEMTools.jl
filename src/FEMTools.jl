@@ -121,6 +121,7 @@ export StokesDR, DruckerPrager,
     compute_strain_rate_stress_postprocess,
     update_old_stress_from_cells!,
     rotate_stress!,
+    write_vtk,
     write_stokes_vtk,
     solve_stokes_dyrel!,
     update_stokes_current_stress!
