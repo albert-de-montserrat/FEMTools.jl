@@ -148,14 +148,6 @@ for FP in (FP32, FP64)
         @test mesh2D.nels == 2
     end
 
-    @testset "mesh compatibility helpers" begin
-        Ω = FP(0) .. FP(1)
-        element = ReferenceElement(QuadraticElement{1, 3, FP})
-
-        @test FEMTools.generete_coordinates(element, Ω, 1) == generate_coordinates(element, Ω, 1)
-        @test FEMTools.generete_DoFs(element, 3) == generate_dofs(element, 3)
-    end
-
     @testset "mesh sparsity pattern" begin
         element = ReferenceElement(QuadraticElement{1, 3, FP})
         mesh = Mesh(FP(0) .. FP(10), element, 3)

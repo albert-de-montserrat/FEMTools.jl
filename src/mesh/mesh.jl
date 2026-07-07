@@ -437,10 +437,6 @@ Generate one degree of freedom per mesh point.
 """
 generate_dofs(::ReferenceElement, npoints) = [Int32(i) for i in 1:npoints]
 
-# Backwards-compatible misspelled aliases retained for older examples.
-generete_coordinates(args...) = generate_coordinates(args...)
-generete_DoFs(args...) = generate_dofs(args...)
-
 # ---------------------------------------------------------------------------
 # KA kernels
 # ---------------------------------------------------------------------------
