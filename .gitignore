@@ -1,3 +1,4 @@
 *.vtu
+*.vtk
 *.pvd
 *.gif
