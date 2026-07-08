@@ -14,7 +14,7 @@ struct ShapeFunctions{SF, G} <: AbstractShapeFunction
 
     # Keep the tuple types concrete so callers can specialize on element order
     # and dimension without dynamic dispatch inside quadrature loops.
-    ShapeFunctions(N::SF, ∇N::G) where {SF, G} = new{SF, G}(N, ∇N)
+    ShapeFunctions(N, ∇N) = new{typeof(N), typeof(∇N)}(N, ∇N)
 end
 
 """

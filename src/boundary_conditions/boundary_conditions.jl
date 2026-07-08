@@ -26,9 +26,6 @@ struct DirichletBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     Γ::D
     DoFs::T
     vals::V
-    function DirichletBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
-        new{D, T, V}(Γ, DoFs, vals)
-    end
 end
 
 """
@@ -44,9 +41,6 @@ struct TangentialFreeSlipBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     Γ::D
     DoFs::T
     vals::V
-    function TangentialFreeSlipBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
-        new{D, T, V}(Γ, DoFs, vals)
-    end
 end
 
 """
@@ -62,7 +56,4 @@ struct TractionBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     Γ::D
     DoFs::T
     vals::V
-    function TractionBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
-        new{D, T, V}(Γ, DoFs, vals)
-    end
 end

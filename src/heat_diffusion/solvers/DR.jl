@@ -36,8 +36,8 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
 
         assemble_diffusion_matrices_atomix!(
             R, ∂R∂T, PC, T, T0, mesh.el2n, geo, mesh.nels,
-            element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T,
-            backend, workgroup,
+            element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref,
+            backend, workgroup; compute_jacobian = do_∂R∂T,
         )
 
         # Constrain residual and rate *before* the update so that boundary

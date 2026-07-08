@@ -38,8 +38,8 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
 
         assemble_lithostatic_pressure_matrices_atomix!(
             R, ∂R∂P, PC, T, P, mesh.el2n, geo, mesh.nels,
-            element, phases, ρ0, α, K, Tref, g, do_∂R∂P,
-            backend, workgroup,
+            element, phases, ρ0, α, K, Tref, g,
+            backend, workgroup; compute_jacobian = do_∂R∂P,
         )
 
         apply_dirichlet!(R,    Γ_dofs, Γ_zero, backend, workgroup)

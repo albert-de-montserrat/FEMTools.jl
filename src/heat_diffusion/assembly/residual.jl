@@ -1,28 +1,37 @@
 """
     assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels,
                                         element, phases, k, Cp, ρ0, α, K, P, Δt,
-                                        source, Tref, do_∂R∂T, backend, workgroup)
+                                        source, Tref, backend, workgroup;
+                                        compute_jacobian=false)
 
 Assemble the transient heat-diffusion residual `R` using Atomix-backed atomic scatter.
 
 `phases` is a nodal integer array whose entries select the phase index (1-based)
 for each node. Per-node properties are interpolated to quadrature points by
 weighting with shape functions. `k`, `Cp`, `ρ0`, `α`, and `K` are `NTuple`s of
-per-phase intrinsic material properties. When `do_∂R∂T` is true, also assemble
-row-sum Jacobian estimates into `∂R∂T` and the absolute diagonal into `PC`.
+per-phase intrinsic material properties. When `compute_jacobian` is true, also
+assemble row-sum Jacobian estimates into `∂R∂T` and the absolute diagonal into `PC`.
 `Tref` is the reference temperature in the density equation of state.
 """
-function assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels, element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
+function assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels, element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, backend, workgroup; compute_jacobian = false) where Te<:AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)
     residual_atomic_kernel!(backend, workgroup)(R, T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, Val(N); ndrange = nels)
-    if do_∂R∂T
+    if compute_jacobian
         fill!(∂R∂T, 0)
         fill!(PC, 0)
         jacobian_atomic_kernel!(backend, workgroup)(∂R∂T, PC, T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, Val(N); ndrange = nels)
     end
     KA.synchronize(backend)
+end
+
+function assemble_diffusion_matrices_atomix!(R, ∂R∂T, PC, T, T0, el2n, geo, nels, element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T::Bool, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
+    Base.depwarn("passing do_∂R∂T as a positional Bool is deprecated; use compute_jacobian = $do_∂R∂T instead", :assemble_diffusion_matrices_atomix!)
+    return assemble_diffusion_matrices_atomix!(
+        R, ∂R∂T, PC, T, T0, el2n, geo, nels, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref,
+        backend, workgroup; compute_jacobian = do_∂R∂T,
+    )
 end
 
 # k, Cp, ρ0, α, K are NTuples of per-phase scalars — no @Const (not device arrays).
@@ -48,7 +57,8 @@ end
 """
     assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo, el_groups,
                                          element, phases, k, Cp, ρ0, α, K, P, Δt,
-                                         source, Tref, do_∂R∂T, backend, workgroup)
+                                         source, Tref, backend, workgroup;
+                                         compute_jacobian=false)
 
 Graph-coloring alternative to `assemble_diffusion_matrices_atomix!`.
 
@@ -62,7 +72,7 @@ All other arguments are identical to `assemble_diffusion_matrices_atomix!`,
 except that `nels` is replaced by `el_groups`.
 """
 function assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo, el_groups,
-                                               element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
+                                               element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, backend, workgroup; compute_jacobian = false) where Te<:AbstractElement{nDim, N} where {nDim, N}
     Nq = shape_function_values(element)
 
     fill!(R, 0)
@@ -72,7 +82,7 @@ function assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo,
             ndrange = length(group),
         )
     end
-    if do_∂R∂T
+    if compute_jacobian
         fill!(∂R∂T, 0)
         fill!(PC, 0)
         for group in el_groups
@@ -83,6 +93,15 @@ function assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo,
         end
     end
     KA.synchronize(backend)
+end
+
+function assemble_diffusion_matrices_colored!(R, ∂R∂T, PC, T, T0, el2n, geo, el_groups,
+                                               element::ReferenceElement{Te}, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, do_∂R∂T::Bool, backend, workgroup) where Te<:AbstractElement{nDim, N} where {nDim, N}
+    Base.depwarn("passing do_∂R∂T as a positional Bool is deprecated; use compute_jacobian = $do_∂R∂T instead", :assemble_diffusion_matrices_colored!)
+    return assemble_diffusion_matrices_colored!(
+        R, ∂R∂T, PC, T, T0, el2n, geo, el_groups, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref,
+        backend, workgroup; compute_jacobian = do_∂R∂T,
+    )
 end
 
 @kernel function residual_colored_kernel!(R, @Const(T), @Const(T0), @Const(source), @Const(el2n), @Const(geo), @Const(phases), k, Cp, ρ0, α, K, @Const(P), Δt, Tref, Nq, @Const(group), ::Val{N}) where N

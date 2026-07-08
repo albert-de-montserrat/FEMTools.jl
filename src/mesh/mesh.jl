@@ -38,14 +38,14 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     nels::Int   # number of elements
 
     function Mesh{nDim, O, D, B, T1, T2, T3, T4}(
-        Ω::D,
-        Γ::B,
-        coords::T1,
-        DoFs::T2,
-        el2n::T3,
-        Γnodes::T4,
-        nnodes::Int,
-        nels::Int,
+        Ω,
+        Γ,
+        coords,
+        DoFs,
+        el2n,
+        Γnodes,
+        nnodes,
+        nels,
     ) where {nDim, O, D, B, T1, T2, T3, T4}
         return new{nDim, O, D, B, T1, T2, T3, T4}(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels)
     end
