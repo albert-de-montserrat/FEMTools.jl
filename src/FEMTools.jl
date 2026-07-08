@@ -104,8 +104,8 @@ export generate_element2node,
     generate_dofs,
     generate_sparsity_pattern,
     color_mesh,
-    build_element_groups,
-    build_discontinuous_linear_mesh
+    generate_element_groups,
+    generate_discontinuous_linear_mesh
 
 # Reference-element evaluation helpers.
 export eval_shape_function,

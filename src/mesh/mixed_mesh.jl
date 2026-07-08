@@ -155,7 +155,7 @@ pressure reference element.
 
 The pressure field is treated as **discontinuous linear** (P1-disc): each
 triangle gets its own three pressure DoFs, built internally via
-`build_discontinuous_linear_mesh`. `mesh_v` supplies coordinates, velocity
+`generate_discontinuous_linear_mesh`. `mesh_v` supplies coordinates, velocity
 DoF indices, and velocity connectivity; `element_P` supplies the pressure
 polynomial order stored in the `MixedMesh` type parameter.
 
@@ -165,7 +165,7 @@ array backend as `mesh_v`.
 function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {nDim, O1}
     coords_cpu = Array(mesh_v.coords)
     el2n_cpu   = Array(mesh_v.el2n)
-    el2nP_cpu, DoFsP_cpu, _ = build_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
+    el2nP_cpu, DoFsP_cpu, _ = generate_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
     normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
     normals = typeof(mesh_v.coords)(normals_cpu)
     DoFsP = typeof(mesh_v.el2n)(DoFsP_cpu)
@@ -250,7 +250,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    build_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
+    generate_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
 Build the linear triangle topology and element-to-DoF map for discontinuous
 linear pressure elements.
@@ -264,7 +264,7 @@ Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates
 corner coordinates per element so a discontinuous nodal pressure field can be
 plotted or initialized directly on pressure DoFs.
 """
-function build_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
+function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
     size(el2n, 1) >= 3 || throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
 
     nels      = size(el2n, 2)
@@ -283,3 +283,5 @@ function build_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer}
 
     return p_el2n, p_el2dof, p_dof_coords
 end
+
+Base.@deprecate build_discontinuous_linear_mesh generate_discontinuous_linear_mesh

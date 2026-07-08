@@ -63,7 +63,7 @@ end
 Graph-coloring alternative to `assemble_diffusion_matrices_atomix!`.
 
 `el_groups` is a `Vector` of integer arrays (one per color) as produced by
-`build_element_groups`. Elements in the same group share no nodes, so the
+`generate_element_groups`. Elements in the same group share no nodes, so the
 scatter into `R`, `∂R∂T`, and `PC` is conflict-free and requires no atomics.
 The outer loop over colors is sequential; within each color the kernel runs in
 parallel without synchronisation barriers between colors.
