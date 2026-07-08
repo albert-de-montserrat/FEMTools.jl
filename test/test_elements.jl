@@ -60,6 +60,25 @@ end
     end
 end
 
+@testset "T-less element constructors default to Float64" begin
+    cases = (
+        (LinearElement{1, 2}, LinearElement{1, 2, Float64}),
+        (QuadraticElement{1, 3}, QuadraticElement{1, 3, Float64}),
+        (LinearElement{2, 3}, LinearElement{2, 3, Float64}),
+        (QuadraticElement{2, 6}, QuadraticElement{2, 6, Float64}),
+        (LinearElement{2, 4}, LinearElement{2, 4, Float64}),
+        (QuadraticElement{2, 9}, QuadraticElement{2, 9, Float64}),
+        (LinearElement{3, 8}, LinearElement{3, 8, Float64}),
+        (QuadraticElement{3, 27}, QuadraticElement{3, 27, Float64}),
+    )
+
+    for (Element, ConcreteElement) in cases
+        @test ReferenceElement(Element) isa ReferenceElement{ConcreteElement}
+        @test typeof(ShapeFunctions(Element)) === typeof(ShapeFunctions(ConcreteElement))
+        @test IntegrationPoints(Element) == IntegrationPoints(ConcreteElement)
+    end
+end
+
 @testset "element order" begin
     for FP in (FP64, FP32)
         linear_elements = (

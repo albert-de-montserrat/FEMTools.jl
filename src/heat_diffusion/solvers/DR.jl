@@ -1,6 +1,6 @@
 """
     solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck = 100, Tref = 273)
+            ncheck = 100, verbose = true, Tref = 273)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
 step of size `Δt`.
@@ -11,6 +11,7 @@ rate at constrained nodes) and the prescribed Dirichlet values respectively.
 `backend` and `workgroup` are forwarded to all KernelAbstractions kernel
 launches. `ncheck` controls how often the spectral estimates and convergence
 criterion are recomputed (every `ncheck` PT iterations).
+Set `verbose = false` to suppress per-check residual output.
 `Tref` is the reference temperature used in the density equation of state.
 
 The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
@@ -20,6 +21,7 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
                  backend, workgroup;
                  ncheck = 100,
+                 verbose = true,
                  Tref = eltype(dr.T)(273))
     (; R, R0, ∂R∂T, PC, T, T0, ∂T∂τ,
        phases, k, Cp, ρ0, α, K, P, source,
@@ -63,7 +65,7 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
             c    = 2 * √(λmin) * c_fact
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β    = (2 - c * Δτ) / (2 + c * Δτ)
-            @printf("  PT %05d  res = %6.2e\n", it, nr / nr0)
+            verbose && @printf("  PT %05d  res = %6.2e\n", it, nr / nr0)
             nr / nr0 < ϵ && break
         end
     end

@@ -23,6 +23,10 @@ end
 Construct shape functions for element type `T`.
 """
 ShapeFunctions(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = ShapeFunctions(T())
+ShapeFunctions(::Type{LinearElement{nDim, nVert}}) where {nDim, nVert} =
+    ShapeFunctions(LinearElement{nDim, nVert, Float64})
+ShapeFunctions(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
+    ShapeFunctions(QuadraticElement{nDim, nVert, Float64})
 
 """
     ShapeFunctions(::LinearElement{1, 2})

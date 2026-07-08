@@ -105,7 +105,7 @@ end
         τyy = [7.0],
         τzz = [8.0],
         τxy = [9.0],
-        τII = [10.0],
+        tauII = [10.0],
     )
 
     text = _read_temp_vtk() do path

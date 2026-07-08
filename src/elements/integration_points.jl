@@ -22,6 +22,10 @@ end
 Construct integration points for element type `T`.
 """
 IntegrationPoints(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = IntegrationPoints(T())
+IntegrationPoints(::Type{LinearElement{nDim, nVert}}) where {nDim, nVert} =
+    IntegrationPoints(LinearElement{nDim, nVert, Float64})
+IntegrationPoints(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
+    IntegrationPoints(QuadraticElement{nDim, nVert, Float64})
 
 # ---------------------------------------------------------------------------
 # Triangular Gauss-Legendre grid generator (Duffy transform)

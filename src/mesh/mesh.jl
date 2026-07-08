@@ -6,7 +6,6 @@ Abstract supertype for mesh containers.
 abstract type AbstractMesh end
 
 """
-    Mesh(Ω, nels)
     Mesh(Ω, element, nels)
     Mesh(backend, Ω, element, nels)
 

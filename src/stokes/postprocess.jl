@@ -83,7 +83,7 @@ function compute_strain_rate_stress_postprocess(
 
     return (;
         εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy, τII,
+        τxx, τyy, τzz, τxy,
         tauII = τII,
     )
 end
@@ -190,7 +190,7 @@ function compute_strain_rate_stress_postprocess(
 
     return (;
         εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy, τII,
+        τxx, τyy, τzz, τxy,
         tauII = τII,
     )
 end
@@ -416,7 +416,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
             tau_yy = post.τyy,
             tau_zz = post.τzz,
             tau_xy = post.τxy,
-            tau_II = post.τII,
+            tau_II = post.tauII,
         ),
         title,
     )

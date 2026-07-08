@@ -228,6 +228,10 @@ function Base.show(io::IO, element::ReferenceElement{Element}) where Element
 end
 
 ReferenceElement(::Type{T}) where {T<:AbstractElement} = ReferenceElement(T())
+ReferenceElement(::Type{LinearElement{nDim, nVert}}) where {nDim, nVert} =
+    ReferenceElement(LinearElement{nDim, nVert, Float64})
+ReferenceElement(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
+    ReferenceElement(QuadraticElement{nDim, nVert, Float64})
 
 """
     length(element)

@@ -17,6 +17,8 @@ end
 Run the Powell-Hestenes / DYREL-style velocity-pressure iteration for a Stokes
 state with full Dirichlet velocity boundary conditions on `Γnodes`.
 `dr.M_P` must be filled before calling.
+Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
+inner dynamic-relaxation trace.
 """
 function solve_stokes_dyrel!(
     dr,
@@ -71,9 +73,20 @@ function solve_stokes_dyrel!(
     total_iterMax = 50_000,
     max_ph_iterations = 1000,
     rel_drop0 = 1.0e-2,
-    verbose_PH = true,
-    verbose_DR = false,
+    verbose = true,
+    verbose_inner = false,
+    verbose_PH = nothing,
+    verbose_DR = nothing,
 )
+    if verbose_PH !== nothing
+        Base.depwarn("`verbose_PH` is deprecated; use `verbose` instead", :solve_stokes_dyrel!)
+        verbose = verbose_PH
+    end
+    if verbose_DR !== nothing
+        Base.depwarn("`verbose_DR` is deprecated; use `verbose_inner` instead", :solve_stokes_dyrel!)
+        verbose_inner = verbose_DR
+    end
+
     M_P = dr.M_P
     nout = ncheck
     zero_vbc = zero(bc_vx_vals)
@@ -98,7 +111,7 @@ function solve_stokes_dyrel!(
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
     α_vx, β_vx = _stokes_cheb(Δτ_vx, 0.0, dr.c_fact)
     α_vy, β_vy = _stokes_cheb(Δτ_vy, 0.0, dr.c_fact)
-    verbose_PH && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
+    verbose && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
     err_min = Inf
     ϵ = Float64(ϵ_tol)
@@ -156,7 +169,7 @@ function solve_stokes_dyrel!(
         isnan(err) && error("NaN detected in outer loop at PH=$itPH")
         err > 1e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
 
-        if verbose_PH
+        if verbose
             @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
                 itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
         end
@@ -218,7 +231,7 @@ function solve_stokes_dyrel!(
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
-                verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
+                verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
                 λmin_vx = _stokes_λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
                 λmin_vy = _stokes_λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
