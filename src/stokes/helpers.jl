@@ -78,8 +78,8 @@ function remove_pressure_mean!(P, M_P)
 end
 
 """
-    pressure_mass(dr)
+    pressure_mass(dr::StokesDR)
 
-Return the pressure mass/scaling field stored on a Stokes solver state.
+Return the lumped pressure mass field (`M_P`) of a Stokes solver state.
 """
-pressure_mass(dr) = hasproperty(dr, :M_P) ? getproperty(dr, :M_P) : getproperty(dr, :PC_P)
+pressure_mass(dr::StokesDR) = dr.M_P
