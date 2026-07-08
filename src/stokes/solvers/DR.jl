@@ -201,10 +201,10 @@ function solve_stokes_dyrel!(
                 apply_dirichlet!(field, Γnodes, zero_vbc, backend, workgroup)
             end
 
-            stokes_update_rate!(backend, workgroup, dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
-            stokes_update_variable!(backend, workgroup, dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)
-            stokes_update_rate!(backend, workgroup, dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes)
-            stokes_update_variable!(backend, workgroup, dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes)
+            stokes_update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes, backend, workgroup)
+            stokes_update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes, backend, workgroup)
+            stokes_update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes, backend, workgroup)
+            stokes_update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes, backend, workgroup)
 
             apply_dirichlet!(dr.vx, Γnodes, bc_vx_vals, backend, workgroup)
             apply_dirichlet!(dr.vy, Γnodes, bc_vy_vals, backend, workgroup)
