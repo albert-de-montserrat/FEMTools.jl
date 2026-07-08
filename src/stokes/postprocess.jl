@@ -10,27 +10,27 @@ function compute_strain_rate_stress_postprocess(
     geo_v,
     τ_ip,
     element_v::ReferenceElement{TV},
-) where {NV, TV <: AbstractElement{2, NV}}
+) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
 
-    εxx = zeros(Float64, nels)
-    εyy = zeros(Float64, nels)
-    εzz = zeros(Float64, nels)
-    εxy = zeros(Float64, nels)
-    εII = zeros(Float64, nels)
-    τxx = zeros(Float64, nels)
-    τyy = zeros(Float64, nels)
-    τzz = zeros(Float64, nels)
-    τxy = zeros(Float64, nels)
-    τII = zeros(Float64, nels)
+    εxx = zeros(FP, nels)
+    εyy = zeros(FP, nels)
+    εzz = zeros(FP, nels)
+    εxy = zeros(FP, nels)
+    εII = zeros(FP, nels)
+    τxx = zeros(FP, nels)
+    τyy = zeros(FP, nels)
+    τzz = zeros(FP, nels)
+    τxy = zeros(FP, nels)
+    τII = zeros(FP, nels)
 
     for iel in 1:nels
         local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
         vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
         vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
         geo_el = geo_v[iel]
-        volume = 0.0
+        volume = zero(FP)
 
         for q in eachindex(geo_el)
             ∂N∂x, dΩ = geo_el[q]
@@ -102,20 +102,20 @@ function compute_strain_rate_stress_postprocess(
     τ_old,
     η, G, Δt,
     element_v::ReferenceElement{TV},
-) where {NV, TV <: AbstractElement{2, NV}}
+) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
 
-    εxx = zeros(Float64, nels)
-    εyy = zeros(Float64, nels)
-    εzz = zeros(Float64, nels)
-    εxy = zeros(Float64, nels)
-    εII = zeros(Float64, nels)
-    τxx = zeros(Float64, nels)
-    τyy = zeros(Float64, nels)
-    τzz = zeros(Float64, nels)
-    τxy = zeros(Float64, nels)
-    τII = zeros(Float64, nels)
+    εxx = zeros(FP, nels)
+    εyy = zeros(FP, nels)
+    εzz = zeros(FP, nels)
+    εxy = zeros(FP, nels)
+    εII = zeros(FP, nels)
+    τxx = zeros(FP, nels)
+    τyy = zeros(FP, nels)
+    τzz = zeros(FP, nels)
+    τxy = zeros(FP, nels)
+    τII = zeros(FP, nels)
 
     for iel in 1:nels
         local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
@@ -126,7 +126,7 @@ function compute_strain_rate_stress_postprocess(
         τxy_old_loc = SVector{NV}(ntuple(i -> τ_old[3][local_nodes[i]], Val(NV)))
         phase_loc = SVector{NV}(ntuple(i -> Int(phases_v[local_nodes[i]]), Val(NV)))
         geo_el = geo_v[iel]
-        volume = 0.0
+        volume = zero(FP)
 
         for q in eachindex(geo_el)
             ∂N∂x, dΩ = geo_el[q]
@@ -201,9 +201,9 @@ end
 Project cell-averaged stress diagnostics back to nodal old-stress arrays.
 """
 function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
-    τxx_nodes = zeros(Float64, nnodes_v)
-    τyy_nodes = zeros(Float64, nnodes_v)
-    τxy_nodes = zeros(Float64, nnodes_v)
+    τxx_nodes = zeros(eltype(τ_old[1]), nnodes_v)
+    τyy_nodes = zeros(eltype(τ_old[2]), nnodes_v)
+    τxy_nodes = zeros(eltype(τ_old[3]), nnodes_v)
     counts = zeros(Int, nnodes_v)
 
     for iel in axes(el2n_v, 2)
@@ -387,7 +387,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
     topo = _vtk_topology(mesh_stokes)
     NP = size(el2nP_cpu, 1)
 
-    vtk_P = zeros(Float64, length(topo.nodes))
+    vtk_P = zeros(eltype(P_cpu), length(topo.nodes))
     vtk_P_count = zeros(Int, length(topo.nodes))
     for iel in 1:mesh_stokes.nels
         for a in 1:NP

@@ -55,3 +55,11 @@ interpolate those nodal values to one integration point with weights `N`.
         out
     end
 end
+
+function _checked_λmax(jacobian, PC, label)
+    λmax = maximum(jacobian ./ PC)
+    if !(isfinite(λmax) && λmax > zero(λmax))
+        error("$label preconditioner produced invalid λmax = $λmax; check for zero or non-finite preconditioner entries")
+    end
+    return λmax
+end

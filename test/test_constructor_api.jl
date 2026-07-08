@@ -59,3 +59,38 @@ end
     @test loosened.nnodes === reference.nnodes
     @test loosened.nels === reference.nels
 end
+
+@testset "unstructured Mesh boundary detection handles high-order paths" begin
+    coords = SVector{2, Float64}[
+        SVector(0.0, 0.0),
+        SVector(1.0, 0.0),
+        SVector(0.0, 1.0),
+        SVector(1.0, 1.0),
+        SVector(0.5, 0.0),
+        SVector(0.5, 0.5),
+        SVector(0.0, 0.5),
+        SVector(1.0, 0.5),
+        SVector(0.5, 1.0),
+    ]
+    el2n = Int32[
+        1 2
+        2 4
+        3 3
+        5 8
+        6 9
+        7 6
+    ]
+    mesh = Mesh(coords, el2n; order = 2)
+
+    @test mesh.Γnodes == Int32[1, 2, 3, 4, 5, 7, 8, 9]
+
+    coords3 = SVector{3, Float64}[
+        SVector(0.0, 0.0, 0.0),
+        SVector(1.0, 0.0, 0.0),
+        SVector(0.0, 1.0, 0.0),
+        SVector(0.0, 0.0, 1.0),
+        SVector(1.0, 1.0, 1.0),
+    ]
+    bad_el2n = reshape(Int32[1, 2, 3, 4, 5], 5, 1)
+    @test_throws ArgumentError Mesh(coords3, bad_el2n)
+end

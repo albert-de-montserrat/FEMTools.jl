@@ -1,7 +1,7 @@
 function _stokes_λmin(step, rate, ΔR, PC)
     dV = step .* rate
     denom = sum(dV .^ 2)
-    return denom == 0 ? 0.0 : abs(sum(dV .* (ΔR ./ PC))) / denom
+    return iszero(denom) ? zero(denom) : abs(sum(dV .* (ΔR ./ PC))) / denom
 end
 
 function _stokes_cheb(Δτ, λmin, c_fact)
@@ -105,16 +105,16 @@ function solve_stokes_dyrel!(
         dr.ηb, Δt, γP, M_P,
         backend, workgroup,
     )
-    λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
-    λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+    λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
+    λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
     Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
-    α_vx, β_vx = _stokes_cheb(Δτ_vx, 0.0, dr.c_fact)
-    α_vy, β_vy = _stokes_cheb(Δτ_vy, 0.0, dr.c_fact)
+    α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
+    α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
     verbose && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
     err_min = Inf
-    ϵ = Float64(ϵ_tol)
+    ϵ = eltype(dr.Rv_x)(ϵ_tol)
     err = 2 * ϵ
     err_abs = Inf
     err_rel = Inf
@@ -246,8 +246,8 @@ function solve_stokes_dyrel!(
                     backend, workgroup,
                 )
 
-                λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
-                λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+                λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
+                λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
                 Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
                 Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
 

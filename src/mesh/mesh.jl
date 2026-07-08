@@ -82,7 +82,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         TDev       = TA(backend)
         nnodes     = length(coords_cpu)
         DoFs_cpu   = Int32.(1:nnodes)
-        Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu)
+        Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu, Val(nDim))
 
         coords = TDev(coords_cpu)
         DoFs   = TDev(DoFs_cpu)
@@ -137,34 +137,79 @@ function Mesh(
 
 end
 
+function _boundary_edge_paths_2d(nlocal::Int)
+    if nlocal == 3
+        return ((1, 2), (2, 3), (3, 1))
+    elseif nlocal == 4
+        return ((1, 2), (2, 3), (3, 4), (4, 1))
+    elseif nlocal == 6 || nlocal == 7
+        return ((1, 4, 2), (2, 5, 3), (3, 6, 1))
+    elseif nlocal == 8 || nlocal == 9
+        return ((1, 5, 2), (2, 6, 3), (3, 7, 4), (4, 8, 1))
+    else
+        throw(ArgumentError("cannot infer 2D boundary edge paths for elements with $nlocal local nodes"))
+    end
+end
+
+function _boundary_face_paths_3d(nlocal::Int)
+    if nlocal == 4
+        return ((1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4))
+    elseif nlocal == 8
+        return ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
+                (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
+    else
+        throw(ArgumentError("cannot infer 3D boundary face paths for elements with $nlocal local nodes"))
+    end
+end
+
 """
-    _unstructured_boundary_nodes(el2n)
+    _unstructured_boundary_nodes(el2n[, Val(nDim)])
 
 Return sorted unique node indices that lie on the mesh boundary, as a vector
 with the same integer eltype as `el2n`.
 
-A mesh edge (consecutive node pair within an element) is a boundary edge when
-it appears in exactly one element. All nodes incident to such edges are
-collected and returned. Assumes elements are ordered so that consecutive rows
-of `el2n` form edges (i.e. the last node wraps to the first).
+For 2-D meshes, a boundary edge is an edge whose corner endpoints appear in
+exactly one element. For 3-D meshes, a boundary face is a face whose corner
+nodes appear in exactly one element. Supported unstructured arities are T3,
+Q4, T6/T7, Q8/Q9, Tet4, and Hex8.
 """
-function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}) where {I <: Integer}
-    N = size(el2n, 1)
+_unstructured_boundary_nodes(el2n::AbstractMatrix) = _unstructured_boundary_nodes(el2n, Val(2))
+
+function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}, ::Val{2}) where {I <: Integer}
+    edge_paths = _boundary_edge_paths_2d(size(el2n, 1))
     edge_count = Dict{Tuple{I, I}, Int}()
-    for iel in axes(el2n, 2)
-        for i in 1:N
-            j = mod1(i + 1, N)
-            a, b = minmax(el2n[i, iel], el2n[j, iel])
-            edge_count[(a, b)] = get(edge_count, (a, b), 0) + 1
-        end
+    for iel in axes(el2n, 2), path in edge_paths
+        a, b = minmax(el2n[first(path), iel], el2n[last(path), iel])
+        edge_count[(a, b)] = get(edge_count, (a, b), 0) + 1
     end
     bnd = I[]
-    for ((a, b), count) in edge_count
-        count == 1 && push!(bnd, a, b)
+    for iel in axes(el2n, 2), path in edge_paths
+        a, b = minmax(el2n[first(path), iel], el2n[last(path), iel])
+        get(edge_count, (a, b), 0) == 1 || continue
+        for i in path
+            push!(bnd, el2n[i, iel])
+        end
     end
     return sort!(unique!(bnd))
 end
 
+function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}, ::Val{3}) where {I <: Integer}
+    face_paths = _boundary_face_paths_3d(size(el2n, 1))
+    face_count = Dict{Any, Int}()
+    for iel in axes(el2n, 2), path in face_paths
+        key = Tuple(sort!([el2n[i, iel] for i in path]))
+        face_count[key] = get(face_count, key, 0) + 1
+    end
+    bnd = I[]
+    for iel in axes(el2n, 2), path in face_paths
+        key = Tuple(sort!([el2n[i, iel] for i in path]))
+        get(face_count, key, 0) == 1 || continue
+        for i in path
+            push!(bnd, el2n[i, iel])
+        end
+    end
+    return sort!(unique!(bnd))
+end
 
 """
     generate_coordinates(element::ReferenceElement{<:LinearElement{1, 2}}, Ω, nels)

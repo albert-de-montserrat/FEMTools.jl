@@ -16,7 +16,7 @@ constrained diagonal entries to one, and assigns constrained RHS values.
 All methods mutate their arguments in place and return `nothing`.
 """
 function apply_bc!(rhs::AbstractVector, ΓD::DirichletBoundaryCondition)
-    @inbounds for i in eachindex(ΓD.DoFs)
+    for i in eachindex(ΓD.DoFs)
         idof = ΓD.DoFs[i]
         val = ΓD.vals[i]
         rhs[idof] = val
@@ -25,7 +25,7 @@ function apply_bc!(rhs::AbstractVector, ΓD::DirichletBoundaryCondition)
 end
 
 function apply_bc!(A::AbstractMatrix, ΓD::DirichletBoundaryCondition)
-    @inbounds for dof in ΓD.DoFs
+    for dof in ΓD.DoFs
         @views A[dof, :] .= 0
         A[dof, dof] = 1
     end
@@ -33,15 +33,17 @@ function apply_bc!(A::AbstractMatrix, ΓD::DirichletBoundaryCondition)
 end
 
 function apply_bc!(A::AbstractMatrix, rhs::AbstractVector, ΓD::DirichletBoundaryCondition)
-    @assert size(A, 1) == size(A, 2) "Dirichlet system application requires a square matrix"
-    @assert length(rhs) == size(A, 1) "RHS length must match matrix size"
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("Dirichlet system application requires a square matrix"))
+    length(rhs) == size(A, 1) ||
+        throw(DimensionMismatch("RHS length must match matrix size"))
 
     dofs = ΓD.DoFs
     vals = ΓD.vals
 
     # Preserve the effect of constrained columns before those columns are
     # eliminated from the system matrix.
-    @inbounds for i in axes(A, 1)
+    for i in axes(A, 1)
         i in dofs && continue
         for (dof, val) in zip(dofs, vals)
             rhs[i] -= A[i, dof] * val
@@ -50,7 +52,7 @@ function apply_bc!(A::AbstractMatrix, rhs::AbstractVector, ΓD::DirichletBoundar
 
     # Symmetric elimination: constrained rows and columns are cleared, the
     # diagonal is pinned to one, and the RHS receives the prescribed value.
-    @inbounds for (dof, val) in zip(dofs, vals)
+    for (dof, val) in zip(dofs, vals)
         @views A[dof, :] .= 0
         @views A[:, dof] .= 0
         A[dof, dof] = 1

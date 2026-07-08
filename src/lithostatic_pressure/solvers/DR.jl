@@ -1,7 +1,7 @@
 """
     solver!(dr::LithostaticPressureDR, mesh, geo, element,
             Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck=100, verbose=true, Tref=273, g=SVector(0, -9.81))
+            ncheck=100, iterMax=10_000, verbose=true, Tref=273, g=SVector(0, -9.81))
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
@@ -13,14 +13,17 @@ lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 `Tuple` of matching length (e.g. `SVector(0, -9.81)` or `(0.0, -9.81)` for
 2-D). The default is only appropriate for 2-D problems.
 `ncheck` controls how often spectral estimates and convergence are recomputed.
+`iterMax` is the maximum number of pseudo-transient iterations before a
+non-convergence error.
 Set `verbose = false` to suppress per-iteration residual output.
 
-Modifies `dr.P` in-place. Returns `nothing`.
+Modifies `dr.P` in-place. Returns `nothing` on convergence.
 """
 function solver!(dr::LithostaticPressureDR, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
                  backend, workgroup;
                  ncheck = 100,
+                 iterMax = 10_000,
                  verbose = true,
                  Tref = eltype(dr.P)(273),
                  g = SVector(zero(eltype(dr.P)), -eltype(dr.P)(9.81)))
@@ -32,7 +35,10 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
     β    = zero(eltype(R))
     nr0  = zero(eltype(R))
 
-    for it in 1:10_000
+    last_rel = NaN
+    λmax = zero(eltype(R))
+
+    for it in 1:iterMax
         do_∂R∂P = (mod(it, ncheck) == 0) || (it == 1)
         do_∂R∂P && copyto!(R0, R)
 
@@ -45,6 +51,8 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
         apply_dirichlet!(R,    Γ_dofs, Γ_zero, backend, workgroup)
         apply_dirichlet!(∂P∂τ, Γ_dofs, Γ_zero, backend, workgroup)
 
+        do_∂R∂P && (λmax = _checked_λmax(∂R∂P, PC, "lithostatic pressure"))
+
         update_rate_kernel!(backend, workgroup)(∂P∂τ, R, PC, β; ndrange = mesh.nnodes)
         update_variable_kernel!(backend, workgroup)(P, ∂P∂τ, α_dr; ndrange = mesh.nnodes)
 
@@ -55,7 +63,6 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
             it == 1 && (nr0 = max(nr, eps(nr)))   # guard against exact-zero warm start
             isnan(nr / nr0) && error("NaNs at PT iter $it")
 
-            λmax  = maximum(∂R∂P ./ PC)
             Δτ    = 2 / √(λmax) * CFL
             denom = sum((Δτ .* ∂P∂τ) .^ 2)
             λmin  = (it == 1 || denom == 0) ? zero(eltype(R)) :
@@ -63,9 +70,10 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
             c    = 2 * √(λmin) * c_fact
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β    = (2 - c * Δτ) / (2 + c * Δτ)
-            verbose && @printf("  PT %05d  res = %6.2e\n", it, nr / nr0)
-            nr / nr0 < ϵ && break
+            last_rel = nr / nr0
+            verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
+            last_rel < ϵ && return nothing
         end
     end
-    return nothing
+    error("Lithostatic pressure DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
 end

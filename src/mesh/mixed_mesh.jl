@@ -60,20 +60,6 @@ function Base.show(io::IO, mesh::MixedMesh{nDim, O1, O2}) where {nDim, O1, O2}
           ", nnodesP=", mesh.nnodesP, ", nels=", mesh.nels, ")")
 end
 
-function _boundary_edge_paths_2d(nlocal::Int)
-    if nlocal == 3
-        return ((1, 2), (2, 3), (3, 1))
-    elseif nlocal == 4
-        return ((1, 2), (2, 3), (3, 4), (4, 1))
-    elseif nlocal == 6 || nlocal == 7
-        return ((1, 4, 2), (2, 5, 3), (3, 6, 1))
-    elseif nlocal == 8 || nlocal == 9
-        return ((1, 5, 2), (2, 6, 3), (3, 7, 4), (4, 8, 1))
-    else
-        throw(ArgumentError("cannot infer 2D boundary edge paths for elements with $nlocal local nodes"))
-    end
-end
-
 function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::AbstractMatrix{<:Integer}) where FP
     normals = fill(zero(SVector{2, FP}), length(coords))
     edge_paths = _boundary_edge_paths_2d(size(el2n, 1))
@@ -143,7 +129,7 @@ function MixedMesh(
         size(el2n, 2),
         DoFsP,
         el2nP,
-        prod(size(el2nP)),
+        Int(maximum(DoFsP)),
     )
 end
 
@@ -189,7 +175,7 @@ function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {n
         size(el2n_cpu, 2),
         DoFsP,
         el2nP,
-        prod(size(el2nP_cpu)),
+        Int(maximum(DoFsP_cpu)),
     )
 end
 

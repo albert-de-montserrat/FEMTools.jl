@@ -1,6 +1,6 @@
 """
     solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck = 100, verbose = true, Tref = 273)
+            ncheck = 100, iterMax = 10_000, verbose = true, Tref = 273)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
 step of size `Δt`.
@@ -10,7 +10,8 @@ are float arrays of the same length: zero values (for zeroing the residual and
 rate at constrained nodes) and the prescribed Dirichlet values respectively.
 `backend` and `workgroup` are forwarded to all KernelAbstractions kernel
 launches. `ncheck` controls how often the spectral estimates and convergence
-criterion are recomputed (every `ncheck` PT iterations).
+criterion are recomputed (every `ncheck` PT iterations). `iterMax` is the
+maximum number of pseudo-transient iterations before a non-convergence error.
 Set `verbose = false` to suppress per-check residual output.
 `Tref` is the reference temperature used in the density equation of state.
 
@@ -21,6 +22,7 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
                  backend, workgroup;
                  ncheck = 100,
+                 iterMax = 10_000,
                  verbose = true,
                  Tref = eltype(dr.T)(273))
     (; R, R0, ∂R∂T, PC, T, T0, ∂T∂τ,
@@ -32,7 +34,10 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
     β    = zero(eltype(R))
     nr0  = zero(eltype(R))
 
-    for it in 1:10_000
+    last_rel = NaN
+    λmax = zero(eltype(R))
+
+    for it in 1:iterMax
         do_∂R∂T = (mod(it, ncheck) == 0) || (it == 1)
         do_∂R∂T && copyto!(R0, R)
 
@@ -47,6 +52,8 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
         apply_dirichlet!(R,    Γ_dofs, Γ_zero, backend, workgroup)
         apply_dirichlet!(∂T∂τ, Γ_dofs, Γ_zero, backend, workgroup)
 
+        do_∂R∂T && (λmax = _checked_λmax(∂R∂T, PC, "thermal diffusion"))
+
         update_rate_kernel!(backend, workgroup)(∂T∂τ, R, PC, β; ndrange = mesh.nnodes)
         update_variable_kernel!(backend, workgroup)(T, ∂T∂τ, α_dr; ndrange = mesh.nnodes)
 
@@ -57,7 +64,6 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
             it == 1 && (nr0 = max(nr, eps(nr)))   # guard against exact-zero initial residual
             isnan(nr / nr0) && error("NaNs at PT iter $it")
 
-            λmax  = maximum(∂R∂T ./ PC)
             Δτ    = 2 / √(λmax) * CFL
             denom = sum((Δτ .* ∂T∂τ) .^ 2)
             λmin  = (it == 1 || denom == 0) ? zero(eltype(R)) :
@@ -65,11 +71,12 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
             c    = 2 * √(λmin) * c_fact
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β    = (2 - c * Δτ) / (2 + c * Δτ)
-            verbose && @printf("  PT %05d  res = %6.2e\n", it, nr / nr0)
-            nr / nr0 < ϵ && break
+            last_rel = nr / nr0
+            verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
+            last_rel < ϵ && return nothing
         end
     end
-    return nothing
+    error("Thermal diffusion DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
 end
 
 # ---------------------------------------------------------------------------

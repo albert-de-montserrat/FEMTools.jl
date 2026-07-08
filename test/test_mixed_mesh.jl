@@ -53,6 +53,48 @@ for FP in (FP32, FP64)
         @test sprint(show, mesh) == "MixedMesh{2, 2, 1}(nnodes=9, nnodesP=6, nels=2)"
     end
 
+    @testset "mixed mesh supports continuous pressure connectivity" begin
+        velocity_element = ReferenceElement(QuadraticElement{2, 6, FP})
+        pressure_element = ReferenceElement(LinearElement{2, 3, FP})
+
+        coords = SVector{2, FP}[
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (1, 1),
+            (0.5, 0),
+            (0.5, 0.5),
+            (0, 0.5),
+            (1, 0.5),
+            (0.5, 1),
+        ]
+        el2n = Int32[
+            1 2
+            2 4
+            3 3
+            5 8
+            6 9
+            7 6
+        ]
+        el2nP = Int32[
+            1 2
+            2 4
+            3 3
+        ]
+        mesh = MixedMesh(
+            velocity_element,
+            pressure_element,
+            coords,
+            Int32.(1:length(coords)),
+            el2n,
+            Int32.(1:4),
+            el2nP,
+        )
+
+        @test mesh.nnodesP == 4
+        @test sprint(show, mesh) == "MixedMesh{2, 2, 1}(nnodes=9, nnodesP=4, nels=2)"
+    end
+
     @testset "mixed mesh rejects inconsistent pressure connectivity" begin
         velocity_element = ReferenceElement(QuadraticElement{2, 6, FP})
         pressure_element = ReferenceElement(LinearElement{2, 3, FP})

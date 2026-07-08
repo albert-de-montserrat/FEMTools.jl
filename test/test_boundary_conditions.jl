@@ -44,4 +44,12 @@ using SparseArrays
         0.0 2.0 2.0 0.0
         0.0 0.0 0.0 1.0
     ]
+
+    @test_throws DimensionMismatch apply_bc!(ones(2, 3), zeros(2), ΓD)
+    @test_throws DimensionMismatch apply_bc!(ones(4, 4), zeros(3), ΓD)
+
+    bad_dof = DirichletBoundaryCondition(Γ, Int32[5], [1.0])
+    @test_throws BoundsError apply_bc!(zeros(4), bad_dof)
+    @test_throws BoundsError apply_bc!(zeros(4, 4), bad_dof)
+    @test_throws BoundsError apply_bc!(zeros(4, 4), zeros(4), bad_dof)
 end

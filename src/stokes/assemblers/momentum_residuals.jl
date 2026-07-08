@@ -145,7 +145,7 @@ Drucker-Prager return mapping.
 Computes the trial viscoelastic stress, evaluates the yield function
 `F = τII − C·cos(ϕ) − P·sin(ϕ)`, and applies the plastic return
 `τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
-regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
+regularized formula `λ = F / (ηve + η_reg - Kb Δt ∂Q/∂P ∂F/∂P)`.
 """
 # Viscoelastic–Drucker-Prager plastic stress.
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager)
@@ -192,7 +192,7 @@ regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`.
     ∂Q∂P   = -sinΨ
 
     λ = if F > 0
-        F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P)
+        F / (ηve + η_reg - Kb * Δt * ∂Q∂P * ∂F∂P)
     else
         zero(F)
     end
