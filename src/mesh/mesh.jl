@@ -22,10 +22,11 @@ counts. For tensor-product domains, `nels` is a tuple such as `(nx, ny)` or
 
 Construct an unstructured mesh from pre-built arrays.
 
-`coords` is a `Vector{SVector{nDim, T}}` of node coordinates and `el2n` is an
-`N × nels` `Matrix{Int32}` of element-to-node connectivity (one column per
-element). Boundary nodes are detected automatically as nodes on mesh edges
-shared by exactly one element. `Ω` and `Γ` are set to `nothing`.
+`coords` is an `AbstractVector` of `SVector{nDim, T}` node coordinates and
+`el2n` is an `N × nels` `AbstractMatrix{<:Integer}` of element-to-node
+connectivity (one column per element). Boundary nodes are detected automatically
+as nodes on mesh edges shared by exactly one element. `Ω` and `Γ` are set to
+`nothing`.
 """
 struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     Ω::D        # model domain
@@ -78,7 +79,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         }(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2))
     end
 
-    function Mesh(backend, coords_cpu::Vector{SVector{nDim, T}}, el2n_cpu::Matrix{Int32}; order::Int = 1) where {nDim, T}
+    function Mesh(backend, coords_cpu::AbstractVector{<:SVector{nDim}}, el2n_cpu::AbstractMatrix{<:Integer}; order::Int = 1) where {nDim}
         TDev       = TA(backend)
         nnodes     = length(coords_cpu)
         DoFs_cpu   = Int32.(1:nnodes)
@@ -100,7 +101,7 @@ function Base.show(io::IO, mesh::Mesh{nDim, O}) where {nDim, O}
 end
 
 Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
-Mesh(coords_cpu::Vector{<:SVector}, el2n_cpu::Matrix{Int32}; kwargs...) =
+Mesh(coords_cpu::AbstractVector{<:SVector}, el2n_cpu::AbstractMatrix{<:Integer}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
 
 """
@@ -138,18 +139,19 @@ function Mesh(
 end
 
 """
-    _unstructured_boundary_nodes(el2n) -> Vector{Int32}
+    _unstructured_boundary_nodes(el2n)
 
-Return sorted unique node indices that lie on the mesh boundary.
+Return sorted unique node indices that lie on the mesh boundary, as a vector
+with the same integer eltype as `el2n`.
 
 A mesh edge (consecutive node pair within an element) is a boundary edge when
 it appears in exactly one element. All nodes incident to such edges are
 collected and returned. Assumes elements are ordered so that consecutive rows
 of `el2n` form edges (i.e. the last node wraps to the first).
 """
-function _unstructured_boundary_nodes(el2n::Matrix{Int32})
+function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}) where {I <: Integer}
     N = size(el2n, 1)
-    edge_count = Dict{Tuple{Int32, Int32}, Int}()
+    edge_count = Dict{Tuple{I, I}, Int}()
     for iel in axes(el2n, 2)
         for i in 1:N
             j = mod1(i + 1, N)
@@ -157,7 +159,7 @@ function _unstructured_boundary_nodes(el2n::Matrix{Int32})
             edge_count[(a, b)] = get(edge_count, (a, b), 0) + 1
         end
     end
-    bnd = Int32[]
+    bnd = I[]
     for ((a, b), count) in edge_count
         count == 1 && push!(bnd, a, b)
     end
