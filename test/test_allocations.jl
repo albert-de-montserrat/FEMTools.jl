@@ -2,6 +2,14 @@ using Test
 
 using FEMTools
 
+if !isdefined(@__MODULE__, :FP32)
+    const FP32 = Float32
+end
+
+if !isdefined(@__MODULE__, :FP64)
+    const FP64 = Float64
+end
+
 function element_constructor_allocations(::Type{T}) where {T <: FEMTools.AbstractElement}
     ShapeFunctions(T)
     IntegrationPoints(T)

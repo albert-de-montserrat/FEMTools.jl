@@ -8,21 +8,12 @@ using LinearAlgebra
 using DomainSets
 using DomainSets: ×
 using KernelAbstractions
-using Triangulate
 using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, DataAspect
 
 const backend   = CPU()
 const workgroup = 128
 
-"""
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
 function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
     FEMTools.precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);
@@ -32,21 +23,24 @@ function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels)
     return nothing
 end
 
-@inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
-@inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
-@inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where N =
-    SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
+function update_rate!(∂u∂τ, R, PC, β, ndofs)
+    FEMTools.update_rate_kernel!(backend, workgroup)(
+        ∂u∂τ, R, PC, β;
+        ndrange = ndofs,
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
 
-"""
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v) -> NamedTuple
+function update_variable!(u, ∂u∂τ, α_dr, ndofs)
+    FEMTools.update_variable_kernel!(backend, workgroup)(
+        u, ∂u∂τ, α_dr;
+        ndrange = ndofs,
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
 
-Compute element-averaged strain-rate and deviatoric-stress diagnostics.
-
-The returned fields are cell averages over the velocity quadrature rule and
-include `εxx`, `εyy`, `εzz`, `εxy`, `εII`, `τxx`, `τyy`, `τzz`, `τxy`, and
-`tauII`. Stresses are averaged from quadrature-point history written by the
-momentum residual assembly.
-"""
 function compute_strain_rate_stress_postprocess(
     vx, vy,
     el2n_v,
@@ -132,14 +126,6 @@ function compute_strain_rate_stress_postprocess(
     )
 end
 
-"""
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post) -> Nothing
-
-Write pressure, velocity, strain-rate, and stress fields to an ASCII VTK file.
-
-The VTK mesh uses the pressure triangle corners, while nodal velocity fields are
-sampled from the corresponding velocity nodes.
-"""
 function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
     NP = size(el2nP_cpu, 1)
     vtk_nodes = sort!(unique(vec(el2nP_cpu)))
@@ -220,100 +206,14 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
     return nothing
 end
 
-"""
-    build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
-
-Build an unstructured T7 velocity mesh around a circular inclusion.
-
-Triangulate.jl generates a second-order T6 PSLG mesh with the circle as a
-constrained internal boundary. The local midpoint ordering is remapped to
-FEMTools' T6/T7 convention, then one centroid bubble node is appended per
-element.
-"""
-function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle = 96, max_area = nothing)
-    rect_pts  = Cdouble[0.0 Lx  Lx 0.0;
-                        0.0 0.0 Ly Ly]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'
-
-    θ = range(0, 2π; length = n_circle + 1)[1:end-1]
-    circ_pts = Matrix{Cdouble}(hcat(cx .+ r .* cos.(θ), cy .+ r .* sin.(θ))')
-    circ_segs = Matrix{Cint}(hcat([
-        [4 + i; 4 + mod1(i + 1, n_circle)] for i in 1:n_circle
-    ]...))
-
-    tio = TriangulateIO()
-    tio.pointlist = hcat(rect_pts, circ_pts)
-    tio.segmentlist = hcat(rect_segs, circ_segs)
-
-    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts = result.pointlist
-    tris_t6 = Matrix{Int32}(result.trianglelist)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in axes(pts, 2)]
-
-    # Triangle's second-order boundary nodes lie on straight constrained
-    # segments. Project the circular-interface nodes back to the analytical
-    # radius so the inclusion boundary is fitted by the high-order geometry.
-    sagitta = r * (1 - cos(π / n_circle))
-    circle_tol = max(2.5 * sagitta, 100eps(Float64) * max(Lx, Ly))
-    for i in eachindex(coords)
-        dx = coords[i][1] - cx
-        dy = coords[i][2] - cy
-        radius = hypot(dx, dy)
-        if abs(radius - r) ≤ circle_tol && radius > 0
-            coords[i] = SVector{2, Float64}(cx + r * dx / radius, cy + r * dy / radius)
-        end
-    end
-
-    n_t6 = length(coords)
-    nels = size(tris_t6, 2)
-    el2n = Matrix{Int32}(undef, 7, nels)
-    el2n[1:3, :] .= tris_t6[1:3, :]
-    el2n[4, :] .= tris_t6[6, :] # FEMTools node 4 = mid(1, 2)
-    el2n[5, :] .= tris_t6[4, :] # FEMTools node 5 = mid(2, 3)
-    el2n[6, :] .= tris_t6[5, :] # FEMTools node 6 = mid(3, 1)
-    sizehint!(coords, n_t6 + nels)
-    for iel in 1:nels
-        c1 = coords[tris_t6[1, iel]]
-        c2 = coords[tris_t6[2, iel]]
-        c3 = coords[tris_t6[3, iel]]
-        push!(coords, (c1 + c2 + c3) / 3)
-        el2n[7, iel] = Int32(n_t6 + iel)
-    end
-
-    tol = 100eps(Float64) * max(Lx, Ly)
-    outer_nodes = Int32[
-        i for i in 1:n_t6
-        if abs(coords[i][1]) ≤ tol ||
-           abs(coords[i][1] - Lx) ≤ tol ||
-           abs(coords[i][2]) ≤ tol ||
-           abs(coords[i][2] - Ly) ≤ tol
-    ]
-    circle_nodes = Int32[
-        i for i in 1:n_t6
-        if abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) ≤ circle_tol
-    ]
-
-    return coords, el2n, sort!(unique!(outer_nodes)), sort!(unique!(circle_nodes))
-end
-
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
 
-"""
-    main(; nsteps=15, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
-
-Run the unstructured T7/P1-disc pure-shear Stokes example.
-
-The model builds a square domain with a circular inclusion, applies pure-shear
-boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
-VTK file per physical step, and returns the stress-history diagnostics.
-"""
-function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = true)
     # Domain
     Lx, Ly = 1.0, 1.0
+    nx, ny  = mesh_cells        # quad cells per direction (each splits into 2 triangles)
 
     # Background pure-shear strain rate (non-dimensional)
     ε̇_bg = 1.0
@@ -335,43 +235,28 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         (π/6, π/6),                            # friction angle ϕ = 30° [rad]
         (0.0, 0.0),                            # dilation angle Ψ = 0°  [rad] (non-associated)
         (τy, τy),                              # cohesion C [same for both phases]
-        (8.0e-3,  8.0e-3),                     # plastic regularisation viscosity η_reg
-        K,                                     # Kb (passed separately from elastic K)
+        (8.0e-3, 8.0e-3),                      # plastic regularisation viscosity η_reg
+        K,                               # Kb (passed separately from elastic K)
     )
     g     = (0.0,     0.0)   # gravity vector
     Tref  = 0.0
 
     # DR solver
     ncheck = 50          # convergence check interval
-    ϵ_tol  = 1e-6        # relative residual tolerance
-
-    # Inclusion geometry. The Triangle PSLG uses this circle as an internal
-    # constrained boundary, so no element crosses the material interface.
-    r_incl = 0.1
-    cx     = Lx / 2
-    cy     = Ly / 2
+    ϵ_tol  = 1e-6         # relative residual tolerance
 
     # ---------------------------------------------------------------------------
     # Meshes
     # ---------------------------------------------------------------------------
 
+    Ω         = (0.0..Lx) × (0.0..Ly)
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
-    coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_triangle_t7_inclusion_mesh(;
-        Lx, Ly,
-        cx, cy, r = r_incl,
-        n_circle,
-        max_area,
-    )
-    DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = FEMTools.Mesh(
-        element_v, nothing, nothing,
-        coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
-    )
+    mesh_v      = Mesh(backend, Ω, element_v, (nx, ny))
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels n_circle max_area n_interface_nodes=length(circle_nodes)
+    @info "Mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
@@ -417,19 +302,21 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     # Phase assignment — circular inclusion
     # ---------------------------------------------------------------------------
 
+    r_incl = 0.1
+    cx     = Lx / 2
+    cy     = Ly / 2
+
     in_incl(c) = (c[1] - cx)^2 + (c[2] - cy)^2 ≤ r_incl^2
 
     coords_v     = Array(mesh_stokes.coords)
-    phases_v_cpu = Int[in_incl(c) ? 2 : 1 for c in coords_v]
-    copyto!(dr.phases_v, phases_v_cpu)
-
     el2nP_cpu    = Array(mesh_stokes.el2nP)
     DoFsP_cpu    = Array(mesh_stokes.DoFsP)
-    phases_P_cpu = Int[
-        in_incl(coords_v[el2nP_cpu[mod1(d, 3), cld(d, 3)]]) ? 2 : 1
-        for d in 1:mesh_stokes.nnodesP
+    cell_phase = Int[
+        in_incl(sum(a -> coords_v[mesh_stokes.el2n[a, iel]], 1:NV) / NV) ? 2 : 1
+        for iel in 1:mesh_stokes.nels
     ]
-    copyto!(dr.phases_P, phases_P_cpu)
+    phases_v_cpu = repeat(reshape(cell_phase, 1, :), NV, 1)
+    phases_P_cpu = repeat(reshape(cell_phase, 1, :), NP, 1)
 
     @info "Phases" n_incl_v=count(==(2), phases_v_cpu) n_incl_P=count(==(2), phases_P_cpu)
 
@@ -456,6 +343,9 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
 
+    zero_vx_bc = zero(bc_vx_vals)
+    zero_vy_bc = zero(bc_vy_vals)
+
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
     # FEM pressure residuals are assembled in weak form:
@@ -477,7 +367,7 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        dr.phases_v, dr.η, γfact, dr.K, Δt,
+        phases_v_cpu, dr.η, γfact, dr.K, Δt,
         backend, workgroup,
     )
 
@@ -485,13 +375,46 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
 
+    # ---------------------------------------------------------------------------
+    # Powell-Hestenes / DYREL-style Stokes solver
+    #
+    # Structure (mirrors DYREL / JustRelax solver_DR_FD.jl):
+    #
+    #   Outer Powell-Hestenes loop (itPH)
+    #   ├─ assemble physical Rv and RP
+    #   ├─ compute err and set inner tolerance ϵ_vel = err * rel_drop
+    #   ├─ Inner DR loop for velocity while err > ϵ_vel
+    #   │   ├─ copy previous residuals
+    #   │   ├─ assemble RP from current v
+    #   │   ├─ Pnum = γP·RP/M_P
+    #   │   ├─ assemble augmented Rv with Pnum
+    #   │   ├─ update v with damped pseudo-transient DR
+    #   │   └─ every ncheck: update λmin, λmax, αV, βV
+    #   └─ P += γP·RP/M_P  (Arrow-Hurwicz pressure update)
+    # ---------------------------------------------------------------------------
+
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
+    nout          = ncheck   # residual / spectral update cadence
     rel_drop0     = 1e-2     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
 
-    @info "Starting PH/DYREL-style Stokes solver" nsteps Δt iterMax total_iterMax ncheck ϵ_tol
+    @info "Starting PH/DYREL-style Stokes solver" nsteps Δt iterMax total_iterMax nout ϵ_tol
+
+    # λ_min helper (Rayleigh quotient from consecutive residual snapshots).
+    # JustRelax computes this with the actual velocity increment, dV = βV*dτV*dVdτ.
+    _λmin(step, rate, ΔR, PC) = begin
+        dV = step .* rate
+        denom = sum(dV .^ 2)
+        denom == 0 ? 0.0 : abs(sum(dV .* (ΔR ./ PC))) / denom
+    end
+
+    # Damped DYREL/Chebyshev step from spectral step Δτ and damping λmin.
+    _cheb(Δτ, λmin, c_fact) = begin
+        c = 2 * √(λmin) * c_fact
+        (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
+    end
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
     out_dir = joinpath(@__DIR__, "output_stokes")
@@ -503,26 +426,199 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         time_history[istep] = t
         copyto!(dr.P0, dr.P)
         copyto!(dr.T0, dr.T)
+        fill!(dr.∂vx∂τ, 0)
+        fill!(dr.∂vy∂τ, 0)
+        fill!(dr.Rv_x0, 0)
+        fill!(dr.Rv_y0, 0)
         @info "Physical time step" istep nsteps t
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, plastic, G_stokes, Δt, γP,
-            Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-            ncheck,
-            ϵ_tol,
-            iterMax,
-            total_iterMax,
-            rel_drop0,
-            verbose = verbose_PH,
-            verbose_inner = verbose_DR,
-            vx_nodes = vx_nodes,
-            vy_nodes = vy_nodes,
+        FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P,
+            phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            dr.ηb, Δt, γP, M_P,
+            backend, workgroup,
         )
+        λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
+        λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+        Δτ_vx   = 2 / √(λmax_vx) * dr.CFL_v
+        Δτ_vy   = 2 / √(λmax_vy) * dr.CFL_v
+        α_vx, β_vx = _cheb(Δτ_vx, 0.0, dr.c_fact)
+        α_vy, β_vy = _cheb(Δτ_vy, 0.0, dr.c_fact)
+        @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
-        update_stokes_current_stress!(
-            dr, mesh_stokes, geo_v, element_v, element_P,
-            dr.phases_v, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
+        err_min = Inf
+        ϵ = Float64(ϵ_tol)
+        err = 2 * ϵ
+        err_v0 = 1.0
+        err_P0 = 1.0
+        err_v00 = 1.0
+        iter = 0
+        rel_drop = rel_drop0
+
+        for itPH in 1:1000
+
+            # ── Outer residuals (fresh momentum + pressure) for convergence check ────
+            FEMTools.assemble_pressure_residual_matrices_atomix!(
+                dr.RP,
+                dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                element_v, element_P,
+                phases_P_cpu, dr.α, dr.ηb, Δt,
+                backend, workgroup,
+            )
+
+            FEMTools.assemble_momentum_residual_matrices_atomix!(
+                dr.Rv_x, dr.Rv_y,
+                dr.vx, dr.vy, dr.P, dr.T, nothing,
+                mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+                element_v, element_P,
+                phases_v_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                backend, workgroup,
+            )
+            FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+
+            # ── Outer convergence check ─────────────────────────────────────────────
+            # Compare the FD-like, pointwise pressure residual RP/M_P, not the weak
+            # integrated residual RP.
+            err_P = norm(dr.RP ./ M_P) / √mesh_stokes.nnodesP
+            err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
+            if itPH == 1
+                err_P0 = err_P + eps(err_P)
+                err_v0 = err_v + eps(err_v)
+            end
+            if itPH == 2
+                err_P0 = err_P + eps(err_P)
+            end
+            err_v_rel = err_v / err_v0
+            err_P_rel = err_P / err_P0
+            err_abs = max(err_v, err_P)
+            err_rel = max(err_v_rel, err_P_rel)
+            err = min(err_abs, err_rel)
+
+            isnan(err) && error("NaN detected in outer loop at PH=$itPH")
+            err > 1e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
+
+            if verbose_PH
+                @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
+                        itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
+            end
+            err < ϵ && break
+
+            if err > err_min * 1.05
+                rel_drop = max(rel_drop * 0.1, 1e-3)
+            end
+            err_min = min(err_min, err)
+
+            ϵ_vel = err * rel_drop
+            itPT  = 0
+
+            # ── Inner DR loop for velocity (P held fixed) ───────────────────────────
+            while err > ϵ_vel && itPT ≤ iterMax
+                itPT += 1
+                iter += 1
+
+                copyto!(dr.Rv_x0, dr.Rv_x)
+                copyto!(dr.Rv_y0, dr.Rv_y)
+
+                # Reassemble pressure residual (v is changing → ∇·v changes → RP changes)
+                FEMTools.assemble_pressure_residual_matrices_atomix!(
+                    dr.RP,
+                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                    element_v, element_P,
+                    phases_P_cpu, dr.α, dr.ηb, Δt,
+                    backend, workgroup,
+                )
+
+                # Numerical pressure correction, matching JustRelax's pointwise DYREL
+                # P_num = γP * RP.  Here RP is weak, so use γP*RP/M_P.
+                @. dr.Pnum = γP * dr.RP / M_P
+
+                # Momentum residuals with pressure correction
+                FEMTools.assemble_momentum_residual_matrices_atomix!(
+                    dr.Rv_x, dr.Rv_y,
+                    dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+                    element_v, element_P,
+                    phases_v_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                    backend, workgroup,
+                )
+
+                # Enforce Dirichlet BCs on residuals and rates
+                FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vx∂τ, vx_nodes, zero_vx_bc, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vy∂τ, vy_nodes, zero_vy_bc, backend, workgroup)
+
+                # DYREL-style velocity update
+                update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
+                update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)
+                update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes)
+                update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes)
+
+                # Re-pin Dirichlet values
+                FEMTools.apply_dirichlet!(dr.vx, vx_nodes, bc_vx_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.vy, vy_nodes, bc_vy_vals, backend, workgroup)
+
+                # Inner convergence check + damped step-size update
+                if iszero(iter % nout)
+                    err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * √mesh_stokes.nnodes)
+                    if iter == nout
+                        err_v00 = err_v_inner + eps(err_v_inner)
+                    end
+                    err = max(err_v_inner / err_v00, err_v_inner)
+                    isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
+                    err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+
+                    verbose_DR && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
+
+                    λmin_vx = _λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
+                    λmin_vy = _λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+
+                    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+                        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+                        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                        element_v, element_P,
+                        phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        dr.ηb, Δt, γP, M_P,
+                        backend, workgroup,
+                    )
+
+                    # λmax → Δτ → damped step for velocity.
+                    λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
+                    λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
+                    Δτ_vx   = 2 / √(λmax_vx) * dr.CFL_v
+                    Δτ_vy   = 2 / √(λmax_vy) * dr.CFL_v
+
+                    α_vx, β_vx = _cheb(Δτ_vx, λmin_vx, dr.c_fact)
+                    α_vy, β_vy = _cheb(Δτ_vy, λmin_vy, dr.c_fact)
+                end
+
+                itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
+                iter > total_iterMax && break
+            end  # inner PT loop
+
+            # ── Arrow-Hurwicz pressure update (after inner velocity convergence) ─────
+            # Same mass-lumped residual as Pnum: pressure is updated from the
+            # pointwise divergence residual, not from the weak residual integral.
+            @. dr.P += γP * dr.RP / M_P
+            FEMTools.remove_pressure_mean!(dr.P, M_P)
+
+            iter > total_iterMax && break
+        end  # outer PH loop
+
+        FEMTools.assemble_momentum_residual_matrices_atomix!(
+            dr.Rv_x, dr.Rv_y,
+            dr.vx, dr.vy, dr.P, dr.T, nothing,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+            element_v, element_P,
+            phases_v_cpu, τ_old, plastic, τ, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            backend, workgroup,
         )
 
         P_cpu  = Array(dr.P)
@@ -539,11 +635,10 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.τxx_old, dr.τxx)
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
-        # rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 
-        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
+        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_%04d.vtk", istep))
         write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
-        @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+        @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep]
     end  # physical time step loop
 
     P_cpu  = Array(dr.P)

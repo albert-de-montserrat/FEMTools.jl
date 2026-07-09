@@ -469,16 +469,14 @@ function main(;
     in_incl(c) = (c[1] - cx)^2 + (c[2] - cy)^2 ≤ r_incl^2
 
     coords_v     = Array(mesh_stokes.coords)
-    phases_v_cpu = Int[in_incl(c) ? 2 : 1 for c in coords_v]
-    copyto!(dr.phases_v, phases_v_cpu)
-
     el2nP_cpu    = Array(mesh_stokes.el2nP)
     DoFsP_cpu    = Array(mesh_stokes.DoFsP)
-    phases_P_cpu = Int[
-        in_incl(coords_v[el2nP_cpu[mod1(d, 3), cld(d, 3)]]) ? 2 : 1
-        for d in 1:mesh_stokes.nnodesP
+    cell_phase = Int[
+        in_incl(sum(a -> coords_v[mesh_stokes.el2n[a, iel]], 1:NV) / NV) ? 2 : 1
+        for iel in 1:mesh_stokes.nels
     ]
-    copyto!(dr.phases_P, phases_P_cpu)
+    phases_v_cpu = repeat(reshape(cell_phase, 1, :), NV, 1)
+    phases_P_cpu = repeat(reshape(cell_phase, 1, :), NP, 1)
 
     @info "Phases" n_incl_v=count(==(2), phases_v_cpu) n_incl_P=count(==(2), phases_P_cpu)
 
@@ -581,14 +579,14 @@ function main(;
             dr.M_P, γP,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            dr.phases_v, dr.η, γfact, dr.K, dt_step,
+            phases_v_cpu, dr.η, γfact, dr.K, dt_step,
             backend, workgroup,
         )
         @info "Physical time step" istep nsteps t Δt=dt_step Δt_max=Δt
 
         solve_stats = solve_stokes_dyrel!(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, plastic, G_stokes, dt_step, γP,
+            phases_v_cpu, phases_P_cpu, τ_old, plastic, G_stokes, dt_step, γP,
             Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
             ncheck,
             ϵ_tol,
@@ -603,7 +601,7 @@ function main(;
 
         update_stokes_current_stress!(
             dr, mesh_stokes, geo_v, element_v, element_P,
-            dr.phases_v, τ_old, plastic, τ, G_stokes, dt_step, backend, workgroup,
+            phases_v_cpu, τ_old, plastic, τ, G_stokes, dt_step, backend, workgroup,
         )
 
         P_cpu  = Array(dr.P)

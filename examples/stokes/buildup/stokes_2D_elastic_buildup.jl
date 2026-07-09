@@ -1,5 +1,5 @@
 import Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(@__DIR__)
 
 using Printf
 using Statistics
@@ -19,7 +19,7 @@ const KYR = 1.0e3 * YEAR
 elastic_buildup_solution(ε̇, t, G, η) = 2 * ε̇ * η * (1 - exp(-G * t / η))
 
 function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    precompute_geometry_kernel!(backend, workgroup)(
+    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);
         ndrange = nels,
     )
@@ -28,7 +28,7 @@ function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels)
 end
 
 function update_rate!(∂u∂τ, R, PC, β, ndofs)
-    update_rate_kernel!(backend, workgroup)(
+    FEMTools.update_rate_kernel!(backend, workgroup)(
         ∂u∂τ, R, PC, β;
         ndrange = ndofs,
     )
@@ -37,7 +37,7 @@ function update_rate!(∂u∂τ, R, PC, β, ndofs)
 end
 
 function update_variable!(u, ∂u∂τ, α_dr, ndofs)
-    update_variable_kernel!(backend, workgroup)(
+    FEMTools.update_variable_kernel!(backend, workgroup)(
         u, ∂u∂τ, α_dr;
         ndrange = ndofs,
     )
@@ -75,7 +75,7 @@ function compute_strain_rate_stress_postprocess(
         τxx_old_loc = SVector{NV}(ntuple(i -> τ_old[1][local_nodes[i]], Val(NV)))
         τyy_old_loc = SVector{NV}(ntuple(i -> τ_old[2][local_nodes[i]], Val(NV)))
         τxy_old_loc = SVector{NV}(ntuple(i -> τ_old[3][local_nodes[i]], Val(NV)))
-        phase_loc = SVector{NV}(ntuple(i -> Int(phases_v[local_nodes[i]]), Val(NV)))
+        phase_loc = SVector{NV}(ntuple(i -> Int(phases_v[i, iel]), Val(NV)))
         geo_el = geo_v[iel]
         volume = 0.0
 
@@ -141,7 +141,7 @@ function compute_strain_rate_stress_postprocess(
 
     return (;
         εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy, τII,
+        τxx, τyy, τzz, τxy,
         tauII = τII,
     )
 end
@@ -244,7 +244,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
             ("tau_yy", post.τyy),
             ("tau_zz", post.τzz),
             ("tau_xy", post.τxy),
-            ("tau_II", post.τII),
+            ("tau_II", post.tauII),
         )
             println(io, "SCALARS $name float 1")
             println(io, "LOOKUP_TABLE default")
@@ -335,10 +335,8 @@ function main(;
     el2nP_cpu = Array(mesh_stokes.el2nP)
     DoFsP_cpu = Array(mesh_stokes.DoFsP)
 
-    phases_v_cpu = ones(Int, mesh_stokes.nnodes)
-    phases_P_cpu = ones(Int, mesh_stokes.nnodesP)
-    copyto!(dr.phases_v, phases_v_cpu)
-    copyto!(dr.phases_P, phases_P_cpu)
+    phases_v_cpu = ones(Int, NV, mesh_stokes.nels)
+    phases_P_cpu = ones(Int, NP, mesh_stokes.nels)
 
     vx0 = Float64[ε̇_bg * (c[1] - lx / 2) for c in coords_v]
     vy0 = Float64[-ε̇_bg * (c[2] - ly / 2) for c in coords_v]
@@ -368,11 +366,11 @@ function main(;
     fill!(dr.PC_vy, 1 / Δτ_V_seed)
 
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
+    FEMTools.assemble_viscosity_weighted_pressure_scaling!(
         dr.M_P, γP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        dr.phases_v, dr.η, γfact,
+        phases_v_cpu, dr.η, γfact,
         backend, workgroup,
     )
 
@@ -416,12 +414,12 @@ function main(;
         fill!(dr.Rv_x0, 0)
         fill!(dr.Rv_y0, 0)
 
-        assemble_augmented_momentum_jacobian_matrices_atomix!(
+        FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, dr.M_P,
             backend, workgroup,
         )
@@ -443,23 +441,23 @@ function main(;
         verbose && @printf("step = %04d, time = %.3f kyr, dt = %.3f kyr\n", istep, t / KYR, Δt / KYR)
 
         for itPH in 1:niter_PH
-            assemble_momentum_residual_matrices_atomix!(
+            FEMTools.assemble_momentum_residual_matrices_atomix!(
                 dr.Rv_x, dr.Rv_y,
                 dr.vx, dr.vy, dr.P, dr.T, nothing,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
-                dr.phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                phases_v_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
-            apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
-            apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
 
-            assemble_pressure_residual_matrices_atomix!(
+            FEMTools.assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
                 dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
-                dr.phases_P, dr.α, dr.ηb, Δt,
+                phases_P_cpu, dr.α, dr.ηb, Δt,
                 backend, workgroup,
             )
 
@@ -497,50 +495,50 @@ function main(;
                 iter += 1
                 do_jac = (mod(itPT, ncheck) == 0) || (itPT == 1)
 
-                assemble_pressure_residual_matrices_atomix!(
+                FEMTools.assemble_pressure_residual_matrices_atomix!(
                     dr.RP,
                     dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
-                    dr.phases_P, dr.α, dr.ηb, Δt,
+                    phases_P_cpu, dr.α, dr.ηb, Δt,
                     backend, workgroup,
                 )
 
                 @. dr.Pnum = γP * dr.RP / dr.M_P
 
-                assemble_momentum_residual_matrices_atomix!(
+                FEMTools.assemble_momentum_residual_matrices_atomix!(
                     dr.Rv_x, dr.Rv_y,
                     dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                     element_v, element_P,
-                    dr.phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                    phases_v_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                     backend, workgroup,
                 )
 
                 if do_jac
-                    assemble_augmented_momentum_jacobian_matrices_atomix!(
+                    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
                         dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        dr.phases_v, dr.phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, dr.M_P,
                         backend, workgroup,
                     )
                 end
 
-                apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
-                apply_dirichlet!(dr.∂vx∂τ, lr_nodes, zero_vx_lr, backend, workgroup)
-                apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
-                apply_dirichlet!(dr.∂vy∂τ, tb_nodes, zero_vy_tb, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vx∂τ, lr_nodes, zero_vx_lr, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vy∂τ, tb_nodes, zero_vy_tb, backend, workgroup)
 
                 update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
                 update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)
                 update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes)
                 update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes)
 
-                apply_dirichlet!(dr.vx, lr_nodes, bc_vx_lr, backend, workgroup)
-                apply_dirichlet!(dr.vy, tb_nodes, bc_vy_tb, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.vx, lr_nodes, bc_vx_lr, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.vy, tb_nodes, bc_vy_tb, backend, workgroup)
 
                 if do_jac
                     err_v_inner = (norm(dr.Rv_x) + norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes) * Rv_ref)
@@ -571,6 +569,7 @@ function main(;
             end
 
             @. dr.P += γP * dr.RP / dr.M_P
+            FEMTools.remove_pressure_mean!(dr.P, dr.M_P)
             iter > total_iterMax && break
         end
 

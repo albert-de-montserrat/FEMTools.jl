@@ -2,6 +2,14 @@ dot_or_zero(a, ::Nothing) = zero(eltype(a))
 dot_or_zero(a, b) = dot(a, b)
 @inline pressure_scale(γ_eff::Number, RP, MP) = γ_eff * RP ./ MP
 @inline pressure_scale(γ_eff::SVector, RP, MP) = γ_eff .* RP ./ MP
+@inline function _max_phase_value(var, phase_loc::SVector{N}) where N
+    out = var[phase_loc[1]]
+    for i in 2:N
+        out = max(out, var[phase_loc[i]])
+    end
+    return out
+end
+@inline _element_max_phase_property(var, phase_loc) = map(_ -> _max_phase_value(var, phase_loc), var)
 @inline function _local_pressure_correction(
     v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
 )
@@ -1039,18 +1047,19 @@ end
     T_loc     = _gather_local(T, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
+    η_pc      = _element_max_phase_property(η, phase_loc)
 
     ∂RVx∂vx = ForwardDiff.jacobian(
         vx_loc -> integrate_momentum_x_residual(
             (vx_loc, vyloc), P_loc, nothing, T_loc,
-            geo_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
+            geo_el, phase_loc, η_pc, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )
     ∂RVx∂vy = ForwardDiff.jacobian(
         vy_loc -> integrate_momentum_x_residual(
             (vxloc, vy_loc), P_loc, nothing, T_loc,
-            geo_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
+            geo_el, phase_loc, η_pc, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
@@ -1063,14 +1072,14 @@ end
     ∂RVy∂vy = ForwardDiff.jacobian(
         vy_loc -> integrate_momentum_y_residual(
             (vxloc, vy_loc), P_loc, nothing, T_loc,
-            geo_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
+            geo_el, phase_loc, η_pc, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
     ∂RVy∂vx = ForwardDiff.jacobian(
         vx_loc -> integrate_momentum_y_residual(
             (vx_loc, vyloc), P_loc, nothing, T_loc,
-            geo_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
+            geo_el, phase_loc, η_pc, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )
@@ -1239,12 +1248,13 @@ end
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
     phase_v   = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
     phase_P   = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
+    η_pc      = _element_max_phase_property(η, phase_v)
 
     ∂RVx∂vx = ForwardDiff.jacobian(
         vx_arg -> integrate_momentum_x_residual(
             (vx_arg, vyloc), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )
@@ -1252,7 +1262,7 @@ end
         vy_arg -> integrate_momentum_x_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
@@ -1266,7 +1276,7 @@ end
         vy_arg -> integrate_momentum_y_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
@@ -1274,7 +1284,7 @@ end
         vx_arg -> integrate_momentum_y_residual(
             (vx_arg, vyloc), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )

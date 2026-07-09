@@ -9,6 +9,21 @@ function _stokes_cheb(Δτ, λmin, c_fact)
     return (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
 end
 
+@inline _normalize_stokes_verbose(verbose, verbose_inner, ::Nothing, ::Nothing) =
+    (Bool(verbose), Bool(verbose_inner))
+
+function _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
+    if verbose_PH !== nothing
+        Base.depwarn("`verbose_PH` is deprecated; use `verbose` instead", :solve_stokes_dyrel!)
+        verbose = verbose_PH
+    end
+    if verbose_DR !== nothing
+        Base.depwarn("`verbose_DR` is deprecated; use `verbose_inner` instead", :solve_stokes_dyrel!)
+        verbose_inner = verbose_DR
+    end
+    return Bool(verbose), Bool(verbose_inner)
+end
+
 """
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
                         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
@@ -82,14 +97,7 @@ function solve_stokes_dyrel!(
     vx_nodes = Γnodes,
     vy_nodes = Γnodes,
 )
-    if verbose_PH !== nothing
-        Base.depwarn("`verbose_PH` is deprecated; use `verbose` instead", :solve_stokes_dyrel!)
-        verbose = verbose_PH
-    end
-    if verbose_DR !== nothing
-        Base.depwarn("`verbose_DR` is deprecated; use `verbose_inner` instead", :solve_stokes_dyrel!)
-        verbose_inner = verbose_DR
-    end
+    verbose, verbose_inner = _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
 
     M_P = dr.M_P
     nout = ncheck

@@ -60,7 +60,8 @@ Cp = (FP(1000.0), FP(800.0))   # J kg⁻¹ K⁻¹
 K  = (FP(1e11),   FP(8e10))    # Pa
 Tref = FP(273.0)               # K
 
-mesh = Mesh(0.0..1.0, 100)
+element = ReferenceElement(LinearElement{1, 2})
+mesh = Mesh(0.0..1.0, element, 100)
 dr   = ThermalDiffusionDR(CPU(), mesh.nnodes, k, Cp, ρ0, α, K; CFL=0.9)
 ```
 

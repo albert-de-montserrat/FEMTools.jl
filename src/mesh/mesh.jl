@@ -78,7 +78,28 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         }(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2))
     end
 
-    function Mesh(backend, coords_cpu::AbstractVector{<:SVector{nDim}}, el2n_cpu::AbstractMatrix{<:Integer}; order::Int = 1) where {nDim}
+    Base.@constprop :aggressive function Mesh(
+        backend,
+        coords_cpu::AbstractVector{<:SVector{nDim}},
+        el2n_cpu::AbstractMatrix{<:Integer};
+        order::Int = 1,
+    ) where {nDim}
+        if order == 1
+            return _unstructured_mesh(backend, coords_cpu, el2n_cpu, Val(1))
+        elseif order == 2
+            return _unstructured_mesh(backend, coords_cpu, el2n_cpu, Val(2))
+        else
+            return _unstructured_mesh(backend, coords_cpu, el2n_cpu, Val(order))
+        end
+    end
+end
+
+function _unstructured_mesh(
+    backend,
+    coords_cpu::AbstractVector{<:SVector{nDim}},
+    el2n_cpu::AbstractMatrix{<:Integer},
+    ::Val{O},
+) where {nDim, O}
         TDev       = TA(backend)
         nnodes     = length(coords_cpu)
         DoFs_cpu   = Int32.(1:nnodes)
@@ -89,10 +110,9 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         el2n   = TDev(el2n_cpu)
         Γnodes = TDev(Γnodes_cpu)
 
-        return new{nDim, order, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes)}(
+        return Mesh{nDim, O, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes)}(
             nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2)
         )
-    end
 end
 
 function Base.show(io::IO, mesh::Mesh{nDim, O}) where {nDim, O}
@@ -151,16 +171,14 @@ function _boundary_edge_paths_2d(nlocal::Int)
     end
 end
 
-function _boundary_face_paths_3d(nlocal::Int)
-    if nlocal == 4
-        return ((1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4))
-    elseif nlocal == 8
-        return ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
-                (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
-    else
-        throw(ArgumentError("cannot infer 3D boundary face paths for elements with $nlocal local nodes"))
-    end
-end
+_boundary_face_paths_3d(nlocal::Int) = _boundary_face_paths_3d(Val(nlocal))
+_boundary_face_paths_3d(::Val{4}) =
+    ((1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4))
+_boundary_face_paths_3d(::Val{8}) =
+    ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
+     (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
+_boundary_face_paths_3d(::Val{N}) where N =
+    throw(ArgumentError("cannot infer 3D boundary face paths for elements with $N local nodes"))
 
 """
     _unstructured_boundary_nodes(el2n[, Val(nDim)])
@@ -193,16 +211,25 @@ function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}, ::Val{2}) where {
     return sort!(unique!(bnd))
 end
 
+@inline function _face_key(el2n::AbstractMatrix{I}, path::NTuple{N, Int}, iel) where {I <: Integer, N}
+    return Tuple(sort(SVector{N, I}(ntuple(i -> el2n[path[i], iel], Val(N)))))
+end
+
 function _unstructured_boundary_nodes(el2n::AbstractMatrix{I}, ::Val{3}) where {I <: Integer}
-    face_paths = _boundary_face_paths_3d(size(el2n, 1))
-    face_count = Dict{Any, Int}()
+    return _unstructured_boundary_nodes_3d(el2n, Val(size(el2n, 1)))
+end
+
+function _unstructured_boundary_nodes_3d(el2n::AbstractMatrix{I}, ::Val{Nlocal}) where {I <: Integer, Nlocal}
+    face_paths = _boundary_face_paths_3d(Val(Nlocal))
+    Nface = length(first(face_paths))
+    face_count = Dict{NTuple{Nface, I}, Int}()
     for iel in axes(el2n, 2), path in face_paths
-        key = Tuple(sort!([el2n[i, iel] for i in path]))
+        key = _face_key(el2n, path, iel)
         face_count[key] = get(face_count, key, 0) + 1
     end
     bnd = I[]
     for iel in axes(el2n, 2), path in face_paths
-        key = Tuple(sort!([el2n[i, iel] for i in path]))
+        key = _face_key(el2n, path, iel)
         get(face_count, key, 0) == 1 || continue
         for i in path
             push!(bnd, el2n[i, iel])
