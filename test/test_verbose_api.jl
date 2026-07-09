@@ -101,11 +101,35 @@ function _stokes_output(; kwargs...)
     end
 end
 
+function _stokes_split_bc_output()
+    (; dr, mesh, cache, element_v, element_P, τ_old, γP, Γnodes, backend, workgroup) = _stokes_case()
+    coords = Array(mesh.coords)
+    vx_nodes = Int32[n for n in Γnodes if coords[n][1] ≈ 0.0 || coords[n][1] ≈ 1.0]
+    vy_nodes = Int32[n for n in Γnodes if coords[n][2] ≈ 0.0 || coords[n][2] ≈ 1.0]
+    return _capture_stdout() do
+        solve_stokes_dyrel!(
+            dr, mesh, cache, element_v, element_P,
+            dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
+            Γnodes, zeros(Float64, length(vx_nodes)), zeros(Float64, length(vy_nodes)), backend, workgroup;
+            ncheck = 1,
+            ϵ_tol = 2.0,
+            iterMax = 0,
+            total_iterMax = 0,
+            max_ph_iterations = 1,
+            verbose = false,
+            verbose_inner = false,
+            vx_nodes = vx_nodes,
+            vy_nodes = vy_nodes,
+        )
+    end
+end
+
 @testset "solver verbosity API" begin
     @test _thermal_output(verbose = false) == ""
     @test occursin("PT", _thermal_output(verbose = true))
 
     @test _stokes_output(verbose = false, verbose_inner = false) == ""
+    @test _stokes_split_bc_output() == ""
     @test_logs (:info, "Initial momentum preconditioner") begin
         @test occursin("itPH", _stokes_output(verbose = true, verbose_inner = false))
     end

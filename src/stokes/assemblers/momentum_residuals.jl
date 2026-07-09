@@ -2,6 +2,15 @@ dot_or_zero(a, ::Nothing) = zero(eltype(a))
 dot_or_zero(a, b) = dot(a, b)
 @inline pressure_scale(γ_eff::Number, RP, MP) = γ_eff * RP ./ MP
 @inline pressure_scale(γ_eff::SVector, RP, MP) = γ_eff .* RP ./ MP
+@inline function _local_pressure_correction(
+    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+)
+    RP_loc = integrate_PH_pressure_residual(
+        v, P_loc, P0loc, T_loc, T0loc,
+        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+    )
+    return pressure_scale(γ_eff, RP_loc, MP_loc)
+end
 @inline effective_viscosity(η, G, Δt) = inv(inv(η) + inv(G * Δt))
 """
     viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt) -> (ηve, inv_2Gdt)
@@ -173,9 +182,9 @@ regularized formula `λ = F / (ηve + η_reg - Kb Δt ∂Q/∂P ∂F/∂P)`.
     cosϕ  = interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
     sinϕ  = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
     sinΨ  = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
-    C     = interp2ip_phase(Nv, plastic.C,      phase_loc)
-    η_reg = interp2ip_phase(Nv, plastic.η_reg,  phase_loc)
-    Kb    = interp2ip_phase(Nv, plastic.Kb,     phase_loc)
+    C     = interp2ip_phase(Nv, plastic.C,     phase_loc)
+    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
+    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
 
     # Drucker-Prager yield function.
     # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂) = sqrt(SI/2).
@@ -478,6 +487,20 @@ end
     return Rv_x
 end
 
+@inline function _integrate_momentum_x_with_pressure_correction(
+    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+)
+    Pnum_loc = _local_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc,
+        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+    )
+    return integrate_momentum_x_residual(
+        v, P_loc, Pnum_loc, T_loc,
+        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, plastic, Nq, NqP,
+    )
+end
+
 """
     integrate_momentum_x_residual(v, P_loc, P0loc, T_loc, T0loc,
                                   geo_v_el, geo_P_el, phase_v, phase_P,
@@ -510,13 +533,9 @@ computed directly from the local pressure residual:
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_x_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, nothing, nothing, Nq, NqP,
+    return _integrate_momentum_x_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
     )
 end
 
@@ -539,13 +558,9 @@ end
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_x_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, nothing, Nq, NqP,
+    return _integrate_momentum_x_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
     )
 end
 
@@ -569,13 +584,9 @@ end
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_x_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, plastic, Nq, NqP,
+    return _integrate_momentum_x_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
     )
 end
 
@@ -650,6 +661,20 @@ end
     return Rv_y
 end
 
+@inline function _integrate_momentum_y_with_pressure_correction(
+    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+)
+    Pnum_loc = _local_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc,
+        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+    )
+    return integrate_momentum_y_residual(
+        v, P_loc, Pnum_loc, T_loc,
+        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, plastic, Nq, NqP,
+    )
+end
+
 """
     integrate_momentum_y_residual(v, P_loc, P0loc, T_loc, T0loc,
                                   geo_v_el, geo_P_el, phase_v, phase_P,
@@ -677,13 +702,9 @@ correction `Pnum = γ_eff * RP(v) / M_P` computed internally.
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_y_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, nothing, nothing, Nq, NqP,
+    return _integrate_momentum_y_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
     )
 end
 
@@ -706,13 +727,9 @@ end
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_y_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, nothing, Nq, NqP,
+    return _integrate_momentum_y_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
     )
 end
 
@@ -736,13 +753,9 @@ end
     Nq,
     NqP,
 ) where {N, NP}
-    Pnum_loc = pressure_scale(γ_eff, integrate_PH_pressure_residual(
-        v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
-    ), MP_loc)
-    return integrate_momentum_y_residual(
-        v, P_loc, Pnum_loc, T_loc,
-        geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, τ_old, plastic, Nq, NqP,
+    return _integrate_momentum_y_with_pressure_correction(
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
     )
 end
 
@@ -938,14 +951,14 @@ end
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
-    vxloc     = SVector{NV}(ntuple(i -> vx[local_nodes_v[i]], Val(NV)))
-    vyloc     = SVector{NV}(ntuple(i -> vy[local_nodes_v[i]], Val(NV)))
-    P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
-    T_loc     = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
+    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
+    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
     Pnum_loc  = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
     τ_store_el = _stress_output(τ_store, iel)
-    phase_loc = _stokes_phase_loc(phases, local_nodes_v, iel, Val(NV))
+    phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
     Re_x, Re_y = integrate_momentum_residual(
         (vxloc, vyloc), P_loc, Pnum_loc, T_loc,
         geo_v_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, τ_old_loc, plastic, τ_store_el, Nq, NqP,
@@ -955,7 +968,7 @@ end
 
 _gather_or_nothing(::Nothing, _, ::Val) = nothing
 @inline function _gather_or_nothing(arr, nodes, ::Val{N}) where N
-    SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
+    _gather_local(arr, nodes, Val(N))
 end
 
 _gather_old_stress(::Nothing, _, _, ::Val, ::Val) = nothing
@@ -968,9 +981,9 @@ _gather_old_stress(::Nothing, _, _, ::Val, ::Val) = nothing
 end
 @inline function _gather_old_stress(τ_old::NTuple{3}, nodes, _, ::Val{N}, ::Val) where N
     return (
-        SVector{N}(ntuple(i -> τ_old[1][nodes[i]], Val(N))),
-        SVector{N}(ntuple(i -> τ_old[2][nodes[i]], Val(N))),
-        SVector{N}(ntuple(i -> τ_old[3][nodes[i]], Val(N))),
+        _gather_local(τ_old[1], nodes, Val(N)),
+        _gather_local(τ_old[2], nodes, Val(N)),
+        _gather_local(τ_old[3], nodes, Val(N)),
     )
 end
 _stress_output(::Nothing, _) = nothing
@@ -979,7 +992,7 @@ _stress_output(::Nothing, _) = nothing
 
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
-    SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
+    _gather_local(arr, nodes, Val(N))
 end
 
 """
@@ -1020,12 +1033,12 @@ end
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_el    = geo[iel]
-    vxloc     = SVector{NV}(ntuple(i -> vx[local_nodes_v[i]], Val(NV)))
-    vyloc     = SVector{NV}(ntuple(i -> vy[local_nodes_v[i]], Val(NV)))
-    P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
-    T_loc     = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
+    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
+    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
-    phase_loc = _stokes_phase_loc(phases, local_nodes_v, iel, Val(NV))
+    phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
 
     ∂RVx∂vx = ForwardDiff.jacobian(
         vx_loc -> integrate_momentum_x_residual(
@@ -1215,17 +1228,17 @@ end
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     geo_P_el  = geo_P[iel]
-    vxloc     = SVector{NV}(ntuple(i -> vx[local_nodes_v[i]], Val(NV)))
-    vyloc     = SVector{NV}(ntuple(i -> vy[local_nodes_v[i]], Val(NV)))
-    P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
-    P0loc     = SVector{NP}(ntuple(i -> P0[local_nodes_P[i]], Val(NP)))
-    T_loc     = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
-    T0loc     = SVector{NP}(ntuple(i -> T0[local_nodes_P[i]], Val(NP)))
-    MP_loc    = SVector{NP}(ntuple(i -> MP[local_nodes_P[i]], Val(NP)))
+    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
+    P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
+    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
+    T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
+    MP_loc    = _gather_local(MP, local_nodes_P, Val(NP))
     γ_eff_loc = _gather_or_scalar(γ_eff, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
-    phase_v   = _stokes_phase_loc(phases_v, local_nodes_v, iel, Val(NV))
-    phase_P   = _stokes_phase_loc(phases_P, local_nodes_P, iel, Val(NP))
+    phase_v   = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
+    phase_P   = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
 
     ∂RVx∂vx = ForwardDiff.jacobian(
         vx_arg -> integrate_momentum_x_residual(

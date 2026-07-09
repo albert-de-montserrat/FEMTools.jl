@@ -45,18 +45,13 @@ end
 @kernel function lp_residual_atomic_kernel!(R, @Const(T), @Const(P), @Const(el2n), @Const(geo), @Const(phases), ρ0, α, K, Tref, g, Nq, ::Val{N}) where N
     iel = @index(Global)
     local_nodes, Re = lp_element_residual(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, Val(N))
-    for (i, inod) in enumerate(local_nodes)
-        Atomix.@atomic :monotonic R[inod] += Re[i]
-    end
+    _add_local!(R, local_nodes, Re, Val(true))
 end
 
 @kernel function lp_jacobian_atomic_kernel!(∂R∂P, PC, @Const(T), @Const(P), @Const(el2n), @Const(geo), @Const(phases), ρ0, α, K, Tref, g, Nq, ::Val{N}) where N
     iel = @index(Global)
     local_nodes, rowsums, diags = lp_element_jacobian(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, Val(N))
-    for (i, inod) in enumerate(local_nodes)
-        Atomix.@atomic :monotonic ∂R∂P[inod] += rowsums[i]
-        Atomix.@atomic :monotonic PC[inod]    += diags[i]
-    end
+    _add_local_pair!(∂R∂P, PC, local_nodes, rowsums, diags, Val(true))
 end
 
 """
@@ -108,19 +103,25 @@ end
     i = @index(Global)
     iel = group[i]
     local_nodes, Re = lp_element_residual(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, Val(N))
-    for (j, inod) in enumerate(local_nodes)
-        R[inod] += Re[j]
-    end
+    _add_local!(R, local_nodes, Re, Val(false))
 end
 
 @kernel function lp_jacobian_colored_kernel!(∂R∂P, PC, @Const(T), @Const(P), @Const(el2n), @Const(geo), @Const(phases), ρ0, α, K, Tref, g, Nq, @Const(group), ::Val{N}) where N
     i = @index(Global)
     iel = group[i]
     local_nodes, rowsums, diags = lp_element_jacobian(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, Val(N))
-    for (j, inod) in enumerate(local_nodes)
-        ∂R∂P[inod] += rowsums[j]
-        PC[inod]    += diags[j]
-    end
+    _add_local_pair!(∂R∂P, PC, local_nodes, rowsums, diags, Val(false))
+end
+
+@inline function _lp_element_state(T, P, el2n, geo, phases, iel, ::Val{N}) where N
+    local_nodes = local_nodes_of(el2n, iel, Val(N))
+    return (
+        local_nodes,
+        geo[iel],
+        _gather_local(T, local_nodes, Val(N)),
+        _gather_local(P, local_nodes, Val(N)),
+        _gather_phase(phases, local_nodes, iel, Val(N)),
+    )
 end
 
 """
@@ -130,11 +131,7 @@ Gather element-local nodal values and integrate the lithostatic-pressure residua
 Returns `(local_nodes, Re)` ready for global scatter.
 """
 @inline function lp_element_residual(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, ::Val{N}) where N
-    local_nodes = local_nodes_of(el2n, iel, Val(N))
-    geo_el    = geo[iel]
-    Tloc      = SVector{N}(ntuple(i -> T[local_nodes[i]], Val(N)))
-    Ploc      = SVector{N}(ntuple(i -> P[local_nodes[i]], Val(N)))
-    phase_loc = SVector{N}(ntuple(i -> Int(phases[local_nodes[i]]), Val(N)))
+    local_nodes, geo_el, Tloc, Ploc, phase_loc = _lp_element_state(T, P, el2n, geo, phases, iel, Val(N))
     Re = lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, Val(N))
     return local_nodes, Re
 end
@@ -146,11 +143,7 @@ Compute per-element Jacobian diagnostics for the lithostatic-pressure residual
 via ForwardDiff. Returns `(local_nodes, rowsums, diags)`.
 """
 @inline function lp_element_jacobian(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, iel, ::Val{N}) where N
-    local_nodes = local_nodes_of(el2n, iel, Val(N))
-    geo_el    = geo[iel]
-    Tloc      = SVector{N}(ntuple(i -> T[local_nodes[i]], Val(N)))
-    Ploc      = SVector{N}(ntuple(i -> P[local_nodes[i]], Val(N)))
-    phase_loc = SVector{N}(ntuple(i -> Int(phases[local_nodes[i]]), Val(N)))
+    local_nodes, geo_el, Tloc, Ploc, phase_loc = _lp_element_state(T, P, el2n, geo, phases, iel, Val(N))
     ∂Re∂Pe = ForwardDiff.jacobian(
         Ploc -> lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, Val(N)),
         Ploc,

@@ -1,8 +1,3 @@
-@inline _stokes_phase_at(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
-@inline _stokes_phase_at(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
-@inline _stokes_phase_loc(phases, local_nodes, iel, ::Val{N}) where N =
-    SVector{N}(ntuple(i -> _stokes_phase_at(phases, local_nodes, i, iel), Val(N)))
-
 """
     compute_velocity_divergence(v, ∂N∂x_v) -> ∇V
 
@@ -75,7 +70,7 @@ evaluated at velocity integration points rather than pressure points.
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
         # compute pressure residual
         RP_e += SVector{N}(ntuple(
-            i -> Nv[i] * (-∇V - (∂P∂t + ∂T∂t)) * dΩ,
+            i -> Nv[i] * (-∇V - ∂P∂t + ∂T∂t) * dΩ,
             Val(N),
         ))
     end
@@ -136,11 +131,8 @@ end
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
-    for (i, inod) in enumerate(local_nodes_P)
-        # NOTE: no need for atomics/coloring here, P is discontinuous
-        # therefor there is a lack of race conditions
-        RP[inod] += Re[i]
-    end
+    # P is discontinuous here, so element pressure DoFs are not shared.
+    _add_local!(RP, local_nodes_P, Re, Val(false))
 end
 
 """
@@ -157,13 +149,13 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     geo_P_el  = geo_P[iel]
-    vxloc     = SVector{NV}(ntuple(i -> vx[local_nodes_v[i]], Val(NV)))
-    vyloc     = SVector{NV}(ntuple(i -> vy[local_nodes_v[i]], Val(NV)))
-    P_loc     = SVector{NP}(ntuple(i ->  P[local_nodes_P[i]], Val(NP)))
-    P0loc     = SVector{NP}(ntuple(i -> P0[local_nodes_P[i]], Val(NP)))
-    Tloc      = SVector{NP}(ntuple(i ->  T[local_nodes_P[i]], Val(NP)))
-    T0loc     = SVector{NP}(ntuple(i -> T0[local_nodes_P[i]], Val(NP)))
-    phase_loc = _stokes_phase_loc(phases, local_nodes_P, iel, Val(NP))
+    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    P_loc     = _gather_local(P,  local_nodes_P, Val(NP))
+    P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
+    Tloc      = _gather_local(T,  local_nodes_P, Val(NP))
+    T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
+    phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))
     Re = integrate_PH_pressure_residual(
         (vxloc, vyloc), P_loc, P0loc, Tloc, T0loc,
         geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NqP,

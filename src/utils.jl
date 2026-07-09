@@ -56,6 +56,44 @@ interpolate those nodal values to one integration point with weights `N`.
     end
 end
 
+@inline _gather_local(arr, nodes, ::Val{N}) where N =
+    SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
+
+@inline _phase_at(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
+@inline _phase_at(phases, nodes, i, _) = Int(phases[nodes[i]])
+@inline _gather_phase(phases, nodes, iel, ::Val{N}) where N =
+    SVector{N}(ntuple(i -> _phase_at(phases, nodes, i, iel), Val(N)))
+
+@inline function _add_local!(dest, nodes, values, ::Val{false})
+    for (i, node) in enumerate(nodes)
+        dest[node] += values[i]
+    end
+    return nothing
+end
+
+@inline function _add_local!(dest, nodes, values, ::Val{true})
+    for (i, node) in enumerate(nodes)
+        Atomix.@atomic :monotonic dest[node] += values[i]
+    end
+    return nothing
+end
+
+@inline function _add_local_pair!(dest_a, dest_b, nodes, values_a, values_b, ::Val{false})
+    for (i, node) in enumerate(nodes)
+        dest_a[node] += values_a[i]
+        dest_b[node] += values_b[i]
+    end
+    return nothing
+end
+
+@inline function _add_local_pair!(dest_a, dest_b, nodes, values_a, values_b, ::Val{true})
+    for (i, node) in enumerate(nodes)
+        Atomix.@atomic :monotonic dest_a[node] += values_a[i]
+        Atomix.@atomic :monotonic dest_b[node] += values_b[i]
+    end
+    return nothing
+end
+
 function _checked_λmax(jacobian, PC, label)
     λmax = maximum(jacobian ./ PC)
     if !(isfinite(λmax) && λmax > zero(λmax))

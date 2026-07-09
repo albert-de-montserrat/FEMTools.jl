@@ -316,6 +316,53 @@ let
         @test Rz_x ≈ R0_x
     end
 
+    @testset "integrate_momentum_x/y_residual — inline pressure correction matches explicit Pnum" begin
+        dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
+        geo_nz  = ((dNdx_nz, 1.0),)
+        vx_loc  = SA[0.2, -0.1, 0.4]
+        vy_loc  = SA[-0.3, 0.5, 0.1]
+        P_loc   = SA[0.7, 0.2, -0.1]
+        P0loc   = SA[0.1, -0.2, 0.3]
+        T_loc   = SA[2.0, 3.0, 1.0]
+        T0loc   = SA[1.5, 2.0, 0.5]
+        MP_loc  = SA[1.0, 2.0, 4.0]
+        γ_eff   = SA[0.5, 0.75, 1.0]
+        η       = (2.0,)
+        G       = (Inf,)
+        α       = (0.05,)
+        ρ0      = (3.0,)
+        K       = (Inf,)
+        ηb      = (4.0,)
+        g       = (1.0, -2.0)
+        Tref    = 0.0
+        Δt      = 0.25
+
+        Pnum_loc = FEMTools.pressure_scale(
+            γ_eff,
+            FEMTools.integrate_PH_pressure_residual(
+                (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
+                geo_nz, geo_nz, phase_loc, α, ηb, Δt, NqP_v,
+            ),
+            MP_loc,
+        )
+        explicit_x = FEMTools.integrate_momentum_x_residual(
+            (vx_loc, vy_loc), P_loc, Pnum_loc, T_loc,
+            geo_nz, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP_v,
+        )
+        explicit_y = FEMTools.integrate_momentum_y_residual(
+            (vx_loc, vy_loc), P_loc, Pnum_loc, T_loc,
+            geo_nz, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP_v,
+        )
+
+        augmented_args = (
+            (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
+            geo_nz, geo_nz, phase_loc, phase_loc,
+            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, Nq, NqP_v,
+        )
+        @test FEMTools.integrate_momentum_x_residual(augmented_args...) ≈ explicit_x
+        @test FEMTools.integrate_momentum_y_residual(augmented_args...) ≈ explicit_y
+    end
+
     @testset "x/y component functions are consistent with combined residual" begin
         # Arbitrary parameters; combined output must equal per-component outputs.
         T_loc = SA[2.0, 3.0, 1.0]
