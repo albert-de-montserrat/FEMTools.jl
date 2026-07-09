@@ -12,12 +12,15 @@ makedocs(;
         canonical="https://albert-de-montserrat.github.io/FEMTools.jl",
         edit_link="main",
     ),
+    checkdocs=:exports,
     pages=[
         "Home" => "index.md",
         "Elements" => "elements.md",
         "Mesh" => "mesh.md",
         "Boundary Conditions" => "boundary_conditions.md",
         "Heat Diffusion" => "heat_diffusion.md",
+        "Lithostatic Pressure" => "lithostatic_pressure.md",
+        "Stokes" => "stokes.md",
         "API" => "api.md",
     ],
 )

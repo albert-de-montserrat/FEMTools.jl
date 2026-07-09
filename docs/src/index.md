@@ -8,21 +8,25 @@ handling. Array operations are backend-agnostic via
 optional GPU support through package extensions for CUDA, AMDGPU, and Metal.
 
 ```@contents
-Pages = ["elements.md", "mesh.md", "boundary_conditions.md", "heat_diffusion.md", "api.md"]
+Pages = ["elements.md", "mesh.md", "boundary_conditions.md", "heat_diffusion.md", "lithostatic_pressure.md", "stokes.md", "api.md"]
 Depth = 2
 ```
 
 ## Quick Start
 
-```julia
-using FEMTools
-using DomainSets
+Build a structured mesh from a reference element and a domain. The `×` product
+operator is not exported by DomainSets, so import it explicitly:
 
-# 2-D quadrilateral mesh on the unit square
-mesh = Mesh((0.0..1.0) × (0.0..1.0), (4, 4))
+```jldoctest
+julia> using FEMTools, DomainSets
 
-# Reference element with quadratic shape functions
-element = ReferenceElement(QuadraticElement{2, 9})
+julia> using DomainSets: ×
+
+julia> element = ReferenceElement(QuadraticElement{2, 9})
+ReferenceElement{QuadraticElement{2, 9, Float64}}(order=2, nodes=9, nips=9)
+
+julia> mesh = Mesh((0.0..1.0) × (0.0..1.0), element, (4, 4))
+Mesh{2, 2}(nnodes=81, nels=16)
 ```
 
 ## GPU support

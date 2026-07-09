@@ -127,9 +127,9 @@ Compute the viscoelastic deviatoric stress at a quadrature point.
 computed from the velocity gradients `∇v = ∂N∂x' * vloc`. The Maxwell
 effective viscosity `ηve` and elastic correction term `τ_old / (2GΔt)` are
 evaluated via `viscoelastic_coefficients_phase`. Pass `(0, 0, 0)` for
-`τ_old` on the first time step.
+`τ_old` on the first time step. This method has no yield criterion; the stress
+is purely viscoelastic.
 """
-# Pure viscoelastic stress — no yield criterion.
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
     vxloc, vyloc = v
     ∇vx = ∂N∂x' * vxloc
@@ -164,7 +164,6 @@ Computes the trial viscoelastic stress, evaluates the yield function
 `τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
 regularized formula `λ = F / (ηve + η_reg - Kb Δt ∂Q/∂P ∂F/∂P)`.
 """
-# Viscoelastic–Drucker-Prager plastic stress.
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager)
     vxloc, vyloc = v
     ∇vx = ∂N∂x' * vxloc

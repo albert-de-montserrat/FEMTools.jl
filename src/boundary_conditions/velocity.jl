@@ -1,3 +1,9 @@
+"""
+    VelocityBoundaryCondition(x, y, z)
+
+Container bundling the boundary specifications for the three velocity
+components `x`, `y`, and `z`.
+"""
 struct VelocityBoundaryCondition{Tx, Ty, Tz} <: AbstractBoundaryCondition
     x::Tx 
     y::Ty

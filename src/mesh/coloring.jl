@@ -65,4 +65,4 @@ function generate_element_groups(backend, colors)
     return [TDev(findall(==(c), colors)) for c in 1:ncolors]
 end
 
-Base.@deprecate build_element_groups generate_element_groups
+Base.@deprecate build_element_groups generate_element_groups false

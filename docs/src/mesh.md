@@ -10,7 +10,8 @@ graph coloring.
 FEMTools.AbstractMesh
 Mesh
 MixedMesh
-build_discontinuous_linear_mesh
+MixedMeshCache
+generate_discontinuous_linear_mesh
 ```
 
 ## Coordinates and Degrees of Freedom
@@ -26,6 +27,8 @@ generate_dofs
 generate_element2node
 generate_node2element
 generate_boundary_elements
+FEMTools.element_coordinate_matrix
+FEMTools._unstructured_boundary_nodes
 ```
 
 ## Sparsity and Coloring
@@ -33,12 +36,18 @@ generate_boundary_elements
 ```@docs
 generate_sparsity_pattern
 color_mesh
-color_mesh_greedy
-build_element_groups
+FEMTools.color_mesh_greedy
+generate_element_groups
 ```
 
 ## Geometry Precomputation
 
 ```@docs
 FEMTools.precompute_geometry_kernel!
+```
+
+## VTK Output
+
+```@docs
+write_vtk
 ```

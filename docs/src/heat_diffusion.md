@@ -118,3 +118,20 @@ The residual and Jacobian assembly functions live in
 | `integrate_residual` | Quadrature-point loop; returns the element residual `SVector` |
 | `element_residual` | Gathers element-local fields and calls `integrate_residual` |
 | `element_jacobian` | ForwardDiff Jacobian of `integrate_residual`; returns row sums and diagonal |
+
+## Reference
+
+`solver!` advances the field for one time step; the pseudo-transient update
+kernels and Dirichlet enforcement are shared by all dynamic-relaxation solvers.
+
+```@docs
+solver!
+FEMTools.apply_dirichlet!
+FEMTools.update_rate_kernel!
+FEMTools.update_variable_kernel!
+FEMTools.assemble_diffusion_matrices_atomix!
+FEMTools.assemble_diffusion_matrices_colored!
+FEMTools.element_residual
+FEMTools.element_jacobian
+FEMTools.integrate_residual
+```

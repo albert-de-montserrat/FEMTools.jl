@@ -270,4 +270,4 @@ function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integ
     return p_el2n, p_el2dof, p_dof_coords
 end
 
-Base.@deprecate build_discontinuous_linear_mesh generate_discontinuous_linear_mesh
+Base.@deprecate build_discontinuous_linear_mesh generate_discontinuous_linear_mesh false

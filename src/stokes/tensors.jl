@@ -1,7 +1,22 @@
 import Base.getindex
 
+"""
+    AbstractTensor
+
+Abstract supertype for symmetric-tensor containers.
+"""
 abstract type AbstractTensor end
 
+"""
+    SymmetricTensor2D{T}
+
+Two-dimensional symmetric second-order tensor storing the independent
+components `xx`, `yy`, `xy` and an invariant slot `II`.
+
+Each component may be a scalar or an `nq × nels` matrix of integration-point
+values. In the matrix case, `A[q, iel]` returns the Voigt component row vector
+at quadrature point `q` of element `iel`.
+"""
 struct SymmetricTensor2D{T} <: AbstractTensor
     xx::T
     yy::T
@@ -9,6 +24,14 @@ struct SymmetricTensor2D{T} <: AbstractTensor
     II::T
 end
 
+"""
+    SymmetricTensor3D{T}
+
+Three-dimensional symmetric second-order tensor storing the independent
+components `xx`, `yy`, `zz`, `yz`, `xz`, `xy` and an invariant slot `II`.
+
+Component storage and `A[q, iel]` indexing follow [`SymmetricTensor2D`](@ref).
+"""
 struct SymmetricTensor3D{T} <: AbstractTensor
     xx::T
     yy::T
@@ -19,6 +42,13 @@ struct SymmetricTensor3D{T} <: AbstractTensor
     II::T
 end
 
+"""
+    SymmetricTensor(xx, yy, xy) -> SymmetricTensor2D
+    SymmetricTensor(xx, yy, zz, yz, xz, xy) -> SymmetricTensor3D
+
+Construct a symmetric tensor from its independent components, initializing the
+invariant slot `II` to zero.
+"""
 @inline SymmetricTensor(xx, yy, xy)             = SymmetricTensor2D(xx, yy, xy, zero(xx))
 @inline SymmetricTensor(xx, yy, zz, yz, xz, xy) = SymmetricTensor3D(xx, yy, zz, yz, xz, xy, zero(xx))
 
