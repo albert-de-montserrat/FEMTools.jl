@@ -121,7 +121,7 @@ function main(nel)
     Ω = -Lx..Lx
     element = ReferenceElement(LinearElement{1, 2, Float64})
     # element = ReferenceElement(QuadraticElement{1, 3, Float64})
-    mesh = FEMTools.Mesh(Ω, element, nel)
+    mesh = Mesh(Ω, element, nel)
     colors = color_element_batches(mesh)
 
     Δx     = Lx/nel                             # Size of elements

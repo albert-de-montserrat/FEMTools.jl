@@ -114,7 +114,7 @@ function solve_stokes_dyrel!(
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
         element_v, element_P,
-        phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+        phases_v, phases_P, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
         dr.ηb, Δt, γP, M_P,
         backend, workgroup,
     )
@@ -159,7 +159,7 @@ function solve_stokes_dyrel!(
             dr.vx, dr.vy, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             element_v, element_P,
-            phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             backend, workgroup,
         )
         apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
@@ -219,7 +219,7 @@ function solve_stokes_dyrel!(
                 dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
-                phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
 
@@ -255,7 +255,7 @@ function solve_stokes_dyrel!(
                     dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
-                    phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                    phases_v, phases_P, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                     dr.ηb, Δt, γP, M_P,
                     backend, workgroup,
                 )

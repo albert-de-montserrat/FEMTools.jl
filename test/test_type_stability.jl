@@ -248,7 +248,7 @@ function _stokes_assembly_case()
     geo = [TRI_GEO]
     return FEMTools.assemble_momentum_residual_matrices_atomix!(
         Rvx, Rvy, vx, vy, P, T, Pnum, el2n, el2n, geo, 1,
-        element, element, phases,
+        element, element, phases, nothing, nothing, nothing,
         (1.0,), (Inf,), (0.0,), (1.0,), (Inf,),
         (0.0, -1.0), 0.0, 1.0, CPU(), 1,
     )

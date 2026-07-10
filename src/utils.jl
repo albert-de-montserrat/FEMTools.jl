@@ -59,7 +59,8 @@ end
 @inline _gather_local(arr, nodes, ::Val{N}) where N =
     SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
 
-@inline _phase_at(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
+@inline _phase_at(phases::AbstractMatrix, _, i, iel) =
+    Int(phases[size(phases, 1) == 1 ? 1 : i, iel])
 @inline _phase_at(phases, nodes, i, _) = Int(phases[nodes[i]])
 @inline _gather_phase(phases, nodes, iel, ::Val{N}) where N =
     SVector{N}(ntuple(i -> _phase_at(phases, nodes, i, iel), Val(N)))

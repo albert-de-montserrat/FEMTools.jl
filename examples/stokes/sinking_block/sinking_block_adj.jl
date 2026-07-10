@@ -1,17 +1,40 @@
+using FEMTools
+
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
 
+using Enzyme
 using Statistics
 using StaticArrays
 using KernelAbstractions
 using Triangulate
-using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect
 
 const backend   = CPU()
 const workgroup = 128
 
 include("mesher.jl")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+@kernel inbounds = true function observationpoints_vy!(ResλVy, coords, cx, cy, half_width)
+    i = @index(Global)
+    x, y = coords[i]
+    ResλVy[i] = abs(x - cx) ≤ half_width && abs(y - cy) ≤ half_width ? -1.0 : 0.0
+end
+
+function launch_observationpoints_vy!(ResλVy, coords, cx, cy, half_width, backend, workgroup)
+    observationpoints_vy!(backend, workgroup)(
+        ResλVy, coords, cx, cy, half_width;
+        ndrange = length(ResλVy),
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
@@ -25,7 +48,9 @@ The model builds a square domain with a rectangular inclusion, applies free-slip
 boundary conditions, solves the Stokes system once, writes one VTK file, and
 returns the stress diagnostics.
 """
-function main(; max_area = 1 / (1 * 64^2), show_plot = true)
+# function main(; max_area = 1 / (1 * 64^2), show_plot = true)
+    max_area = 1 / (1 * 64^2)
+    show_plot = true
     Δt = 1
     # Domain
     Lx, Ly = 1.0, 1.0
@@ -130,6 +155,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     ]
     phases_solve = reshape(cell_phase, 1, :)
 
+
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
     corner_id = Dict{Int32, Int32}(old => Int32(i) for (i, old) in enumerate(corner_nodes))
     coords_litho = coords_v[Int.(corner_nodes)]
@@ -218,107 +244,195 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
 
-    solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-        ncheck,
-        ϵ_tol,
-        iterMax,
-        total_iterMax,
-        rel_drop0,
-        verbose = verbose_PH,
-        verbose_inner = verbose_DR,
-        vx_nodes = vx_nodes,
-        vy_nodes = vy_nodes,
+    #### ADJOINT STUFF ####
+    ResλVy = zero(dr.Rv_y)
+    launch_observationpoints_vy!(
+        ResλVy, mesh_stokes.coords, cx, cy, half_width, backend, workgroup,
     )
+    ResλVx = zero(dr.Rv_x)
 
-    update_stokes_current_stress!(
-        dr, mesh_stokes, geo_v, element_v, element_P,
-        phases_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
-    )
-
-    P_cpu  = Array(dr.P)
-    vx_cpu = Array(dr.vx)
-    vy_cpu = Array(dr.vy)
-    post = compute_strain_rate_stress_postprocess(
-        vx_cpu, vy_cpu,
-        el2n_v_cpu,
-        Array(geo_v),
-        τ,
-        element_v,
-    )
-    mean_tauII = mean(post.tauII)
-
-    vtk_path = joinpath(out_dir, "stokes_2D_sinking_block.vtk")
-    write_stokes_vtk(
-        vtk_path,
-        mesh_stokes,
-        coords_v,
-        el2nP_cpu,
-        DoFsP_cpu,
-        P_cpu,
-        vx_cpu,
-        vy_cpu,
-        post;
-        title = "FEMTools Stokes 2D sinking block",
-        cell_data = (; phase = cell_phase),
-    )
-    @info "Wrote VTK file" vtk_path mean_tauII iter=solve_stats.iter err=solve_stats.err
-    show_plot || return (; mean_tauII, post)
-
-    # ---------------------------------------------------------------------------
-    # Visualisation
-    # ---------------------------------------------------------------------------
-
-    # Per-element fields on the plotted pressure triangles.
-    el_Vx = [mean(vx_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-    el_Vy = [mean(vy_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-    el_P  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-
-    pts   = [Point2f(c) for c in coords_v]
-    polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
-            for i in 1:mesh_stokes.nels]
-
-    fig = Figure(size = (1400, 440))
-    axes = Axis[]
-    for (col, title, label, values, colormap) in (
-        (1, "Horizontal velocity Vx", "Vx", el_Vx, :vik),
-        (3, "Vertical velocity Vy", "Vy", el_Vy, :vik),
-        (5, "Pressure P", "P", el_P, :glasgow),
-    )
-        limits = extrema(values)
-        ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
-        poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
-        Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
-        push!(axes, ax)
-    end
-
-    # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
-    # arrow_step = max(1, length(arrow_nodes) ÷ 250)
-    # arrow_nodes = arrow_nodes[1:arrow_step:end]
-    # arrows2d!(
-    #     axes[3],
-    #     [coords_v[n][1] for n in arrow_nodes],
-    #     [coords_v[n][2] for n in arrow_nodes],
-    #     vx_cpu[arrow_nodes],
-    #     vy_cpu[arrow_nodes];
-    #     color = :white,
-    #     lengthscale = 20,
-    #     shaftwidth = 1,
-    #     tipwidth = 8,
-    #     tiplength = 8,
+    # solve_stats = solve_stokes_dyrel!(
+    #     dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+    #     phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
+    #     Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+    #     ncheck,
+    #     ϵ_tol,
+    #     iterMax,
+    #     total_iterMax,
+    #     rel_drop0,
+    #     verbose = verbose_PH,
+    #     verbose_inner = verbose_DR,
+    #     vx_nodes = vx_nodes,
+    #     vy_nodes = vy_nodes,
     # )
 
-    xlo, xhi = cx - half_width, cx + half_width
-    ylo, yhi = cy - half_width, cy + half_width
-    for ax in axes
-        lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
-    end
+    # update_stokes_current_stress!(
+    #     dr, mesh_stokes, geo_v, element_v, element_P,
+    #     phases_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
+    # )
 
-    show_plot && display(fig)
-    # return (; mean_tauII, post)
-    nothing
-end
+    # P_cpu  = Array(dr.P)
+    # vx_cpu = Array(dr.vx)
+    # vy_cpu = Array(dr.vy)
+    # post = compute_strain_rate_stress_postprocess(
+    #     vx_cpu, vy_cpu,
+    #     el2n_v_cpu,
+    #     Array(geo_v),
+    #     τ,
+    #     element_v,
+    # )
+    # mean_tauII = mean(post.tauII)
 
-main()
+    # vtk_path = joinpath(out_dir, "stokes_2D_sinking_block.vtk")
+    # write_stokes_vtk(
+    #     vtk_path,
+    #     mesh_stokes,
+    #     coords_v,
+    #     el2nP_cpu,
+    #     DoFsP_cpu,
+    #     P_cpu,
+    #     vx_cpu,
+    #     vy_cpu,
+    #     post;
+    #     title = "FEMTools Stokes 2D sinking block",
+    #     cell_data = (; phase = cell_phase),
+    # )
+    # @info "Wrote VTK file" vtk_path mean_tauII iter=solve_stats.iter err=solve_stats.err
+    # show_plot || return (; mean_tauII, post)
+
+    # # ---------------------------------------------------------------------------
+    # # Visualisation
+    # # ---------------------------------------------------------------------------
+
+    # # Per-element fields on the plotted pressure triangles.
+    # el_Vx = [mean(vx_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+    # el_Vy = [mean(vy_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+    # el_P  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+
+    # pts   = [Point2f(c) for c in coords_v]
+    # polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
+    #         for i in 1:mesh_stokes.nels]
+
+    # fig = Figure(size = (1400, 440))
+    # axes = Axis[]
+    # for (col, title, label, values, colormap) in (
+    #     (1, "Horizontal velocity Vx", "Vx", el_Vx, :vik),
+    #     (3, "Vertical velocity Vy", "Vy", el_Vy, :vik),
+    #     (5, "Pressure P", "P", el_P, :glasgow),
+    # )
+    #     limits = extrema(values)
+    #     ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
+    #     poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
+    #     Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
+    #     push!(axes, ax)
+    # end
+
+    # # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
+    # # arrow_step = max(1, length(arrow_nodes) ÷ 250)
+    # # arrow_nodes = arrow_nodes[1:arrow_step:end]
+    # # arrows2d!(
+    # #     axes[3],
+    # #     [coords_v[n][1] for n in arrow_nodes],
+    # #     [coords_v[n][2] for n in arrow_nodes],
+    # #     vx_cpu[arrow_nodes],
+    # #     vy_cpu[arrow_nodes];
+    # #     color = :white,
+    # #     lengthscale = 20,
+    # #     shaftwidth = 1,
+    # #     tipwidth = 8,
+    # #     tiplength = 8,
+    # # )
+
+    # xlo, xhi = cx - half_width, cx + half_width
+    # ylo, yhi = cy - half_width, cy + half_width
+    # for ax in axes
+    #     lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
+    # end
+
+#     show_plot && display(fig)
+#     # return (; mean_tauII, post)
+#     nothing
+# end
+
+# main()
+
+phases_P = phases_solve
+FEMTools.assemble_pressure_residual_matrices_atomix!(
+    dr.RP,
+    dr.vx, 
+    dr.vy, 
+    dr.P, 
+    dr.P0, 
+    dr.T, 
+    dr.T0,
+    mesh_stokes.el2n, 
+    mesh_stokes.DoFsP,
+    geo_v,
+    geo_P, 
+    mesh_stokes.nels,
+    element_v, 
+    element_P,
+    phases_P, 
+    dr.α, 
+    dr.ηb, 
+    Δt,
+    backend, 
+    workgroup,
+)
+
+ResRv_x = zero(dr.Rv_x) 
+ResRv_y = zero(dr.Rv_y) 
+dResP = zero(dr.RP) 
+dP    = zero(dr.P) 
+dvx   = zero(dr.vx) 
+dvy   = zero(dr.vy)
+
+# Enzyme.autodiff_deferred(
+#     Enzyme.Reverse,
+#     Enzyme.Const(FEMTools.assemble_pressure_residual_matrices_atomix!),
+#     Enzyme.Const,
+#     Enzyme.Duplicated(dr.RP, dResP),
+#     Enzyme.Duplicated(dr.vx, dvx),
+#     Enzyme.Duplicated(dr.vy, dvy),
+#     Enzyme.Duplicated(dr.P, dP),
+#     Enzyme.Const(dr.P0),
+#     Enzyme.Const(dr.T),
+#     Enzyme.Const(dr.T0),
+#     Enzyme.Const(mesh_stokes.el2n),
+#     Enzyme.Const(mesh_stokes.DoFsP),
+#     Enzyme.Const(geo_v),
+#     Enzyme.Const(geo_P),
+#     Enzyme.Const(mesh_stokes.nels),
+#     Enzyme.Const(element_v),
+#     Enzyme.Const(element_P),
+#     Enzyme.Const(phases_P),
+#     Enzyme.Const(dr.α),
+#     Enzyme.Const(dr.ηb),
+#     Enzyme.Const(Δt),
+#     Enzyme.Const(backend),
+#     Enzyme.Const(workgroup),
+# )
+
+
+# Evaluate pressure shape functions at velocity IPs so that geo_P
+# (precomputed at velocity IPs) and NqP share the same quadrature points.
+NqP = FEMTools.shape_function_values(element_P, element_v.integration_points)
+Nq  = FEMTools.shape_function_values(element_v)
+Pnum = nothing
+
+FEMTools.assemble_momentum_residual_kernel!(
+    dr.Rv_x, dr.Rv_y, dr.vx, dr.vy, dr.P, dr.T,
+    Pnum, mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels, phases_solve,
+    τ_old, plastic, τ,
+    dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+    Nq, NqP, Val(NV), Val(NP), workgroup,
+)
+
+FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
+    dr.Rv_x, ResRv_x, dr.Rv_y, ResRv_y,
+    dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum,
+    mesh_stokes, geo_v,
+    element_v, element_P, phases_solve, τ_old, plastic,
+    dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+    workgroup,
+)

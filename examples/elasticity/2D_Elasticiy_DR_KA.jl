@@ -367,7 +367,7 @@ function main(nels)
     Ω = (0.0..Lx) × (0.0..Ly)
     element = ReferenceElement(LinearElement{2, 4, Float64})
     # element = ReferenceElement(QuadraticElement{2, 9, Float64})
-    mesh = FEMTools.Mesh(Ω, element, nels)
+    mesh = Mesh(Ω, element, nels)
 
     # material (plane strain) and gravity load
     E      = 1.0                                # Young's modulus

@@ -166,7 +166,7 @@ function main(nels)
     Ω = (-Lx..Lx) × (-Ly..Ly)
     # element = ReferenceElement(LinearElement{2, 4, Float64})
     element = ReferenceElement(QuadraticElement{2, 9, Float64})
-    mesh = FEMTools.Mesh(Ω, element, nels)
+    mesh = Mesh(Ω, element, nels)
    
     # recover locality with RCM
     # perm_rcm = rcm_permutation(mesh)

@@ -33,8 +33,8 @@ function main(nels)
     Lx, Ly   = 10e3, 20e3
     Ω        = (-Lx..Lx) × (-Ly..0e0)
     element  = ReferenceElement(LinearElement{2, 3, Float64})
-    mesh     = FEMTools.Mesh(backend, Ω, element, nels)
-    mesh_cpu = FEMTools.Mesh(CPU(), Ω, element, nels)
+    mesh     = Mesh(backend, Ω, element, nels)
+    mesh_cpu = Mesh(CPU(), Ω, element, nels)
 
     # --- two-phase material properties ---
     k   = (3.0,    2.5)     # thermal conductivity   [W m⁻¹ K⁻¹]

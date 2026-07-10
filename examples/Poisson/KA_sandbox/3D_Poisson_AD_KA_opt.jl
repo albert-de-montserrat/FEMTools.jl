@@ -313,8 +313,8 @@ function main(nels, element)
     Lx = Ly = Lz = 1.0
 
     Ω = Rectangle((0.0, 0.0, 0.0), (Lx, Ly, Lz))
-    mesh = FEMTools.Mesh(backend, Ω, element, nels)
-    mesh_cpu = FEMTools.Mesh(CPU(), Ω, element, nels)
+    mesh = Mesh(backend, Ω, element, nels)
+    mesh_cpu = Mesh(CPU(), Ω, element, nels)
 
     σ      = 0.1                                # Source width
     HW     = 1.0                                # Dirichlet value west

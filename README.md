@@ -4,9 +4,12 @@
 [![codecov](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl)
 [![docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://albert-de-montserrat.github.io/FEMTools.jl/dev/)
 
-Finite-element utilities for structured meshes, reference elements, shape
-functions, integration points, sparsity construction, mesh coloring, and
-boundary-condition handling. Array operations are backend-agnostic via
+Finite-element utilities for structured and unstructured meshes: reference
+elements, shape functions, integration points, sparsity construction, mesh
+coloring, and boundary-condition handling. Built on these primitives are
+pseudo-transient dynamic-relaxation solvers for heat diffusion, lithostatic
+pressure, and incompressible (visco-elasto-plastic) Stokes flow. Array
+operations are backend-agnostic via
 [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl),
 with optional GPU support through package extensions.
 
@@ -80,10 +83,11 @@ using FEMTools, DomainSets
 Ω = (0.0..1.0) × (0.0..1.0)
 element = ReferenceElement(LinearElement{2, 4})
 mesh = Mesh(Ω, element, (16, 16))  # 16×16 elements
+n2el = generate_node2element(mesh.el2n, mesh.nnodes)
 
 mesh.coords   # node coordinates
 mesh.el2n     # element-to-node connectivity  (N_local × N_elements)
-mesh.n2el     # node-to-element adjacency
+n2el          # node-to-element adjacency
 mesh.Γnodes   # boundary node ids
 mesh.nnodes   # total node count
 mesh.nels     # total element count
@@ -105,6 +109,21 @@ apply_bc!(rhs, ΓD)        # set constrained RHS entries
 apply_bc!(A, ΓD)          # zero constrained rows, pin diagonal
 apply_bc!(A, rhs, ΓD)     # symmetric elimination
 ```
+
+## Solvers
+
+Three matrix-free, backend-agnostic solvers are built on the mesh and element
+primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
+
+| Solver | State type | Entry point |
+|:-------|:-----------|:------------|
+| Transient multi-phase heat diffusion | `ThermalDiffusionDR` | `solver!` |
+| Lithostatic pressure | `LithostaticPressureDR` | `solver!` |
+| Incompressible visco-elasto-plastic Stokes flow | `StokesDR` | `solve_stokes_dyrel!` |
+
+Runnable scripts live under [`examples/`](examples/); see the
+[documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the
+physical models, solver-state fields, and worked examples.
 
 ## GPU backends
 

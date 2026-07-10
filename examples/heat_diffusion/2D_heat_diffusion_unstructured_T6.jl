@@ -184,7 +184,7 @@ function main(; max_area=1e5 / 2)
     )
     coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole =
         reorder_mesh_rcm(coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole)
-    mesh = FEMTools.Mesh(backend, coords_cpu, el2n_cpu)
+    mesh = Mesh(backend, coords_cpu, el2n_cpu)
     @printf("mesh: %d nodes, %d T6 elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
