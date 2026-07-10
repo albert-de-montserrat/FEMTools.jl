@@ -15,7 +15,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
     nels = mesh_stokes.nels
 
     Enzyme.autodiff_deferred(
-        Enzyme.Reverse,
+        Enzyme.set_runtime_activity(Enzyme.Reverse),
         Enzyme.Const(assemble_pressure_residual_kernel!),
         Enzyme.Const,
         Enzyme.Duplicated(RP, dRP),

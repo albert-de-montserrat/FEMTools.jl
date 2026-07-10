@@ -1,6 +1,6 @@
 function assemble_momentum_residual_matrices_atomix_adj!(
     Rv_x, dRv_x, Rv_y, dRv_y,
-    vx, dvx, vy, dvy, P, dP, T, Pnum,
+    vx, dvx, vy, dvy, P, dP, T, Pnum, dPnum,
     mesh_stokes::MixedMesh{2}, geo_v,
     element_v::ReferenceElement{TV},
     element_P::ReferenceElement{TP},
@@ -24,7 +24,7 @@ function assemble_momentum_residual_matrices_atomix_adj!(
         Enzyme.Duplicated(vy, dvy),
         Enzyme.Duplicated(P, dP),
         Enzyme.Const(T),
-        Enzyme.Const(Pnum),
+        Enzyme.Duplicated(Pnum, dPnum),
         Enzyme.Const(el2n_v),
         Enzyme.Const(el2nP),
         Enzyme.Const(geo_v),

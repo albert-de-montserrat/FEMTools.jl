@@ -70,7 +70,7 @@ function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, half_width, max_area
         if abs(coords[i][1]) ≤ tol ||
            abs(coords[i][1] - Lx) ≤ tol ||
            abs(coords[i][2]) ≤ tol ||
-           abs(coords[i][2] - Ly) ≤ tol
+           abs(coords[i][2] + Ly) ≤ tol
     ]
     interface_tol = 100eps(Float64) * max(Lx, Ly)
     interface_nodes = Int32[

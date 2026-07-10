@@ -4,11 +4,13 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
 
 using Enzyme
+using LinearAlgebra
+using Printf
 using Statistics
 using StaticArrays
 using KernelAbstractions
 using Triangulate
-using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect
+using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect, axislegend
 
 const backend   = CPU()
 const workgroup = 128
@@ -48,9 +50,19 @@ The model builds a square domain with a rectangular inclusion, applies free-slip
 boundary conditions, solves the Stokes system once, writes one VTK file, and
 returns the stress diagnostics.
 """
-# function main(; max_area = 1 / (1 * 64^2), show_plot = true)
-    max_area = 1 / (1 * 64^2)
-    show_plot = true
+function main(;
+    max_area = 1 / 64^2,
+    show_plot = true,
+    ncheck = 50,
+    ϵ_tol = 1.0e-6,
+    iterMax = 50_000,
+    total_iterMax = 50_000,
+    adjoint_tol = 1.0e-6,
+    adjoint_rel_drop = 5.0e-3,
+    adjoint_iterMax = 50_000,
+    adjoint_total_iterMax = 50_000,
+    adjoint_max_ph_iterations = 100,
+)
     Δt = 1
     # Domain
     Lx, Ly = 1.0, 1.0
@@ -69,9 +81,6 @@ returns the stress diagnostics.
     Tref  = 0.0
 
     # DR solver
-    ncheck = 50         # convergence check interval
-    ϵ_tol  = 1e-6        # relative residual tolerance
-
     # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
     # constrained boundary, so no element crosses the material interface.
     half_width = 0.1
@@ -173,10 +182,10 @@ returns the stress diagnostics.
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
-    P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly - c[2]) for c in coords_litho]
+    P0_litho = Float64[ρ0[1] * abs(g[2]) * (-c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
-    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly) ≤ litho_tol]
+    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2]) ≤ litho_tol]
     top_zero = zeros(Float64, length(top_nodes_litho))
     solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_litho, top_zero, top_zero,
         backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
@@ -200,7 +209,7 @@ returns the stress diagnostics.
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
     vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - Ly) ≤ tol]
+    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] + Ly) ≤ tol]
 
     bc_vx_vals = zeros(Float64, length(vx_nodes))
     bc_vy_vals = zeros(Float64, length(vy_nodes))
@@ -232,8 +241,6 @@ returns the stress diagnostics.
         phases_v = phases_solve, η = ηγP,
     )
 
-    iterMax       = 50_000   # max inner DR iterations per PH step
-    total_iterMax = 50_000   # max total inner DR iterations
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
@@ -244,195 +251,315 @@ returns the stress diagnostics.
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
 
-    #### ADJOINT STUFF ####
-    ResλVy = zero(dr.Rv_y)
-    launch_observationpoints_vy!(
-        ResλVy, mesh_stokes.coords, cx, cy, half_width, backend, workgroup,
+    # ---------------------------------------------------------------------------
+    # Forward solve
+    # ---------------------------------------------------------------------------
+
+    solve_stats = solve_stokes_dyrel!(
+        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
+        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+        ncheck,
+        ϵ_tol,
+        iterMax,
+        total_iterMax,
+        rel_drop0,
+        verbose = verbose_PH,
+        verbose_inner = verbose_DR,
+        vx_nodes,
+        vy_nodes,
+        collect_history = true,
     )
+    solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
+
+    # ---------------------------------------------------------------------------
+    # Visualisation helper — per-element average of nodal fields on the P triangles
+    # ---------------------------------------------------------------------------
+
+    pts   = [Point2f(c) for c in coords_v]
+    polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
+             for i in 1:mesh_stokes.nels]
+    xlo, xhi = cx - half_width, cx + half_width
+    ylo, yhi = cy - half_width, cy + half_width
+
+    function plot_fields(vx_dofs, vy_dofs, P_dofs, titles)
+        el_vx = [mean(vx_dofs[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+        el_vy = [mean(vy_dofs[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+        el_P  = [mean(P_dofs[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+        fig = Figure(size = (1400, 440))
+        for (col, title, values, colormap) in (
+                (1, titles[1], el_vx, :vik),
+                (3, titles[2], el_vy, :vik),
+                (5, titles[3], el_P,  :glasgow),
+            )
+            limits = extrema(values)
+            ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
+            poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
+            Colorbar(fig[1, col + 1]; colormap, limits, width = 15, tellheight = false)
+            lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo];
+                color = :white, linewidth = 1.5, linestyle = :dash)
+        end
+        display(fig)
+        return fig
+    end
+
+    # Combined figure matching the finite-difference reference: forward Vx/Vy/P,
+    # adjoint λVx/λVy, and the forward + adjoint residual-evolution trace.
+    function plot_summary(vx_dofs, vy_dofs, P_dofs, λvx_dofs, λvy_dofs, fwd_hist, adj_hist)
+        el(dofs, conn) = [mean(dofs[conn[:, i]]) for i in 1:mesh_stokes.nels]
+        fig = Figure(size = (1100, 1300))
+        for (row, col, title, values, colormap) in (
+                (1, 1, "Vx",  el(vx_dofs,  el2nP_cpu), :vik),
+                (1, 3, "Vy",  el(vy_dofs,  el2nP_cpu), :vik),
+                (2, 1, "P",   el(P_dofs,   DoFsP_cpu), :glasgow),
+                (2, 3, "λVx", el(λvx_dofs, el2nP_cpu), :vik),
+                (3, 1, "λVy", el(λvy_dofs, el2nP_cpu), :vik),
+            )
+            limits = extrema(values)
+            ax = Axis(fig[row, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
+            poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
+            Colorbar(fig[row, col + 1]; colormap, limits, width = 15, tellheight = false)
+            lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo];
+                color = :white, linewidth = 1.5, linestyle = :dash)
+        end
+
+        ax = Axis(fig[3, 3:4]; xlabel = "iteration", ylabel = "log10 residual",
+            title = "Residual evolution")
+        logres(v) = log10.(max.(v, eps()))
+        if !isempty(fwd_hist)
+            it = Float64[h.iter for h in fwd_hist]
+            lines!(ax, it, logres([h.err_v for h in fwd_hist]); label = "forward V")
+            lines!(ax, it, logres([h.err_P for h in fwd_hist]); label = "forward P")
+        end
+        if !isempty(adj_hist)
+            it = Float64[h.iter for h in adj_hist]
+            lines!(ax, it, logres([h.err_v for h in adj_hist]); label = "adjoint V", linestyle = :dash)
+            lines!(ax, it, logres([h.err_P for h in adj_hist]); label = "adjoint P", linestyle = :dash)
+        end
+        (isempty(fwd_hist) && isempty(adj_hist)) || axislegend(ax; position = :rt)
+
+        display(fig)
+        return fig
+    end
+
+    show_plot && plot_fields(Array(dr.vx), Array(dr.vy), Array(dr.P),
+        ("Forward Vx", "Forward Vy", "Forward P"))
+
+    # ---------------------------------------------------------------------------
+    # Adjoint solve: (dR/du)' λ + dJ/du = 0
+    # ---------------------------------------------------------------------------
+
+    objective_vx = zero(dr.Rv_x)
+    objective_vy = zero(dr.Rv_y)
+    launch_observationpoints_vy!(
+        objective_vy, mesh_stokes.coords, cx, cy, half_width, backend, workgroup,
+    )
+
+    λvx = zero(dr.vx)
+    λvy = zero(dr.vy)
+    λP  = zero(dr.P)
+    λrate_vx = zero(dr.vx)
+    λrate_vy = zero(dr.vy)
+
     ResλVx = zero(dr.Rv_x)
+    ResλVy = zero(dr.Rv_y)
+    ResλP  = zero(dr.P)
+    ResλVx0 = zero(dr.Rv_x)
+    ResλVy0 = zero(dr.Rv_y)
 
-    # solve_stats = solve_stokes_dyrel!(
-    #     dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    #     phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-    #     Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-    #     ncheck,
-    #     ϵ_tol,
-    #     iterMax,
-    #     total_iterMax,
-    #     rel_drop0,
-    #     verbose = verbose_PH,
-    #     verbose_inner = verbose_DR,
-    #     vx_nodes = vx_nodes,
-    #     vy_nodes = vy_nodes,
-    # )
+    seed_Rv_x = zero(dr.Rv_x)
+    seed_Rv_y = zero(dr.Rv_y)
+    seed_RP   = zero(dr.RP)
+    dvx = zero(dr.vx)
+    dvy = zero(dr.vy)
+    dP  = zero(dr.P)
+    dP_scratch = zero(dr.P)
+    # Real augmented-pressure array so its adjoint (∂Rv/∂Pnum)ᵀλv is obtained
+    # directly rather than via the P == Pnum shortcut. Its value is irrelevant to
+    # the transpose (Rv is linear in Pnum), so it stays zero.
+    Pnum  = zero(dr.P)
+    dPnum = zero(dr.P)
 
-    # update_stokes_current_stress!(
-    #     dr, mesh_stokes, geo_v, element_v, element_P,
-    #     phases_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
-    # )
+    zero_vx_bc = zero(bc_vx_vals)
+    zero_vy_bc = zero(bc_vy_vals)
 
-    # P_cpu  = Array(dr.P)
-    # vx_cpu = Array(dr.vx)
-    # vy_cpu = Array(dr.vy)
-    # post = compute_strain_rate_stress_postprocess(
-    #     vx_cpu, vy_cpu,
-    #     el2n_v_cpu,
-    #     Array(geo_v),
-    #     τ,
-    #     element_v,
-    # )
-    # mean_tauII = mean(post.tauII)
+    # Reuse the forward augmented diagonal preconditioner for the transpose
+    # velocity block. Its diagonal is identical to that of the transpose. The
+    # jacobian depends only on the (now frozen) forward state, so λmax and the
+    # pseudo-time step are constant through the adjoint solve; only λmin is
+    # re-estimated below.
+    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+        element_v, element_P, phases_solve, phases_solve,
+        τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+        dr.ηb, Δt, γP, M_P, backend, workgroup,
+    )
 
-    # vtk_path = joinpath(out_dir, "stokes_2D_sinking_block.vtk")
-    # write_stokes_vtk(
-    #     vtk_path,
-    #     mesh_stokes,
-    #     coords_v,
-    #     el2nP_cpu,
-    #     DoFsP_cpu,
-    #     P_cpu,
-    #     vx_cpu,
-    #     vy_cpu,
-    #     post;
-    #     title = "FEMTools Stokes 2D sinking block",
-    #     cell_data = (; phase = cell_phase),
-    # )
-    # @info "Wrote VTK file" vtk_path mean_tauII iter=solve_stats.iter err=solve_stats.err
-    # show_plot || return (; mean_tauII, post)
+    λmax_vx = FEMTools._checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")
+    λmax_vy = FEMTools._checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy")
+    Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
+    Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
+    α_vx, β_vx = FEMTools._stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
+    α_vy, β_vy = FEMTools._stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
 
-    # # ---------------------------------------------------------------------------
-    # # Visualisation
-    # # ---------------------------------------------------------------------------
+    function assemble_adjoint_residual!()
+        fill!(dvx, 0)
+        fill!(dvy, 0)
+        fill!(dP, 0)
+        fill!(dPnum, 0)
+        copyto!(seed_Rv_x, λvx)
+        copyto!(seed_Rv_y, λvy)
 
-    # # Per-element fields on the plotted pressure triangles.
-    # el_Vx = [mean(vx_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-    # el_Vy = [mean(vy_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-    # el_P  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+        # Momentum transpose: (∂Rv/∂v)ᵀλv → dvx,dvy, (∂Rv/∂P)ᵀλv → dP,
+        # and (∂Rv/∂Pnum)ᵀλv → dPnum.
+        FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
+            dr.Rv_x, seed_Rv_x, dr.Rv_y, seed_Rv_y,
+            dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum, dPnum,
+            mesh_stokes, geo_v, element_v, element_P,
+            phases_solve, τ_old, plastic,
+            dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            workgroup,
+        )
 
-    # pts   = [Point2f(c) for c in coords_v]
-    # polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
-    #         for i in 1:mesh_stokes.nels]
+        # (∂Rv/∂P)ᵀλv is the adjoint pressure-constraint residual (the analogue of
+        # the finite-difference `ResλP .= dP`). Capture it before the pressure
+        # pullbacks reuse dP.
+        copyto!(ResλP, dP)
 
-    # fig = Figure(size = (1400, 440))
-    # axes = Axis[]
-    # for (col, title, label, values, colormap) in (
-    #     (1, "Horizontal velocity Vx", "Vx", el_Vx, :vik),
-    #     (3, "Vertical velocity Vy", "Vy", el_Vy, :vik),
-    #     (5, "Pressure P", "P", el_P, :glasgow),
-    # )
-    #     limits = extrema(values)
-    #     ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
-    #     poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
-    #     Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
-    #     push!(axes, ax)
-    # end
+        # Powell–Hestenes augmented grad-div self-coupling of the velocity adjoint.
+        # The forward momentum uses Pnum(v) = γP·RP(v)/M_P, so the chain through Pnum
+        # closes as (∂RP/∂v)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P). This is the FEM equivalent of
+        # the FD `Schurx`/`Schury` term.
+        @. seed_RP = γP * dPnum / M_P
+        fill!(dP_scratch, 0)
+        FEMTools.assemble_pressure_residual_matrices_atomix_adj!(
+            dr, seed_RP, dvx, dvy, dP_scratch,
+            mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_solve, Δt, workgroup,
+        )
 
-    # # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
-    # # arrow_step = max(1, length(arrow_nodes) ÷ 250)
-    # # arrow_nodes = arrow_nodes[1:arrow_step:end]
-    # # arrows2d!(
-    # #     axes[3],
-    # #     [coords_v[n][1] for n in arrow_nodes],
-    # #     [coords_v[n][2] for n in arrow_nodes],
-    # #     vx_cpu[arrow_nodes],
-    # #     vy_cpu[arrow_nodes];
-    # #     color = :white,
-    # #     lengthscale = 20,
-    # #     shaftwidth = 1,
-    # #     tipwidth = 8,
-    # #     tiplength = 8,
-    # # )
+        # Saddle-point coupling to the pressure adjoint λP: (∂RP/∂v)ᵀλP.
+        copyto!(seed_RP, λP)
+        fill!(dP_scratch, 0)
+        FEMTools.assemble_pressure_residual_matrices_atomix_adj!(
+            dr, seed_RP, dvx, dvy, dP_scratch,
+            mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_solve, Δt, workgroup,
+        )
 
-    # xlo, xhi = cx - half_width, cx + half_width
-    # ylo, yhi = cy - half_width, cy + half_width
-    # for ax in axes
-    #     lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
-    # end
+        @. ResλVx = objective_vx + dvx
+        @. ResλVy = objective_vy + dvy
+        FEMTools.apply_dirichlet!(ResλVx, vx_nodes, zero_vx_bc, backend, workgroup)
+        FEMTools.apply_dirichlet!(ResλVy, vy_nodes, zero_vy_bc, backend, workgroup)
+        return nothing
+    end
 
-#     show_plot && display(fig)
-#     # return (; mean_tauII, post)
-#     nothing
+    adjoint_ncheck = ncheck
+    adjoint_iter = 0
+    adjoint_err = Inf
+    adjoint_err_v0 = 1.0
+    adjoint_err_P0 = 1.0
+    adjoint_history = NamedTuple[]
+    adjoint_converged = false
+    adjoint_itPH = 0
+
+    @info "Starting adjoint PH/DYREL solve" adjoint_tol adjoint_rel_drop
+
+    for itPH in 1:adjoint_max_ph_iterations
+        adjoint_itPH = itPH
+        assemble_adjoint_residual!()
+
+        err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
+        err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
+        if itPH == 1
+            adjoint_err_v0 = err_v + eps(err_v)
+            adjoint_err_P0 = err_P + eps(err_P)
+        end
+        adjoint_err = max(
+            min(err_v, err_v / adjoint_err_v0),
+            min(err_P, err_P / adjoint_err_P0),
+        )
+        push!(adjoint_history, (; iter = adjoint_iter, itPH, err = adjoint_err, err_v, err_P))
+        @printf("adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
+            itPH, adjoint_iter, adjoint_err, err_v, err_P)
+
+        if adjoint_err < adjoint_tol
+            adjoint_converged = true
+            break
+        end
+
+        target_v = max(err_v * adjoint_rel_drop, adjoint_tol)
+        inner = 0
+        while err_v > target_v && inner < adjoint_iterMax && adjoint_iter < adjoint_total_iterMax
+            inner += 1
+            adjoint_iter += 1
+            copyto!(ResλVx0, ResλVx)
+            copyto!(ResλVy0, ResλVy)
+
+            FEMTools.stokes_update_rate!(λrate_vx, ResλVx, dr.PC_vx, β_vx,
+                mesh_stokes.nnodes, backend, workgroup)
+            FEMTools.stokes_update_variable!(λvx, λrate_vx, -α_vx,
+                mesh_stokes.nnodes, backend, workgroup)
+            FEMTools.stokes_update_rate!(λrate_vy, ResλVy, dr.PC_vy, β_vy,
+                mesh_stokes.nnodes, backend, workgroup)
+            FEMTools.stokes_update_variable!(λvy, λrate_vy, -α_vy,
+                mesh_stokes.nnodes, backend, workgroup)
+
+            FEMTools.apply_dirichlet!(λvx, vx_nodes, zero_vx_bc, backend, workgroup)
+            FEMTools.apply_dirichlet!(λvy, vy_nodes, zero_vy_bc, backend, workgroup)
+            FEMTools.apply_dirichlet!(λrate_vx, vx_nodes, zero_vx_bc, backend, workgroup)
+            FEMTools.apply_dirichlet!(λrate_vy, vy_nodes, zero_vy_bc, backend, workgroup)
+
+            assemble_adjoint_residual!()
+
+            if iszero(adjoint_iter % adjoint_ncheck)
+                err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
+
+                # Re-estimate λmin from the rate/residual change and refresh the
+                # Chebyshev step, exactly as the forward DYREL loop does. Δτ and
+                # λmax stay fixed (the jacobian depends only on the frozen forward
+                # state).
+                λmin_vx = FEMTools._stokes_λmin(α_vx, λrate_vx, ResλVx .- ResλVx0, dr.PC_vx)
+                λmin_vy = FEMTools._stokes_λmin(α_vy, λrate_vy, ResλVy .- ResλVy0, dr.PC_vy)
+                α_vx, β_vx = FEMTools._stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
+                α_vy, β_vy = FEMTools._stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
+            end
+        end
+
+        # Arrow-Hurwicz update for the pressure adjoint, followed by gauge fixing.
+        @. λP += γP * ResλP / M_P
+        # FEMTools.remove_pressure_mean!(λP, M_P)
+
+        adjoint_iter >= adjoint_total_iterMax && break
+    end
+
+    assemble_adjoint_residual!()
+    final_err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
+    final_err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
+    final_err = max(
+        min(final_err_v, final_err_v / adjoint_err_v0),
+        min(final_err_P, final_err_P / adjoint_err_P0),
+    )
+    adjoint_stats = (;
+        converged = adjoint_converged || final_err < adjoint_tol,
+        itPH = adjoint_itPH,
+        iter = adjoint_iter,
+        err = final_err,
+        err_v = final_err_v,
+        err_P = final_err_P,
+        history = adjoint_history,
+    )
+    @info "Adjoint solve complete" adjoint_stats
+
+    show_plot && plot_summary(Array(dr.vx), Array(dr.vy), Array(dr.P),
+        Array(λvx), Array(λvy), solve_stats.history, adjoint_history)
+
+    return (; dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy)
+end
+
+# if abspath(PROGRAM_FILE) == @__FILE__
+out = main();
+nothing
 # end
-
-# main()
-
-phases_P = phases_solve
-FEMTools.assemble_pressure_residual_matrices_atomix!(
-    dr.RP,
-    dr.vx, 
-    dr.vy, 
-    dr.P, 
-    dr.P0, 
-    dr.T, 
-    dr.T0,
-    mesh_stokes.el2n, 
-    mesh_stokes.DoFsP,
-    geo_v,
-    geo_P, 
-    mesh_stokes.nels,
-    element_v, 
-    element_P,
-    phases_P, 
-    dr.α, 
-    dr.ηb, 
-    Δt,
-    backend, 
-    workgroup,
-)
-
-ResRv_x = zero(dr.Rv_x) 
-ResRv_y = zero(dr.Rv_y) 
-dResP = zero(dr.RP) 
-dP    = zero(dr.P) 
-dvx   = zero(dr.vx) 
-dvy   = zero(dr.vy)
-
-# Enzyme.autodiff_deferred(
-#     Enzyme.Reverse,
-#     Enzyme.Const(FEMTools.assemble_pressure_residual_matrices_atomix!),
-#     Enzyme.Const,
-#     Enzyme.Duplicated(dr.RP, dResP),
-#     Enzyme.Duplicated(dr.vx, dvx),
-#     Enzyme.Duplicated(dr.vy, dvy),
-#     Enzyme.Duplicated(dr.P, dP),
-#     Enzyme.Const(dr.P0),
-#     Enzyme.Const(dr.T),
-#     Enzyme.Const(dr.T0),
-#     Enzyme.Const(mesh_stokes.el2n),
-#     Enzyme.Const(mesh_stokes.DoFsP),
-#     Enzyme.Const(geo_v),
-#     Enzyme.Const(geo_P),
-#     Enzyme.Const(mesh_stokes.nels),
-#     Enzyme.Const(element_v),
-#     Enzyme.Const(element_P),
-#     Enzyme.Const(phases_P),
-#     Enzyme.Const(dr.α),
-#     Enzyme.Const(dr.ηb),
-#     Enzyme.Const(Δt),
-#     Enzyme.Const(backend),
-#     Enzyme.Const(workgroup),
-# )
-
-
-# Evaluate pressure shape functions at velocity IPs so that geo_P
-# (precomputed at velocity IPs) and NqP share the same quadrature points.
-NqP = FEMTools.shape_function_values(element_P, element_v.integration_points)
-Nq  = FEMTools.shape_function_values(element_v)
-Pnum = nothing
-
-FEMTools.assemble_momentum_residual_kernel!(
-    dr.Rv_x, dr.Rv_y, dr.vx, dr.vy, dr.P, dr.T,
-    Pnum, mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels, phases_solve,
-    τ_old, plastic, τ,
-    dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-    Nq, NqP, Val(NV), Val(NP), workgroup,
-)
-
-FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
-    dr.Rv_x, ResRv_x, dr.Rv_y, ResRv_y,
-    dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum,
-    mesh_stokes, geo_v,
-    element_v, element_P, phases_solve, τ_old, plastic,
-    dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-    workgroup,
-)
