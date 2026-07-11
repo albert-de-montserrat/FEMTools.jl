@@ -140,7 +140,7 @@ function main(; mesh_size = 3e3)
     to = TimerOutput()
     @timeit to "mesh" coords_cpu, el2n_cpu, top_nodes, bottom_nodes, cyl_nodes_per_cyl =
         build_mesh(; Lx, Ly, Lz, cylinders, mesh_size)
-    mesh = FEMTools.Mesh(backend, coords_cpu, el2n_cpu)
+    mesh = Mesh(backend, coords_cpu, el2n_cpu)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------

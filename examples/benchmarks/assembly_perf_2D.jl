@@ -210,7 +210,7 @@ function main(ns)
         Ω = (0.0..1.0) × (0.0..1.0)
         element = ReferenceElement(LinearElement{2, 4})
         nels = (n, n)
-        mesh = FEMTools.Mesh(Ω, element, nels)
+        mesh = Mesh(Ω, element, nels)
 
         pattern = generate_sparsity_pattern(mesh)
         K = preallocate_sparse_matrix(pattern)

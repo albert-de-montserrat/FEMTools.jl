@@ -111,12 +111,30 @@ function assemble_pressure_residual_matrices_atomix!(
     # (precomputed at velocity IPs) and NqP share the same quadrature points.
     NqP = shape_function_values(element_P, element_v.integration_points)
 
+    return assemble_pressure_residual_kernel!(
+        RP, vx, vy, P, P0, T, T0,
+        el2n_v, el2nP, geo_v, geo_P, nels,
+        phases, α, ηb, Δt, NqP,
+        Val(NV), Val(NP), workgroup,
+    )
+end
+
+function assemble_pressure_residual_kernel!(
+    RP, vx, vy, P, P0, T, T0,
+    el2n_v, el2nP, geo_v, geo_P, nels,
+    phases, α, ηb, Δt, NqP,
+    ::Val{NV}, ::Val{NP}, workgroup
+) where {NV, NP}
     fill!(RP, 0)
+    backend = KA.get_backend(RP)
     pressure_residual_atomic_kernel!(backend, workgroup)(
-        RP, vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, Val(NV), Val(NP);
+        RP, vx, vy, P, P0, T, T0,
+        el2n_v, el2nP, geo_v, geo_P,
+        phases, α, ηb, Δt, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
+    return nothing
 end
 
 @kernel function pressure_residual_atomic_kernel!(

@@ -50,6 +50,11 @@ end
     @test hasproperty(post_ve, :tauII)
     @test !hasproperty(post_ve, :τII)
     @test all(iszero, post_ve.tauII)
+
+    post_ve_matrix_phase = compute_strain_rate_stress_postprocess(
+        vx, vy, mesh.el2n, geo, ones(Int, size(mesh.el2n)), τ_old, (1.0,), (Inf,), 1.0, element,
+    )
+    @test post_ve_matrix_phase.tauII == post_ve.tauII
 end
 
 @testset "stokes diagnostics preserve Float32" begin

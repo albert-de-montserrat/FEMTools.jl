@@ -31,6 +31,8 @@ import FEMTools
         :order,
         :ThermalDiffusionDR,
         :solver!,
+        :solve_stokes_dyrel!,
+        :solve_stokes_adjoint_dyrel!,
         :LithostaticPressureDR,
         :AbstractElement,
         :AbstractLinearElement,
@@ -39,6 +41,8 @@ import FEMTools
         :AbstractIntegrationPoints,
         :AbstractMesh,
         :AbstractBoundaryCondition,
+        :assemble_viscosity_weighted_pressure_scaling!,
+        :pressure_mass,
     )
 
     public_only_names = (
@@ -53,7 +57,6 @@ import FEMTools
         :assemble_momentum_residual_matrices_atomix!,
         :assemble_momentum_jacobian_matrices_atomix!,
         :assemble_augmented_momentum_jacobian_matrices_atomix!,
-        :assemble_viscosity_weighted_pressure_scaling!,
         :assemble_pressure_residual_matrices_atomix!,
         :update_rate_kernel!,
         :update_variable_kernel!,
@@ -62,7 +65,6 @@ import FEMTools
         :stokes_update_variable!,
         :precompute_stokes_geometry!,
         :color_mesh_greedy,
-        :pressure_mass,
         :remove_pressure_mean!,
         :velocity,
         :stress,

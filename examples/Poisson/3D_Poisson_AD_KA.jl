@@ -289,8 +289,8 @@ function main(nels)
     Ω = (-Lx..Lx) × (-Ly..Ly) × (-Lz..Lz)
     element  = ReferenceElement(LinearElement{3, 8, Float64})
     # element = ReferenceElement(QuadraticElement{3, 27, Float64})
-    mesh     = FEMTools.Mesh(backend, Ω, element, nels)
-    mesh_cpu = FEMTools.Mesh(CPU(), Ω, element, nels)
+    mesh     = Mesh(backend, Ω, element, nels)
+    mesh_cpu = Mesh(CPU(), Ω, element, nels)
 
     σ      = 0.1                                # Source width
     HW     = 1.0                                # Dirichlet value west

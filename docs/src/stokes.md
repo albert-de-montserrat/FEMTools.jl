@@ -26,11 +26,16 @@ The saddle-point system is solved with a Powell–Hestenes / DYREL iteration: an
 outer Arrow–Hurwicz pressure update wraps an inner Chebyshev-accelerated
 dynamic-relaxation sweep on the momentum residual.
 
+The discrete adjoint uses the transpose of the same assembled element
+operators and the same mixed spaces. It therefore computes gradients of the
+*discrete* objective rather than a separately discretised continuous adjoint.
+
 ## Solver state
 
 ```@docs
 StokesDR
 DruckerPrager
+pressure_mass
 ```
 
 The velocity and pressure fields live on separate node sets described by a
@@ -48,14 +53,57 @@ viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 ```sh
 julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block.jl
+julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
 ```
+
+The adjoint sinking-block example accepts an explicit backend. It builds the
+Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,
+geometry caches, phase indices, and boundary data before launching kernels:
+
+```julia
+using CUDA
+include("examples/stokes/sinking_block/sinking_block_adj.jl")
+
+result = main(backend = CUDABackend(), show_plot = false)
+```
+
+Loading CUDA activates the FEMTools CUDA extension, for which
+`TA(CUDABackend()) === CuArray`. A functional NVIDIA driver is required for
+allocation and execution. Plotting is host-side; keep `show_plot = false` for
+headless accelerator runs.
 
 ## Driver
 
 ```@docs
 solve_stokes_dyrel!
+solve_stokes_adjoint_dyrel!
 update_stokes_current_stress!
 ```
+
+## Discrete adjoint and material sensitivities
+
+For an objective `J(u)` and forward residual `R(u, m) = 0`, the adjoint solves
+
+```math
+\left(\frac{\partial R}{\partial u}\right)^T \lambda
+= -\frac{\partial J}{\partial u}.
+```
+
+The reduced material derivative is then contracted elementwise as
+
+```math
+\frac{\mathrm d J}{\mathrm d m_e}
+= -\lambda_e^T \frac{\partial R_e}{\partial m_e},
+```
+
+using the sign convention of the sinking-block reference. The example forms a
+finite-element objective load for
+`J(v_y) = -∫_{Ωobs} v_y dΩ`, solves the transpose system with
+`solve_stokes_adjoint_dyrel!`, and uses Enzyme reverse mode on the element
+momentum residual contraction to obtain density and viscosity sensitivities.
+The returned sensitivity arrays contain raw element integrals. Their sums give
+phase gradients; division by element area is used only to visualise a spatial
+sensitivity density.
 
 ## Assembly
 

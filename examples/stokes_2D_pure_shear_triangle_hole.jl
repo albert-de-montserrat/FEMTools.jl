@@ -168,7 +168,7 @@ function main(;
         Lx, Ly, cx, cy, r = r_hole, max_area,
     )
     DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = FEMTools.Mesh(
+    mesh_v = Mesh(
         element_v, nothing, nothing,
         coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
     )
@@ -253,12 +253,9 @@ function main(;
         end
         apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
         apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
-        FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-            dr.M_P, γP,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_P, mesh_stokes.nels,
-            element_v, element_P,
-            phases_v_cpu, dr.η, γfact, dr.K, Float64(Δt),
-            backend, workgroup,
+        assemble_viscosity_weighted_pressure_scaling!(
+            γP, dr, mesh_stokes, cache.geo_P, element_v, element_P,
+            γfact, Float64(Δt), backend, workgroup; phases_v = phases_v_cpu,
         )
         @info "Physical time step" istep nsteps t
 

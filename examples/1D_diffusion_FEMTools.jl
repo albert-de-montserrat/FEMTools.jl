@@ -98,7 +98,7 @@ function solve_1d_diffusion(;
 )
     Ω = 0.0..Lx
     element = ReferenceElement(LinearElement{1, 2})
-    mesh = FEMTools.Mesh(Ω, element, nel)
+    mesh = Mesh(Ω, element, nel)
     # element = ReferenceElement(QuadraticElement{1, 3})
 
     # ΓD = DirichletBoundaryCondition(mesh.Γ, mesh.Γnodes, zeros(length(mesh.Γnodes)))

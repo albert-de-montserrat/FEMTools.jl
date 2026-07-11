@@ -1,5 +1,41 @@
 """
     assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, geo_P, element_v, element_P,
+        γfact, Δt, backend, workgroup;
+        phases_v=dr.phases_v, η=dr.η, K=dr.K,
+    )
+
+Assemble the pressure mass and viscosity-weighted pressure scale using a
+`StokesDR` state and `MixedMesh`.
+
+`phases_v`, `η`, and `K` default to the solver state and may be overridden for
+element-wise phase layouts or alternate pressure-scaling material properties.
+"""
+function assemble_viscosity_weighted_pressure_scaling!(
+    γP,
+    dr::StokesDR,
+    mesh::MixedMesh{2},
+    geo_P,
+    element_v::ReferenceElement,
+    element_P::ReferenceElement,
+    γfact,
+    Δt,
+    backend, workgroup;
+    phases_v = dr.phases_v,
+    η = dr.η,
+    K = dr.K,
+)
+    return assemble_viscosity_weighted_pressure_scaling!(
+        dr.M_P, γP,
+        mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P,
+        phases_v, η, γfact, K, Δt,
+        backend, workgroup,
+    )
+end
+
+"""
+    assemble_viscosity_weighted_pressure_scaling!(
         MP, γP,
         el2n_v, dofs_P, geo_P, nels,
         element_v, element_P,

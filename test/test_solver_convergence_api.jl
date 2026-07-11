@@ -66,11 +66,8 @@ function _orphan_stokes_case()
     )
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        dr.M_P, γP,
-        mesh.el2n, mesh.DoFsP, cache.geo_P, mesh.nels,
-        element_v, element_P,
-        dr.phases_v, dr.η, 1.0,
-        backend, workgroup,
+        γP, dr, mesh, cache.geo_P, element_v, element_P,
+        1.0, 1.0, backend, workgroup,
     )
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     return (; dr, mesh, cache, element_v, element_P, τ_old, γP, backend, workgroup)

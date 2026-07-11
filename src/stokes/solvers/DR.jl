@@ -96,6 +96,7 @@ function solve_stokes_dyrel!(
     verbose_DR = nothing,
     vx_nodes = Γnodes,
     vy_nodes = Γnodes,
+    collect_history = false,
 )
     verbose, verbose_inner = _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
 
@@ -141,6 +142,7 @@ function solve_stokes_dyrel!(
     iter = 0
     itPH_done = 0
     rel_drop = rel_drop0
+    history = NamedTuple[]
 
     for itPH in 1:max_ph_iterations
         itPH_done = itPH
@@ -159,7 +161,7 @@ function solve_stokes_dyrel!(
             dr.vx, dr.vy, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             element_v, element_P,
-            phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             backend, workgroup,
         )
         apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
@@ -219,7 +221,7 @@ function solve_stokes_dyrel!(
                 dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
-                phases_v, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
 
@@ -244,6 +246,8 @@ function solve_stokes_dyrel!(
                 err = max(err_v_inner / err_v00, err_v_inner)
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+
+                collect_history && push!(history, (; iter, err_v = err_v_inner, err_P))
 
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
@@ -289,6 +293,7 @@ function solve_stokes_dyrel!(
         err_P,
         converged = err < ϵ,
         reached_total_iter = iter > total_iterMax,
+        history,
     )
 end
 

@@ -150,7 +150,7 @@ function main(;
         lx, ly, cx, cy, r = r_hole, max_area,
     )
     DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = FEMTools.Mesh(
+    mesh_v = Mesh(
         element_v, nothing, nothing,
         coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
     )
@@ -243,7 +243,7 @@ function main(;
     for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = FEMTools.Mesh(backend, coords_litho, el2n_litho)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
     geo_litho = precompute_geometry(mesh_litho.coords, mesh_litho.el2n, mesh_litho.nels, element_P)
 
     top_nodes_litho = Int32[
@@ -310,12 +310,9 @@ function main(;
         # finite bulk modulus caps the pressure penalty (γ_eff ≈ K·Δt ≪ γfact·η),
         # making the incompressible coupling far less stiff and Powell-Hestenes
         # converge much faster than the K=Inf hard-incompressible limit.
-        FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-            dr.M_P, γP,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_P, mesh_stokes.nels,
-            element_v, element_P,
-            phases_v_cpu, dr.η, γfact, dr.K, Δt,
-            backend, workgroup,
+        assemble_viscosity_weighted_pressure_scaling!(
+            γP, dr, mesh_stokes, cache.geo_P, element_v, element_P,
+            γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
         )
 
         # Residual normalization scales for self-weight loading:
@@ -336,7 +333,7 @@ function main(;
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, dr.M_P,
             backend, workgroup,
         )
@@ -363,7 +360,7 @@ function main(;
                 dr.vx, dr.vy, dr.P, dr.T, nothing,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, mesh_stokes.nels,
                 element_v, element_P,
-                phases_v_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                phases_v_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
             FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, vx_bc, backend, workgroup)
@@ -433,7 +430,7 @@ function main(;
                     dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, mesh_stokes.nels,
                     element_v, element_P,
-                    phases_v_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                    phases_v_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                     backend, workgroup,
                 )
 
@@ -443,7 +440,7 @@ function main(;
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, dr.M_P,
                         backend, workgroup,
                     )

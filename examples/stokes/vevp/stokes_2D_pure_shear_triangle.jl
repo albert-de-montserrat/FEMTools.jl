@@ -1,5 +1,5 @@
 import Pkg
-Pkg.activate(@__DIR__)
+Pkg.activate(joinpath(@__DIR__, "../.."))
 
 using Printf
 using Statistics
@@ -29,194 +29,6 @@ function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels)
         ndrange = nels,
     )
     KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
-@inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
-@inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
-@inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where N =
-    SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
-
-"""
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v) -> NamedTuple
-
-Compute element-averaged strain-rate and deviatoric-stress diagnostics.
-
-The returned fields are cell averages over the velocity quadrature rule and
-include `εxx`, `εyy`, `εzz`, `εxy`, `εII`, `τxx`, `τyy`, `τzz`, `τxy`, and
-`tauII`. Stresses are averaged from quadrature-point history written by the
-momentum residual assembly.
-"""
-function compute_strain_rate_stress_postprocess(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    τ_ip,
-    element_v::ReferenceElement{TV},
-) where {TV <: AbstractElement{2, NV}} where NV
-    nels = size(el2n_v, 2)
-    Nq = shape_function_values(element_v)
-
-    εxx = zeros(Float64, nels)
-    εyy = zeros(Float64, nels)
-    εzz = zeros(Float64, nels)
-    εxy = zeros(Float64, nels)
-    εII = zeros(Float64, nels)
-    τxx = zeros(Float64, nels)
-    τyy = zeros(Float64, nels)
-    τzz = zeros(Float64, nels)
-    τxy = zeros(Float64, nels)
-    τII = zeros(Float64, nels)
-
-    for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
-        geo_el = geo_v[iel]
-        volume = 0.0
-
-        for q in eachindex(geo_el)
-            ∂N∂x, dΩ = geo_el[q]
-            Nv = Nq[q]
-
-            ∇vx = ∂N∂x' * vxloc
-            ∇vy = ∂N∂x' * vyloc
-
-            εxx_q = ∇vx[1]
-            εyy_q = ∇vy[2]
-            εzz_q = zero(εxx_q)
-            εxy_q = (∇vx[2] + ∇vy[1]) / 2
-
-            tr = (εxx_q + εyy_q + εzz_q) / 3
-            εxx_dev = εxx_q - tr
-            εyy_dev = εyy_q - tr
-            εzz_dev = εzz_q - tr
-
-            τxx_q = τ_ip[1][q, iel]
-            τyy_q = τ_ip[2][q, iel]
-            τxy_q = τ_ip[3][q, iel]
-            τzz_q = -(τxx_q + τyy_q)
-
-            εII_q = sqrt((εxx_dev^2 + εyy_dev^2 + εzz_dev^2) / 2 + εxy_q^2)
-            τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
-
-            εxx[iel] += εxx_q * dΩ
-            εyy[iel] += εyy_q * dΩ
-            εzz[iel] += εzz_q * dΩ
-            εxy[iel] += εxy_q * dΩ
-            εII[iel] += εII_q * dΩ
-            τxx[iel] += τxx_q * dΩ
-            τyy[iel] += τyy_q * dΩ
-            τzz[iel] += τzz_q * dΩ
-            τxy[iel] += τxy_q * dΩ
-            τII[iel] += τII_q * dΩ
-            volume += dΩ
-        end
-
-        εxx[iel] /= volume
-        εyy[iel] /= volume
-        εzz[iel] /= volume
-        εxy[iel] /= volume
-        εII[iel] /= volume
-        τxx[iel] /= volume
-        τyy[iel] /= volume
-        τzz[iel] /= volume
-        τxy[iel] /= volume
-        τII[iel] /= volume
-    end
-
-    return (;
-        εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy,
-        tauII = τII,
-    )
-end
-
-"""
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post) -> Nothing
-
-Write pressure, velocity, strain-rate, and stress fields to an ASCII VTK file.
-
-The VTK mesh uses the pressure triangle corners, while nodal velocity fields are
-sampled from the corresponding velocity nodes.
-"""
-function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
-    NP = size(el2nP_cpu, 1)
-    vtk_nodes = sort!(unique(vec(el2nP_cpu)))
-    vtk_node_map = zeros(Int32, length(coords_v))
-    for (new_i, old_i) in enumerate(vtk_nodes)
-        vtk_node_map[old_i] = Int32(new_i)
-    end
-
-    vtk_P = zeros(Float64, length(vtk_nodes))
-    vtk_P_count = zeros(Int, length(vtk_nodes))
-    for iel in 1:mesh_stokes.nels
-        for a in 1:NP
-            inode = vtk_node_map[el2nP_cpu[a, iel]]
-            vtk_P[inode] += P_cpu[DoFsP_cpu[a, iel]]
-            vtk_P_count[inode] += 1
-        end
-    end
-    @. vtk_P /= vtk_P_count
-
-    vtk_Vx = [vx_cpu[old_i] for old_i in vtk_nodes]
-    vtk_Vy = [vy_cpu[old_i] for old_i in vtk_nodes]
-    vtk_V  = hypot.(vtk_Vx, vtk_Vy)
-
-    open(vtk_path, "w") do io
-        println(io, "# vtk DataFile Version 3.0")
-        println(io, "FEMTools Stokes 2D pure shear")
-        println(io, "ASCII")
-        println(io, "DATASET UNSTRUCTURED_GRID")
-
-        println(io, "POINTS $(length(vtk_nodes)) float")
-        for old_i in vtk_nodes
-            c = coords_v[old_i]
-            println(io, "$(c[1]) $(c[2]) 0.0")
-        end
-
-        println(io, "CELLS $(mesh_stokes.nels) $(4 * mesh_stokes.nels)")
-        for iel in 1:mesh_stokes.nels
-            i1 = vtk_node_map[el2nP_cpu[1, iel]] - 1
-            i2 = vtk_node_map[el2nP_cpu[2, iel]] - 1
-            i3 = vtk_node_map[el2nP_cpu[3, iel]] - 1
-            println(io, "3 $i1 $i2 $i3")
-        end
-
-        println(io, "CELL_TYPES $(mesh_stokes.nels)")
-        for _ in 1:mesh_stokes.nels
-            println(io, "5") # VTK_TRIANGLE
-        end
-
-        println(io, "POINT_DATA $(length(vtk_nodes))")
-        for (name, field) in (("P", vtk_P), ("Vx", vtk_Vx), ("Vy", vtk_Vy), ("V", vtk_V))
-            println(io, "SCALARS $name float 1")
-            println(io, "LOOKUP_TABLE default")
-            for value in field
-                println(io, value)
-            end
-        end
-
-        println(io, "CELL_DATA $(mesh_stokes.nels)")
-        for (name, field) in (
-            ("strain_xx", post.εxx),
-            ("strain_yy", post.εyy),
-            ("strain_zz", post.εzz),
-            ("strain_xy", post.εxy),
-            ("strain_II", post.εII),
-            ("tau_xx", post.τxx),
-            ("tau_yy", post.τyy),
-            ("tau_zz", post.τzz),
-            ("tau_xy", post.τxy),
-            ("tau_II", post.tauII),
-        )
-            println(io, "SCALARS $name float 1")
-            println(io, "LOOKUP_TABLE default")
-            for value in field
-                println(io, value)
-            end
-        end
-    end
     return nothing
 end
 
@@ -319,8 +131,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     ε̇_bg = 1.0
 
     # Material (2 phases: matrix + inclusion)
-    η     = (1.0,     1.0)   # shear viscosity
     γfact = 20.0
+    η     = (1.0,     1.0)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     1.0)   # reference density
     K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
@@ -342,7 +154,7 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     Tref  = 0.0
 
     # DR solver
-    ncheck = 50          # convergence check interval
+    ncheck = 100          # convergence check interval
     ϵ_tol  = 1e-6        # relative residual tolerance
 
     # Inclusion geometry. The Triangle PSLG uses this circle as an internal
@@ -365,7 +177,7 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         max_area,
     )
     DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = FEMTools.Mesh(
+    mesh_v = Mesh(
         element_v, nothing, nothing,
         coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
     )
@@ -405,11 +217,10 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         K,
         g,
         Tref,
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
+        CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
-        # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
     )
-    M_P = FEMTools.pressure_mass(dr)
+    M_P = pressure_mass(dr)
     τ = (dr.τxx, dr.τyy, dr.τxy)
     τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
 
@@ -442,14 +253,14 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
     vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - Ly) ≤ tol]
 
-    bc_vx_vals = Float64[ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
-    bc_vy_vals = Float64[-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
+    bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
+    bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
     # by apply_bc! below; the result is identical on those nodes).
-    copyto!(dr.vx, Float64[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
-    copyto!(dr.vy, Float64[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
+    copyto!(dr.vx, [ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
+    copyto!(dr.vy, [-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
@@ -471,21 +282,17 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
     # adapts the pressure step to viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        M_P, γP,
-        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
-        element_v, element_P,
-        phases_v_cpu, dr.η, γfact, dr.K, Δt,
-        backend, workgroup,
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh_stokes, geo_P, element_v, element_P,
+        γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
     )
 
-    Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
 
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
-    rel_drop0     = 1e-2     # inner convergence: velocity residual drops by this factor
+    rel_drop0     = 0.75     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
 
@@ -537,7 +344,6 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.τxx_old, dr.τxx)
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
-        # rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 
         vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
         write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)

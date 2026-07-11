@@ -34,3 +34,8 @@ end
     @test q32 isa Float32
     @test q32 ≈ 0.25f0 * 10.0f0 + 0.75f0 * 2.0f0
 end
+
+@testset "element-constant phases" begin
+    phases = reshape([1, 2], 1, :)
+    @test FEMTools._gather_phase(phases, SA[4, 7, 9], 2, Val(3)) == SA[2, 2, 2]
+end

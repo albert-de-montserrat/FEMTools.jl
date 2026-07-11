@@ -164,7 +164,7 @@ function main(nels)
     Ω = (-Lx..Lx) × (-Ly..Ly) × (-Lz..Lz)
     element = ReferenceElement(LinearElement{3, 8, Float64})
     # element = ReferenceElement(QuadraticElement{3, 27, Float64})
-    mesh = FEMTools.Mesh(Ω, element, nels)
+    mesh = Mesh(Ω, element, nels)
     
     colors = color_element_batches(mesh)
     geo = precompute_geometry(mesh, element)

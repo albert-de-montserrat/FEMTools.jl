@@ -115,7 +115,7 @@ function solve_3d_diffusion(;
 )
     element = ReferenceElement(LinearElement{3, 8})
     Ω = (0.0..Lx) × (0.0..Ly) × (0.0..Lz)
-    mesh = FEMTools.Mesh(Ω, element, nels)
+    mesh = Mesh(Ω, element, nels)
     source = 0.0
 
     pattern = generate_sparsity_pattern(mesh)

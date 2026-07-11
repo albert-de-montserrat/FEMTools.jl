@@ -85,7 +85,7 @@ function main(nel)
 
     Ω       = -Lx..Lx
     element = ReferenceElement(QuadraticElement{1, 3, Float64})
-    grid    = FEMTools.Mesh(Ω, element, nel)
+    grid    = Mesh(Ω, element, nel)
     colors  = color_element_batches(grid)
 
     Δx   = 2*Lx / nel

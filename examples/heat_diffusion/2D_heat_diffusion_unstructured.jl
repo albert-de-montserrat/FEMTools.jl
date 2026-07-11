@@ -119,7 +119,7 @@ function main(; max_area=1e5)
         n_circle = 64,
         max_area = max_area,
     )
-    mesh = FEMTools.Mesh(backend, coords_cpu, el2n_cpu)
+    mesh = Mesh(backend, coords_cpu, el2n_cpu)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------

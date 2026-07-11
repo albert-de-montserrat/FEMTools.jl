@@ -17,6 +17,7 @@ the array constructor for the target compute backend (e.g. `CuArray` for CUDA).
 
 using Printf
 using ForwardDiff
+using Enzyme
 using Atomix
 using StaticArrays
 using DomainSets
@@ -38,7 +39,10 @@ Return the array constructor associated with `backend`.
 | `MetalBackend()`| `MtlArray`|
 
 GPU backends are registered by the corresponding package extension and are only
-available when that package is loaded.
+available when that package is loaded. For CUDA, load `CUDA` and pass
+`CUDA.CUDABackend()`; the extension maps it to `CUDA.CuArray`. This dispatch can
+be queried without a GPU, but allocating a `CuArray` requires a functional CUDA
+driver.
 """
 TA(::CPU) = Array
 
@@ -75,12 +79,18 @@ include("lithostatic_pressure/solvers/DR.jl")
 # Stokes solver: types and assembly.
 include("stokes/types/stokes_types.jl")
 include("stokes/assemblers/pressure_residual.jl")
+include("stokes/assemblers/pressure_residual_adj.jl")
 include("stokes/assemblers/pressure_scaling.jl")
+include("stokes/assemblers/rheology.jl")
 include("stokes/assemblers/momentum_residuals.jl")
+include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/helpers.jl")
-include("stokes/postprocess.jl")
 include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
+include("stokes/solvers/DR_adjoint.jl")
+
+# Post-processing: strain-rate/stress diagnostics and VTK output of solver results.
+include("postprocess/postprocess.jl")
 
 # Public type hierarchy and constructors.
 export AbstractElement
@@ -118,13 +128,18 @@ export eval_shape_function,
 export ThermalDiffusionDR, solver!
 export LithostaticPressureDR
 export StokesDR, DruckerPrager,
-    compute_strain_rate_stress_postprocess,
-    update_old_stress_from_cells!,
+    assemble_viscosity_weighted_pressure_scaling!,
+    pressure_mass,
     rotate_stress!,
-    write_vtk,
-    write_stokes_vtk,
     solve_stokes_dyrel!,
+    solve_stokes_adjoint_dyrel!,
     update_stokes_current_stress!
+
+# Post-processing: strain-rate/stress diagnostics and VTK output.
+export compute_strain_rate_stress_postprocess,
+    update_old_stress_from_cells!,
+    write_vtk,
+    write_stokes_vtk
 
 # Extension-API surface: documented and callable as `FEMTools.foo`, but not
 # brought into scope by `using FEMTools`. Assembly kernels, boundary-condition
@@ -137,13 +152,16 @@ public assemble_diffusion_matrices_atomix!,
     assemble_lithostatic_pressure_matrices_atomix!,
     assemble_lithostatic_pressure_matrices_colored!,
     assemble_momentum_residual_matrices_atomix!,
+    assemble_momentum_residual_kernel!,
     assemble_momentum_jacobian_matrices_atomix!,
     assemble_augmented_momentum_jacobian_matrices_atomix!,
-    assemble_viscosity_weighted_pressure_scaling!,
-    assemble_pressure_residual_matrices_atomix!
+    assemble_pressure_residual_matrices_atomix!,
+    assemble_pressure_residual_kernel!,
+    assemble_pressure_residual_matrices_atomix_adj!,
+    assemble_momentum_residual_matrices_atomix_adj!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
-public color_mesh_greedy, pressure_mass, remove_pressure_mean!
+public color_mesh_greedy, remove_pressure_mean!
 public velocity, stress, pressure, temperature
 
 end # module FEMTools

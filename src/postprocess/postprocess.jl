@@ -88,6 +88,12 @@ function compute_strain_rate_stress_postprocess(
     )
 end
 
+@inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) =
+    Int(phases[size(phases, 1) == 1 ? 1 : i, iel])
+@inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
+@inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where {N} =
+    SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
+
 """
     compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v)
 
@@ -124,7 +130,7 @@ function compute_strain_rate_stress_postprocess(
         τxx_old_loc = SVector{NV}(ntuple(i -> τ_old[1][local_nodes[i]], Val(NV)))
         τyy_old_loc = SVector{NV}(ntuple(i -> τ_old[2][local_nodes[i]], Val(NV)))
         τxy_old_loc = SVector{NV}(ntuple(i -> τ_old[3][local_nodes[i]], Val(NV)))
-        phase_loc = SVector{NV}(ntuple(i -> Int(phases_v[local_nodes[i]]), Val(NV)))
+        phase_loc = _phase_loc_postprocess(phases_v, local_nodes, iel, Val(NV))
         geo_el = geo_v[iel]
         volume = zero(FP)
 
@@ -378,12 +384,25 @@ function _vtk_write_scalar_field(io, name, values)
 end
 
 """
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post; title)
+    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post; title, cell_data)
 
 Write pressure, velocity, strain-rate, and stress diagnostics to an ASCII VTK
-unstructured-grid file using pressure triangle corners.
+unstructured-grid file using pressure triangle corners. Extra per-cell fields
+can be supplied with `cell_data`.
 """
-function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post; title = "FEMTools Stokes 2D")
+function write_stokes_vtk(
+    vtk_path,
+    mesh_stokes,
+    coords_v,
+    el2nP_cpu,
+    DoFsP_cpu,
+    P_cpu,
+    vx_cpu,
+    vy_cpu,
+    post;
+    title = "FEMTools Stokes 2D",
+    cell_data = (;),
+)
     topo = _vtk_topology(mesh_stokes)
     NP = size(el2nP_cpu, 1)
 
@@ -406,7 +425,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
         vtk_path,
         mesh_stokes;
         point_data = (; P = vtk_P, Vx = vtk_Vx, Vy = vtk_Vy, V = vtk_V),
-        cell_data = (;
+        cell_data = merge(cell_data, (;
             strain_xx = post.εxx,
             strain_yy = post.εyy,
             strain_zz = post.εzz,
@@ -417,7 +436,7 @@ function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
             tau_zz = post.τzz,
             tau_xy = post.τxy,
             tau_II = post.tauII,
-        ),
+        )),
         title,
     )
 end

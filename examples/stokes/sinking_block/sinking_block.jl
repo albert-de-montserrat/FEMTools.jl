@@ -11,284 +11,7 @@ using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAs
 const backend   = CPU()
 const workgroup = 128
 
-"""
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
-@inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) = Int(phases[i, iel])
-@inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
-@inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where N =
-    SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
-
-"""
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v) -> NamedTuple
-
-Compute element-averaged strain-rate and deviatoric-stress diagnostics.
-
-The returned fields are cell averages over the velocity quadrature rule and
-include `εxx`, `εyy`, `εzz`, `εxy`, `εII`, `τxx`, `τyy`, `τzz`, `τxy`, and
-`tauII`. Stresses are averaged from quadrature-point history written by the
-momentum residual assembly.
-"""
-function compute_strain_rate_stress_postprocess(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    τ_ip,
-    element_v::ReferenceElement{TV},
-) where {TV <: AbstractElement{2, NV}} where NV
-    nels = size(el2n_v, 2)
-    Nq = shape_function_values(element_v)
-
-    εxx = zeros(Float64, nels)
-    εyy = zeros(Float64, nels)
-    εzz = zeros(Float64, nels)
-    εxy = zeros(Float64, nels)
-    εII = zeros(Float64, nels)
-    τxx = zeros(Float64, nels)
-    τyy = zeros(Float64, nels)
-    τzz = zeros(Float64, nels)
-    τxy = zeros(Float64, nels)
-    τII = zeros(Float64, nels)
-
-    for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
-        geo_el = geo_v[iel]
-        volume = 0.0
-
-        for q in eachindex(geo_el)
-            ∂N∂x, dΩ = geo_el[q]
-            Nv = Nq[q]
-
-            ∇vx = ∂N∂x' * vxloc
-            ∇vy = ∂N∂x' * vyloc
-
-            εxx_q = ∇vx[1]
-            εyy_q = ∇vy[2]
-            εzz_q = zero(εxx_q)
-            εxy_q = (∇vx[2] + ∇vy[1]) / 2
-
-            tr = (εxx_q + εyy_q + εzz_q) / 3
-            εxx_dev = εxx_q - tr
-            εyy_dev = εyy_q - tr
-            εzz_dev = εzz_q - tr
-
-            τxx_q = τ_ip[1][q, iel]
-            τyy_q = τ_ip[2][q, iel]
-            τxy_q = τ_ip[3][q, iel]
-            τzz_q = -(τxx_q + τyy_q)
-
-            εII_q = sqrt((εxx_dev^2 + εyy_dev^2 + εzz_dev^2) / 2 + εxy_q^2)
-            τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
-
-            εxx[iel] += εxx_q * dΩ
-            εyy[iel] += εyy_q * dΩ
-            εzz[iel] += εzz_q * dΩ
-            εxy[iel] += εxy_q * dΩ
-            εII[iel] += εII_q * dΩ
-            τxx[iel] += τxx_q * dΩ
-            τyy[iel] += τyy_q * dΩ
-            τzz[iel] += τzz_q * dΩ
-            τxy[iel] += τxy_q * dΩ
-            τII[iel] += τII_q * dΩ
-            volume += dΩ
-        end
-
-        εxx[iel] /= volume
-        εyy[iel] /= volume
-        εzz[iel] /= volume
-        εxy[iel] /= volume
-        εII[iel] /= volume
-        τxx[iel] /= volume
-        τyy[iel] /= volume
-        τzz[iel] /= volume
-        τxy[iel] /= volume
-        τII[iel] /= volume
-    end
-
-    return (;
-        εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy,
-        tauII = τII,
-    )
-end
-
-"""
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, cell_phase, post) -> Nothing
-
-Write pressure, velocity, strain-rate, and stress fields to an ASCII VTK file.
-
-The VTK mesh uses the pressure triangle corners, while nodal velocity fields are
-sampled from the corresponding velocity nodes.
-"""
-function write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, cell_phase, post)
-    NP = size(el2nP_cpu, 1)
-    vtk_nodes = sort!(unique(vec(el2nP_cpu)))
-    vtk_node_map = zeros(Int32, length(coords_v))
-    for (new_i, old_i) in enumerate(vtk_nodes)
-        vtk_node_map[old_i] = Int32(new_i)
-    end
-
-    vtk_P = zeros(Float64, length(vtk_nodes))
-    vtk_P_count = zeros(Int, length(vtk_nodes))
-    for iel in 1:mesh_stokes.nels
-        for a in 1:NP
-            inode = vtk_node_map[el2nP_cpu[a, iel]]
-            vtk_P[inode] += P_cpu[DoFsP_cpu[a, iel]]
-            vtk_P_count[inode] += 1
-        end
-    end
-    @. vtk_P /= vtk_P_count
-
-    vtk_Vx = [vx_cpu[old_i] for old_i in vtk_nodes]
-    vtk_Vy = [vy_cpu[old_i] for old_i in vtk_nodes]
-    vtk_V  = hypot.(vtk_Vx, vtk_Vy)
-
-    open(vtk_path, "w") do io
-        println(io, "# vtk DataFile Version 3.0")
-        println(io, "FEMTools Stokes 2D sinking block")
-        println(io, "ASCII")
-        println(io, "DATASET UNSTRUCTURED_GRID")
-
-        println(io, "POINTS $(length(vtk_nodes)) float")
-        for old_i in vtk_nodes
-            c = coords_v[old_i]
-            println(io, "$(c[1]) $(c[2]) 0.0")
-        end
-
-        println(io, "CELLS $(mesh_stokes.nels) $(4 * mesh_stokes.nels)")
-        for iel in 1:mesh_stokes.nels
-            i1 = vtk_node_map[el2nP_cpu[1, iel]] - 1
-            i2 = vtk_node_map[el2nP_cpu[2, iel]] - 1
-            i3 = vtk_node_map[el2nP_cpu[3, iel]] - 1
-            println(io, "3 $i1 $i2 $i3")
-        end
-
-        println(io, "CELL_TYPES $(mesh_stokes.nels)")
-        for _ in 1:mesh_stokes.nels
-            println(io, "5") # VTK_TRIANGLE
-        end
-
-        println(io, "POINT_DATA $(length(vtk_nodes))")
-        for (name, field) in (("P", vtk_P), ("Vx", vtk_Vx), ("Vy", vtk_Vy), ("V", vtk_V))
-            println(io, "SCALARS $name float 1")
-            println(io, "LOOKUP_TABLE default")
-            for value in field
-                println(io, value)
-            end
-        end
-
-        println(io, "CELL_DATA $(mesh_stokes.nels)")
-        println(io, "SCALARS phase int 1")
-        println(io, "LOOKUP_TABLE default")
-        for value in cell_phase
-            println(io, value)
-        end
-        for (name, field) in (
-            ("strain_xx", post.εxx),
-            ("strain_yy", post.εyy),
-            ("strain_zz", post.εzz),
-            ("strain_xy", post.εxy),
-            ("strain_II", post.εII),
-            ("tau_xx", post.τxx),
-            ("tau_yy", post.τyy),
-            ("tau_zz", post.τzz),
-            ("tau_xy", post.τxy),
-            ("tau_II", post.tauII),
-        )
-            println(io, "SCALARS $name float 1")
-            println(io, "LOOKUP_TABLE default")
-            for value in field
-                println(io, value)
-            end
-        end
-    end
-    return nothing
-end
-
-"""
-    build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, half_width, max_area=nothing) -> Tuple
-
-Build an unstructured T7 velocity mesh around a rectangular inclusion.
-
-Triangulate.jl generates a second-order T6 PSLG mesh with the rectangle as a
-constrained internal boundary. The local midpoint ordering is remapped to
-FEMTools' T6/T7 convention, then one centroid bubble node is appended per
-element.
-"""
-function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, half_width, max_area = nothing)
-    rect_pts  = Cdouble[0.0 Lx  Lx 0.0;
-                        -Ly -Ly 0.0 0.0 ]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'
-
-    xlo, xhi = cx - half_width, cx + half_width
-    ylo, yhi = cy - half_width, cy + half_width
-    incl_pts = Cdouble[xlo xhi xhi xlo;
-                       ylo ylo yhi yhi]
-    incl_segs = Cint[5 6; 6 7; 7 8; 8 5]'
-
-    tio = TriangulateIO()
-    tio.pointlist = hcat(rect_pts, incl_pts)
-    tio.segmentlist = hcat(rect_segs, incl_segs)
-
-    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts = result.pointlist
-    tris_t6 = Matrix{Int32}(result.trianglelist)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in axes(pts, 2)]
-
-    n_t6 = length(coords)
-    nels = size(tris_t6, 2)
-    el2n = Matrix{Int32}(undef, 7, nels)
-    el2n[1:3, :] .= tris_t6[1:3, :]
-    el2n[4, :] .= tris_t6[6, :] # FEMTools node 4 = mid(1, 2)
-    el2n[5, :] .= tris_t6[4, :] # FEMTools node 5 = mid(2, 3)
-    el2n[6, :] .= tris_t6[5, :] # FEMTools node 6 = mid(3, 1)
-    sizehint!(coords, n_t6 + nels)
-    for iel in 1:nels
-        c1 = coords[tris_t6[1, iel]]
-        c2 = coords[tris_t6[2, iel]]
-        c3 = coords[tris_t6[3, iel]]
-        push!(coords, (c1 + c2 + c3) / 3)
-        el2n[7, iel] = Int32(n_t6 + iel)
-    end
-
-    tol = 100eps(Float64) * max(Lx, Ly)
-    outer_nodes = Int32[
-        i for i in 1:n_t6
-        if abs(coords[i][1]) ≤ tol ||
-           abs(coords[i][1] - Lx) ≤ tol ||
-           abs(coords[i][2]) ≤ tol ||
-           abs(coords[i][2] - Ly) ≤ tol
-    ]
-    interface_tol = 100eps(Float64) * max(Lx, Ly)
-    interface_nodes = Int32[
-        i for i in 1:n_t6
-        if ((abs(coords[i][1] - xlo) ≤ interface_tol || abs(coords[i][1] - xhi) ≤ interface_tol) &&
-            ylo - interface_tol ≤ coords[i][2] ≤ yhi + interface_tol) ||
-           ((abs(coords[i][2] - ylo) ≤ interface_tol || abs(coords[i][2] - yhi) ≤ interface_tol) &&
-            xlo - interface_tol ≤ coords[i][1] ≤ xhi + interface_tol)
-    ]
-
-    return coords, el2n, sort!(unique!(outer_nodes)), sort!(unique!(interface_nodes))
-end
-
+include("mesher.jl")
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
@@ -309,7 +32,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
 
     # Material (2 phases: matrix + inclusion)
     γfact = 20.0
-    η     = (1.0,     1e0)   # shear viscosity
+    η     = (1.0,     1e2)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
     K     = (Inf,     Inf)   # bulk modulus  (Inf → incompressible)
@@ -343,7 +66,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         max_area,
     )
     DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = FEMTools.Mesh(
+    mesh_v = Mesh(
         element_v, nothing, nothing,
         coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
     )
@@ -387,7 +110,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
     )
-    M_P    = FEMTools.pressure_mass(dr)
+    M_P    = pressure_mass(dr)
     τ     = (dr.τxx, dr.τyy, dr.τxy)
     τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
 
@@ -405,12 +128,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         in_incl((coords_v[el2nP_cpu[1, i]] + coords_v[el2nP_cpu[2, i]] + coords_v[el2nP_cpu[3, i]]) / 3) ? 2 : 1
         for i in 1:mesh_stokes.nels
     ]
-    phases_v_solve = Matrix{Int}(undef, NV, mesh_stokes.nels)
-    phases_P_solve = Matrix{Int}(undef, NP, mesh_stokes.nels)
-    for iel in 1:mesh_stokes.nels
-        phases_v_solve[:, iel] .= cell_phase[iel]
-        phases_P_solve[:, iel] .= cell_phase[iel]
-    end
+    phases_solve = reshape(cell_phase, 1, :)
 
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
     corner_id = Dict{Int32, Int32}(old => Int32(i) for (i, old) in enumerate(corner_nodes))
@@ -419,7 +137,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = FEMTools.Mesh(backend, coords_litho, el2n_litho)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
     ip_litho = element_P.integration_points
     NQ_litho = length(ip_litho.ω)
     ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
@@ -445,7 +163,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     copyto!(dr.P, P_hydro)
     copyto!(dr.P0, P_hydro)
 
-    @info "Phases" n_incl_v=count(==(2), phases_v_solve) n_incl_P=count(==(2), phases_P_solve)
+    @info "Phases" n_incl=count(==(2), cell_phase)
 
     # ---------------------------------------------------------------------------
     # Boundary conditions — free slip on every wall:
@@ -482,12 +200,10 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     # letting phase-local viscosity extremes set the pressure step.
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        M_P, γP,
-        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
-        element_v, element_P,
-        phases_v_solve, ηγP, γfact, dr.K, Δt,
-        backend, workgroup,
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh_stokes, geo_P, element_v, element_P,
+        γfact, Δt, backend, workgroup;
+        phases_v = phases_solve, η = ηγP,
     )
 
     iterMax       = 50_000   # max inner DR iterations per PH step
@@ -504,7 +220,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
 
     solve_stats = solve_stokes_dyrel!(
         dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_v_solve, phases_P_solve, τ_old, plastic, G_stokes, Δt, γP,
+        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
         Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
         ncheck,
         ϵ_tol,
@@ -519,7 +235,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
 
     update_stokes_current_stress!(
         dr, mesh_stokes, geo_v, element_v, element_P,
-        phases_v_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
+        phases_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
     )
 
     P_cpu  = Array(dr.P)
@@ -535,7 +251,19 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     mean_tauII = mean(post.tauII)
 
     vtk_path = joinpath(out_dir, "stokes_2D_sinking_block.vtk")
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, cell_phase, post)
+    write_stokes_vtk(
+        vtk_path,
+        mesh_stokes,
+        coords_v,
+        el2nP_cpu,
+        DoFsP_cpu,
+        P_cpu,
+        vx_cpu,
+        vy_cpu,
+        post;
+        title = "FEMTools Stokes 2D sinking block",
+        cell_data = (; phase = cell_phase),
+    )
     @info "Wrote VTK file" vtk_path mean_tauII iter=solve_stats.iter err=solve_stats.err
     show_plot || return (; mean_tauII, post)
 
@@ -543,42 +271,50 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     # Visualisation
     # ---------------------------------------------------------------------------
 
-    # Per-element average vertical velocity on the plotted pressure triangles.
+    # Per-element fields on the plotted pressure triangles.
+    el_Vx = [mean(vx_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
     el_Vy = [mean(vy_cpu[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+    el_P  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
 
     pts   = [Point2f(c) for c in coords_v]
     polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
             for i in 1:mesh_stokes.nels]
 
-    fig = Figure(size = (760, 620))
-
-    # Vertical velocity
-    clims_Vy = extrema(el_Vy)
-    ax1 = Axis(fig[1, 1]; aspect = DataAspect(),
-            title = "Vertical velocity Vy", xlabel = "x", ylabel = "y")
-    poly!(ax1, polys; color = el_Vy, colormap = :vik, colorrange = clims_Vy, strokewidth = 0)
-    Colorbar(fig[1, 2]; colormap = :vik, limits = clims_Vy,
-            label = "Vy", width = 15, tellheight = false)
-
-    arrow_nodes = sort!(unique(vec(el2nP_cpu)))
-    arrow_step = max(1, length(arrow_nodes) ÷ 250)
-    arrow_nodes = arrow_nodes[1:arrow_step:end]
-    arrows2d!(
-        ax1,
-        [coords_v[n][1] for n in arrow_nodes],
-        [coords_v[n][2] for n in arrow_nodes],
-        vx_cpu[arrow_nodes],
-        vy_cpu[arrow_nodes];
-        color = :black,
-        lengthscale = 0.08,
-        shaftwidth = 1,
-        tipwidth = 8,
-        tiplength = 8,
+    fig = Figure(size = (1400, 440))
+    axes = Axis[]
+    for (col, title, label, values, colormap) in (
+        (1, "Horizontal velocity Vx", "Vx", el_Vx, :vik),
+        (3, "Vertical velocity Vy", "Vy", el_Vy, :vik),
+        (5, "Pressure P", "P", el_P, :glasgow),
     )
+        limits = extrema(values)
+        ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
+        poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
+        Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
+        push!(axes, ax)
+    end
+
+    # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
+    # arrow_step = max(1, length(arrow_nodes) ÷ 250)
+    # arrow_nodes = arrow_nodes[1:arrow_step:end]
+    # arrows2d!(
+    #     axes[3],
+    #     [coords_v[n][1] for n in arrow_nodes],
+    #     [coords_v[n][2] for n in arrow_nodes],
+    #     vx_cpu[arrow_nodes],
+    #     vy_cpu[arrow_nodes];
+    #     color = :white,
+    #     lengthscale = 20,
+    #     shaftwidth = 1,
+    #     tipwidth = 8,
+    #     tiplength = 8,
+    # )
 
     xlo, xhi = cx - half_width, cx + half_width
     ylo, yhi = cy - half_width, cy + half_width
-    lines!(ax1, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
+    for ax in axes
+        lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
+    end
 
     show_plot && display(fig)
     # return (; mean_tauII, post)

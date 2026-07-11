@@ -464,20 +464,16 @@ end
     mesh      = MixedMesh(mesh_v, element_P)
     geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
-    M_P      = zeros(FP, mesh.nnodesP)
     γP       = zeros(FP, mesh.nnodesP)
-    phases_v = ones(Int, mesh.nnodes)
+    dr       = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (6.0, 99.0), (1.0, 1.0), (0.0, 0.0))
 
     assemble_viscosity_weighted_pressure_scaling!(
-        M_P, γP,
-        mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
-        element_v, element_P,
-        phases_v, (6.0, 99.0), 2.0, (4.0, 99.0), 0.5,
-        CPU(), 1,
+        γP, dr, mesh, geo_P, element_v, element_P,
+        2.0, 0.5, CPU(), 1; K = (4.0, 99.0),
     )
 
-    @test sum(M_P) ≈ one(FP) atol = 1e-12
-    @test all(>(0), M_P)
+    @test sum(dr.M_P) ≈ one(FP) atol = 1e-12
+    @test all(>(0), dr.M_P)
     @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1e-12
 end
 
@@ -499,7 +495,7 @@ end
         Rv_x, Rv_y, vx, vy, P, T, nothing,
         mesh.el2n, mesh.DoFsP, geo_v, mesh.nels,
         element_v, element_P,
-        phases, (1.0, 1.0), (Inf, Inf), (0.0, 0.0), (1.0, 1.0), (Inf, Inf),
+        phases, nothing, nothing, nothing, (1.0, 1.0), (Inf, Inf), (0.0, 0.0), (1.0, 1.0), (Inf, Inf),
         (0.0, 0.0), FP(0), FP(1),
         CPU(), 1,
     )
@@ -558,7 +554,7 @@ end
         Rv_x, Rv_y, vx, vy, P, T, nothing,
         mesh.el2n, mesh.DoFsP, geo_v, mesh.nels,
         element_v, element_P,
-        phases, (1.0, 1.0), (Inf, Inf), (0.0, 0.0), (ρ0, ρ0), (Inf, Inf),
+        phases, nothing, nothing, nothing, (1.0, 1.0), (Inf, Inf), (0.0, 0.0), (ρ0, ρ0), (Inf, Inf),
         (0.0, gy), FP(0), FP(1),
         CPU(), 1,
     )
