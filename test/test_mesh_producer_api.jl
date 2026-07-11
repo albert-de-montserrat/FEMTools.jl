@@ -2,6 +2,9 @@ using Test
 
 using FEMTools
 using FEMTools: generate_element_groups, generate_discontinuous_linear_mesh
+# The deprecated names are defined but not exported (`@deprecate … false`), so
+# import them explicitly to exercise the deprecation path.
+using FEMTools: build_element_groups, build_discontinuous_linear_mesh
 using KernelAbstractions: CPU
 using StaticArrays
 
