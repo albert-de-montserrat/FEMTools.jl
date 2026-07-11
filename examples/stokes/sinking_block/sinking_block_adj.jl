@@ -9,6 +9,7 @@ using Printf
 using Statistics
 using StaticArrays
 using KernelAbstractions
+using Atomix
 using Triangulate
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect, axislegend
 
@@ -21,17 +22,141 @@ include("mesher.jl")
 # Helpers
 # ---------------------------------------------------------------------------
 
-@kernel inbounds = true function observationpoints_vy!(ResλVy, coords, cx, cy, half_width)
-    i = @index(Global)
-    x, y = coords[i]
-    ResλVy[i] = abs(x - cx) ≤ half_width && abs(y - cy) ≤ half_width ? -1.0 : 0.0
+"""
+    objective_vy_kernel!(dJdvy, coords, el2n, geo, Nq,
+                         xmin, xmax, ymin, ymax, Val(N))
+
+Assemble the finite-element derivative of
+
+    J(vᵧ) = -∫_Ωₒᵇₛ vᵧ dΩ,
+
+where `Ωₒᵇₛ = (xmin, xmax) × (ymin, ymax)`.
+
+For `vᵧʰ = Σᵢ Nᵢ Vᵧᵢ`, the derivative with respect to a global
+velocity degree of freedom is the consistently assembled load vector
+
+    ∂J/∂Vᵧᵢ = -∫_Ωₒᵇₛ Nᵢ dΩ.
+
+Each kernel invocation handles one element. Integration points outside the
+observation box contribute nothing. `geo[iel][q][2]` is the physical
+quadrature measure `|det(J)|ωq` computed by `precompute_geometry!`.
+
+Neighbouring elements share velocity nodes, so their element load vectors are
+scattered with atomic additions. This makes the assembly safe for both CPU and
+accelerator backends.
+"""
+@kernel function objective_vy_kernel!(
+    dJdvy,
+    @Const(coords),
+    @Const(el2n),
+    @Const(geo),
+    @Const(Nq),
+    xmin,
+    xmax,
+    ymin,
+    ymax,
+    ::Val{N},
+) where {N}
+    iel = @index(Global)
+
+    # Gather the element's global velocity-node numbers once. T7 has seven
+    # velocity basis functions, including its interior bubble function.
+    local_nodes = SVector{N, Int}(ntuple(i -> el2n[i, iel], Val(N)))
+
+    # Accumulate the element contribution locally, reducing the number of
+    # global atomic operations from N×NQ to N per element.
+    element_load = zero(Nq[1])
+    for q in eachindex(Nq)
+        N_at_q = Nq[q]
+
+        # Isoparametric map from reference coordinates to the physical
+        # quadrature point: xq = Σᵢ Nᵢ(ξq) xᵢ.
+        xq = zero(coords[local_nodes[1]])
+        for i in 1:N
+            xq += N_at_q[i] * coords[local_nodes[i]]
+        end
+
+        # The strict bounds deliberately match the FD objective definition.
+        # For a discontinuous indicator, quadrature naturally approximates the
+        # fraction of a cut element lying inside the observation box.
+        if xmin < xq[1] < xmax && ymin < xq[2] < ymax
+            dΩ = geo[iel][q][2]
+            element_load -= N_at_q * dΩ
+        end
+    end
+
+    # Consistent FE assembly of ∂J/∂Vy. This replaces the old mesh-dependent
+    # operation that assigned -1 independently to every selected node.
+    for i in 1:N
+        Atomix.@atomic :monotonic dJdvy[local_nodes[i]] += element_load[i]
+    end
 end
 
-function launch_observationpoints_vy!(ResλVy, coords, cx, cy, half_width, backend, workgroup)
-    observationpoints_vy!(backend, workgroup)(
-        ResλVy, coords, cx, cy, half_width;
-        ndrange = length(ResλVy),
+"""Assemble `∂J/∂Vy` for the observation-box integral objective."""
+function assemble_objective_vy!(
+    dJdvy, mesh, geo, element::ReferenceElement{E},
+    xmin, xmax, ymin, ymax, workgroup,
+) where {E <: AbstractElement{2, N}} where {N}
+    backend = KernelAbstractions.get_backend(dJdvy)
+    # Assembly is additive, so always clear the destination before scattering
+    # element contributions into it.
+    fill!(dJdvy, 0)
+
+    # Use the same T7 quadrature rule as the momentum residual. This keeps the
+    # objective and residual discretizations consistent.
+    Nq = shape_function_values(element)
+    objective_vy_kernel!(backend, workgroup)(
+        dJdvy, mesh.coords, mesh.el2n, geo, Nq,
+        xmin, xmax, ymin, ymax, Val(N);
+        ndrange = mesh.nels,
     )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+@kernel function material_contraction_kernel!(
+    contracted_residual,
+    @Const(vx), @Const(vy), @Const(P), @Const(T),
+    @Const(λvx), @Const(λvy),
+    @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
+    @Const(τ_old), η_element, ρ_element,
+    @Const(G), @Const(α), @Const(K), @Const(g), Tref, Δt,
+    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
+    pressure_dofs  = SVector{NP, Int}(ntuple(i -> dofsP[i, iel], Val(NP)))
+    phase = Int(phases[1, iel])
+    vx_e = SVector{NV}(ntuple(i -> vx[velocity_nodes[i]], Val(NV)))
+    vy_e = SVector{NV}(ntuple(i -> vy[velocity_nodes[i]], Val(NV)))
+    P_e  = SVector{NP}(ntuple(i -> P[pressure_dofs[i]], Val(NP)))
+    T_e  = SVector{NP}(ntuple(i -> T[pressure_dofs[i]], Val(NP)))
+    λx_e = SVector{NV}(ntuple(i -> λvx[velocity_nodes[i]], Val(NV)))
+    λy_e = SVector{NV}(ntuple(i -> λvy[velocity_nodes[i]], Val(NV)))
+    phase_e = SVector{NV, Int}(ntuple(_ -> 1, Val(NV)))
+    τ_old_e = FEMTools.IntegrationPointStress(
+        SVector(ntuple(q -> τ_old[1][q, iel], length(Nq))),
+        SVector(ntuple(q -> τ_old[2][q, iel], length(Nq))),
+        SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
+    )
+    Re_x, Re_y = FEMTools.integrate_momentum_residual(
+        (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
+        (η_element[iel],), (G[phase],), (α[phase],),
+        (ρ_element[iel],), (K[phase],), g, Tref, Δt,
+        τ_old_e, nothing, Nq, NqP,
+    )
+    contracted_residual[iel] = -(dot(λx_e, Re_x) + dot(λy_e, Re_y))
+end
+
+function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
+    el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
+    G, α, K, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
+) where {NV, NP}
+    fill!(out, 0)
+    backend = KernelAbstractions.get_backend(out)
+    material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
+        el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
+        G, α, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
 end
@@ -58,10 +183,12 @@ function main(;
     iterMax = 50_000,
     total_iterMax = 50_000,
     adjoint_tol = 1.0e-6,
-    adjoint_rel_drop = 5.0e-3,
+    adjoint_rel_drop = 0.1, # 5.0e-3,
     adjoint_iterMax = 50_000,
     adjoint_total_iterMax = 50_000,
     adjoint_max_ph_iterations = 100,
+    adjoint_verbose = true,
+    adjoint_verbose_inner = true,
 )
     Δt = 1
     # Domain
@@ -69,7 +196,7 @@ function main(;
 
     # Material (2 phases: matrix + inclusion)
     γfact = 20.0
-    η     = (1.0,     1e2)   # shear viscosity
+    η     = (1.0,     1e0)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
     K     = (Inf,     Inf)   # bulk modulus  (Inf → incompressible)
@@ -84,8 +211,9 @@ function main(;
     # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
     # constrained boundary, so no element crosses the material interface.
     half_width = 0.1
-    cx         = Lx / 2
-    cy         = -Ly / 2
+    cx         = 0.0
+    cy         = 0.0
+    objective_bounds = (-0.2, 0.2, 0.2, 0.3)
 
     # ---------------------------------------------------------------------------
     # Meshes
@@ -96,9 +224,11 @@ function main(;
 
     coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_triangle_t7_inclusion_mesh(;
         Lx, Ly,
-        cx, cy, half_width,
+        cx = Lx / 2, cy = -Ly / 2, half_width,
         max_area,
     )
+    shift = SVector(-Lx / 2, Ly / 2)
+    coords_v_cpu = [c + shift for c in coords_v_cpu]
     DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
     mesh_v = Mesh(
         element_v, nothing, nothing,
@@ -182,10 +312,10 @@ function main(;
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
-    P0_litho = Float64[ρ0[1] * abs(g[2]) * (-c[2]) for c in coords_litho]
+    P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
-    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2]) ≤ litho_tol]
+    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
     top_zero = zeros(Float64, length(top_nodes_litho))
     solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_litho, top_zero, top_zero,
         backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
@@ -208,8 +338,8 @@ function main(;
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
-    vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] + Ly) ≤ tol]
+    vx_nodes = Int32[n for n in Γnodes if abs(abs(coords[n][1]) - Lx / 2) ≤ tol]
+    vy_nodes = Int32[n for n in Γnodes if abs(abs(coords[n][2]) - Ly / 2) ≤ tol]
 
     bc_vx_vals = zeros(Float64, length(vx_nodes))
     bc_vy_vals = zeros(Float64, length(vy_nodes))
@@ -279,8 +409,36 @@ function main(;
     pts   = [Point2f(c) for c in coords_v]
     polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
              for i in 1:mesh_stokes.nels]
+
+    # Element areas of the (straight-sided) plotting triangles, equal to ∫dΩ over
+    # each element. The raw material sensitivities are un-normalized element
+    # integrals sᵉ = -λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(sensitivity density); dividing by areaᵉ
+    # recovers the mesh-independent sensitivity density used for plotting, while
+    # the phase-wise gradients keep summing the raw integrals.
+    element_area = [
+        let a = coords_v[el2nP_cpu[1, i]], b = coords_v[el2nP_cpu[2, i]], c = coords_v[el2nP_cpu[3, i]]
+            abs((b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2])) / 2
+        end
+        for i in 1:mesh_stokes.nels
+    ]
     xlo, xhi = cx - half_width, cx + half_width
     ylo, yhi = cy - half_width, cy + half_width
+    obs_xlo, obs_xhi, obs_ylo, obs_yhi = objective_bounds
+
+    # Draw both pieces of geometry that matter when interpreting the fields:
+    # the material inclusion (white dashed box) and the objective/observation
+    # region (yellow solid box). Keeping this in one helper guarantees that the
+    # standalone forward figure and the final sensitivity figure use identical
+    # overlays.
+    function draw_geometry_boxes!(ax)
+        lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo];
+            color = :white, linewidth = 1.5, linestyle = :dash)
+        lines!(ax,
+            [obs_xlo, obs_xhi, obs_xhi, obs_xlo, obs_xlo],
+            [obs_ylo, obs_ylo, obs_yhi, obs_yhi, obs_ylo];
+            color = :yellow, linewidth = 2)
+        return nothing
+    end
 
     function plot_fields(vx_dofs, vy_dofs, P_dofs, titles)
         el_vx = [mean(vx_dofs[el2nP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
@@ -296,31 +454,34 @@ function main(;
             ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
             poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
             Colorbar(fig[1, col + 1]; colormap, limits, width = 15, tellheight = false)
-            lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo];
-                color = :white, linewidth = 1.5, linestyle = :dash)
+            draw_geometry_boxes!(ax)
         end
         display(fig)
         return fig
     end
 
     # Combined figure matching the finite-difference reference: forward Vx/Vy/P,
-    # adjoint λVx/λVy, and the forward + adjoint residual-evolution trace.
-    function plot_summary(vx_dofs, vy_dofs, P_dofs, λvx_dofs, λvy_dofs, fwd_hist, adj_hist)
+    # density/viscosity sensitivities, and the forward + adjoint residual trace.
+    # The sensitivities are already element fields, but they are raw element
+    # integrals; dividing by `element_area` yields the sensitivity density, which
+    # is mesh-independent and free of the per-element speckle that the
+    # area-weighted integrals show on an irregular mesh.
+    function plot_summary(vx_dofs, vy_dofs, P_dofs, density_sensitivity,
+                          viscosity_sensitivity, fwd_hist, adj_hist)
         el(dofs, conn) = [mean(dofs[conn[:, i]]) for i in 1:mesh_stokes.nels]
         fig = Figure(size = (1100, 1300))
         for (row, col, title, values, colormap) in (
                 (1, 1, "Vx",  el(vx_dofs,  el2nP_cpu), :vik),
                 (1, 3, "Vy",  el(vy_dofs,  el2nP_cpu), :vik),
                 (2, 1, "P",   el(P_dofs,   DoFsP_cpu), :glasgow),
-                (2, 3, "λVx", el(λvx_dofs, el2nP_cpu), :vik),
-                (3, 1, "λVy", el(λvy_dofs, el2nP_cpu), :vik),
+                (2, 3, "Density sensitivity (per area)",   density_sensitivity ./ element_area,   :vik),
+                (3, 1, "Viscosity sensitivity (per area)", viscosity_sensitivity ./ element_area, :vik),
             )
             limits = extrema(values)
             ax = Axis(fig[row, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
             poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
             Colorbar(fig[row, col + 1]; colormap, limits, width = 15, tellheight = false)
-            lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo];
-                color = :white, linewidth = 1.5, linestyle = :dash)
+            draw_geometry_boxes!(ax)
         end
 
         ax = Axis(fig[3, 3:4]; xlabel = "iteration", ylabel = "log10 residual",
@@ -351,8 +512,9 @@ function main(;
 
     objective_vx = zero(dr.Rv_x)
     objective_vy = zero(dr.Rv_y)
-    launch_observationpoints_vy!(
-        objective_vy, mesh_stokes.coords, cx, cy, half_width, backend, workgroup,
+    assemble_objective_vy!(
+        objective_vy, mesh_stokes, geo_v, element_v,
+        objective_bounds..., workgroup,
     )
 
     λvx = zero(dr.vx)
@@ -405,10 +567,14 @@ function main(;
     α_vy, β_vy = FEMTools._stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
 
     function assemble_adjoint_residual!()
+        fill!(ResλVx, 0)
+        fill!(ResλVy, 0)
+        fill!(ResλP, 0)
         fill!(dvx, 0)
         fill!(dvy, 0)
         fill!(dP, 0)
         fill!(dPnum, 0)
+
         copyto!(seed_Rv_x, λvx)
         copyto!(seed_Rv_y, λvy)
 
@@ -465,7 +631,7 @@ function main(;
     adjoint_converged = false
     adjoint_itPH = 0
 
-    @info "Starting adjoint PH/DYREL solve" adjoint_tol adjoint_rel_drop
+    adjoint_verbose && @info "Starting adjoint PH/DYREL solve" adjoint_tol adjoint_rel_drop
 
     for itPH in 1:adjoint_max_ph_iterations
         adjoint_itPH = itPH
@@ -482,7 +648,7 @@ function main(;
             min(err_P, err_P / adjoint_err_P0),
         )
         push!(adjoint_history, (; iter = adjoint_iter, itPH, err = adjoint_err, err_v, err_P))
-        @printf("adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
+        adjoint_verbose && @printf("adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
             itPH, adjoint_iter, adjoint_err, err_v, err_P)
 
         if adjoint_err < adjoint_tol
@@ -525,6 +691,10 @@ function main(;
                 λmin_vy = FEMTools._stokes_λmin(α_vy, λrate_vy, ResλVy .- ResλVy0, dr.PC_vy)
                 α_vx, β_vx = FEMTools._stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = FEMTools._stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
+
+                adjoint_verbose_inner && @printf(
+                    "  adj inner it=%05d iter=%06d err_v=%.3e α=[%.2e %.2e] β=[%.2e %.2e]\n",
+                    inner, adjoint_iter, err_v, α_vx, α_vy, β_vx, β_vy)
             end
         end
 
@@ -551,12 +721,70 @@ function main(;
         err_P = final_err_P,
         history = adjoint_history,
     )
-    @info "Adjoint solve complete" adjoint_stats
+    adjoint_verbose && @info "Adjoint solve complete" adjoint_stats
+
+    # -----------------------------------------------------------------------
+    # Material sensitivities
+    # -----------------------------------------------------------------------
+    #
+    # The FD reference differentiates its momentum residual once more after the
+    # adjoint solve, seeding that reverse pass with -λ. We use the same sign
+    # convention here. For a material parameter m and element momentum residual
+    # Rᵉ, the plotted contribution is therefore
+    #
+    #     sᵉ(m) = -λᵉᵀ (∂Rᵉ/∂m).
+    #
+    # Each entry below is the contribution from one element. Summing entries of
+    # one phase gives the derivative with respect to that phase's single global
+    # material value. Keeping the contributions element-wise gives the spatial
+    # sensitivity maps analogous to `dρc` and `η_sens` in the FD script.
+    contracted_residual = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
+    contracted_seed = KernelAbstractions.ones(backend, Float64, mesh_stokes.nels)
+    η_element = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
+    ρ_element = similar(η_element)
+    copyto!(η_element, η[cell_phase])
+    copyto!(ρ_element, ρ0[cell_phase])
+    viscosity_sensitivity_backend = zero(η_element)
+    density_sensitivity_backend = zero(ρ_element)
+    Nq_v = shape_function_values(element_v)
+    Nq_P = shape_function_values(element_P, element_v.integration_points)
+   
+    Enzyme.autodiff_deferred(
+        Enzyme.set_runtime_activity(Enzyme.Reverse),
+        Enzyme.Const(launch_material_contraction!), Enzyme.Const,
+        Enzyme.Duplicated(contracted_residual, contracted_seed),
+        Enzyme.Const(dr.vx), Enzyme.Const(dr.vy), Enzyme.Const(dr.P), Enzyme.Const(dr.T),
+        Enzyme.Const(λvx), Enzyme.Const(λvy),
+        Enzyme.Const(mesh_stokes.el2n), Enzyme.Const(mesh_stokes.DoFsP),
+        Enzyme.Const(geo_v), Enzyme.Const(phases_solve), Enzyme.Const(τ_old),
+        Enzyme.Duplicated(η_element, viscosity_sensitivity_backend),
+        Enzyme.Duplicated(ρ_element, density_sensitivity_backend),
+        Enzyme.Const(G_stokes), Enzyme.Const(α), Enzyme.Const(K), Enzyme.Const(g),
+        Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
+        Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
+    )
+
+    # Plotting and phase-wise reductions are CPU-side, so transfer only the two
+    # completed element fields after the backend FEM integration has finished.
+    density_sensitivity   = Array(density_sensitivity_backend)
+    viscosity_sensitivity = Array(viscosity_sensitivity_backend)
+
+    density_gradient_by_phase = ntuple(
+        p -> sum(density_sensitivity[cell_phase .== p]), length(ρ0),
+    )
+    viscosity_gradient_by_phase = ntuple(
+        p -> sum(viscosity_sensitivity[cell_phase .== p]), length(η),
+    )
+    @info "Material sensitivities assembled" density_gradient_by_phase viscosity_gradient_by_phase
 
     show_plot && plot_summary(Array(dr.vx), Array(dr.vy), Array(dr.P),
-        Array(λvx), Array(λvy), solve_stats.history, adjoint_history)
+        density_sensitivity, viscosity_sensitivity, solve_stats.history, adjoint_history)
 
-    return (; dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy)
+    return (;
+        dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy,
+        density_sensitivity, viscosity_sensitivity,
+        density_gradient_by_phase, viscosity_gradient_by_phase,
+    )
 end
 
 # if abspath(PROGRAM_FILE) == @__FILE__
