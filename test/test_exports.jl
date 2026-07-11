@@ -31,6 +31,8 @@ import FEMTools
         :order,
         :ThermalDiffusionDR,
         :solver!,
+        :solve_stokes_dyrel!,
+        :solve_stokes_adjoint_dyrel!,
         :LithostaticPressureDR,
         :AbstractElement,
         :AbstractLinearElement,
