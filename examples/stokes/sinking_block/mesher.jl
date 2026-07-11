@@ -4,10 +4,11 @@
 
 Fill per-element geometry data on the configured backend.
 
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
+This wrapper derives the backend from `geo`, launches
+`precompute_geometry_kernel!`, then synchronizes before returning.
 """
 function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
+    backend = KernelAbstractions.get_backend(geo)
     FEMTools.precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);
         ndrange = nels,

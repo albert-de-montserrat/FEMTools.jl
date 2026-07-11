@@ -13,7 +13,7 @@ using Atomix
 using Triangulate
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect, axislegend
 
-const backend   = CPU()
+const default_backend = CPU()
 const workgroup = 128
 
 include("mesher.jl")
@@ -179,6 +179,11 @@ with respect to the element density and viscosity fields.
 `cell_phase[iel]` selects the phase whose `η`/`ρ0` value seeds element `iel`.
 Returns the two element fields as CPU arrays; summing the entries of one phase
 gives the derivative with respect to that phase's global material value.
+
+The contracted residual, element material fields, and their Enzyme shadows are
+allocated on `backend`. Mesh connectivity, geometry, phases, forward fields,
+and adjoint fields must be on that same backend. Only the completed sensitivity
+vectors are transferred to the CPU for reduction and plotting.
 """
 function material_sensitivities(
     dr, mesh_stokes, λvx, λvy, geo_v, phases, τ_old,
@@ -222,7 +227,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; max_area=1/64^2, Δt=1, show_plot=true, kwargs...) -> NamedTuple
+    main(; backend=CPU(), max_area=1/64^2, Δt=1, show_plot=true, kwargs...) -> NamedTuple
 
 Solve one unstructured T7/P1-disc sinking-block Stokes problem and its discrete
 adjoint, then assemble the material sensitivities of the observation-box velocity
@@ -234,6 +239,12 @@ lithostatic solve, and runs the Powell-Hestenes/DYREL forward solve. It then
 solves the discrete adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` on the same discretisation and
 contracts `-λᵀ ∂R/∂m` with Enzyme to obtain per-element density and viscosity
 sensitivities.
+
+`backend` selects the KernelAbstractions compute backend. The Triangle mesh is
+built on the host, after which mesh connectivity, mixed pressure topology,
+geometry caches, phases, boundary arrays, and solver state are placed on that
+backend. Load CUDA before passing `CUDABackend()`; use `show_plot=false` for
+headless runs.
 
 `max_area` sets the Triangle mesh refinement, `Δt` the (visco)elastic time step,
 and `show_plot` toggles the GLMakie forward and summary figures. The remaining
@@ -248,6 +259,7 @@ adjoint statistics (`solve_stats`, `adjoint_stats`), the adjoint fields
 `density_gradient_by_phase`/`viscosity_gradient_by_phase`.
 """
 function main(;
+    backend = default_backend,
     max_area = 1 / 64^2,
     Δt = 1,
     show_plot = true,
@@ -307,12 +319,16 @@ function main(;
     )
     shift = SVector(-Lx / 2, Ly / 2)
     coords_v_cpu = [c + shift for c in coords_v_cpu]
-    DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = Mesh(
-        element_v, nothing, nothing,
-        coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
-    )
+    # Triangle builds the mesh on the host. The backend-aware constructor
+    # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
+    # one place, so every array read by a subsequent assembly kernel lives on
+    # the same device as the solver fields.
+    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
     mesh_stokes = MixedMesh(mesh_v, element_P)
+
+    # Device array constructor for uploading host-built index/BC/phase arrays to
+    # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
+    TDev = FEMTools.TA(backend)
 
     @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
 
@@ -325,15 +341,11 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    # Allocate and fill both geometry caches on the selected backend. This also
+    # evaluates the discontinuous-pressure geometry at the velocity quadrature
+    # points, matching the forward and adjoint assemblers.
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -369,7 +381,10 @@ function main(;
         in_incl((coords_v[el2nP_cpu[1, i]] + coords_v[el2nP_cpu[2, i]] + coords_v[el2nP_cpu[3, i]]) / 3) ? 2 : 1
         for i in 1:mesh_stokes.nels
     ]
-    phases_solve = reshape(cell_phase, 1, :)
+    # `cell_phase` stays on the host for the reductions and material-field
+    # gathers below; the solver reads phases inside kernels, so upload a device
+    # copy for the assembly path.
+    phases_solve = TDev(reshape(cell_phase, 1, :))
 
 
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
@@ -384,8 +399,14 @@ function main(;
     NQ_litho = length(ip_litho.ω)
     ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
     ∂N∂ξq_litho = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_litho[q]), NQ_litho)
-    geo_litho = Vector{NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_litho.nels)
-    precompute_geometry!(geo_litho, mesh_litho.coords, mesh_litho.el2n, ∂N∂ξq_litho, ip_litho.ω, Val(NP), mesh_litho.nels)
+    GeoLitho = NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}
+    geo_litho = KernelAbstractions.allocate(backend, GeoLitho, mesh_litho.nels)
+    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
+        geo_litho, mesh_litho.coords, mesh_litho.el2n,
+        ∂N∂ξq_litho, ip_litho.ω, Val(NP);
+        ndrange = mesh_litho.nels,
+    )
+    KernelAbstractions.synchronize(backend)
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
@@ -393,8 +414,9 @@ function main(;
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
-    top_zero = zeros(Float64, length(top_nodes_litho))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_litho, top_zero, top_zero,
+    top_nodes_dev = TDev(top_nodes_litho)
+    top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
+    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
         backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
@@ -412,14 +434,17 @@ function main(;
     # normal velocity is zero, tangential velocity is unconstrained.
     # ---------------------------------------------------------------------------
 
+    # Classify the constrained wall nodes on the host (needs scalar coordinate
+    # access), then upload the index and value arrays that the Dirichlet kernels
+    # consume to the backend.
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
-    vx_nodes = Int32[n for n in Γnodes if abs(abs(coords[n][1]) - Lx / 2) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(abs(coords[n][2]) - Ly / 2) ≤ tol]
+    vx_nodes = TDev(Int32[n for n in Γnodes if abs(abs(coords[n][1]) - Lx / 2) ≤ tol])
+    vy_nodes = TDev(Int32[n for n in Γnodes if abs(abs(coords[n][2]) - Ly / 2) ≤ tol])
 
-    bc_vx_vals = zeros(Float64, length(vx_nodes))
-    bc_vy_vals = zeros(Float64, length(vy_nodes))
+    bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
+    bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
 
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
@@ -672,7 +697,6 @@ function main(;
     )
 end
 
-# if abspath(PROGRAM_FILE) == @__FILE__
-out = main();
-nothing
-# end
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

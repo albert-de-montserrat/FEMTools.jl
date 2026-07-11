@@ -24,6 +24,13 @@ velocity on `vx_nodes`/`vy_nodes`.
 Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
 inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
 `err`, `err_v`, `err_P`, `converged`, and (when `collect_history`) `history`.
+
+All arrays read or written by kernels—including `mesh_stokes` connectivity,
+`geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
+arrays—must reside on `backend`. Construct unstructured meshes with
+`Mesh(backend, coords, el2n)` and geometry with `MixedMeshCache` to maintain
+that invariant. The Enzyme transpose assemblers execute on the backend inferred
+from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
     dr,

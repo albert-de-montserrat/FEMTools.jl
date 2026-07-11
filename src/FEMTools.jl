@@ -39,7 +39,10 @@ Return the array constructor associated with `backend`.
 | `MetalBackend()`| `MtlArray`|
 
 GPU backends are registered by the corresponding package extension and are only
-available when that package is loaded.
+available when that package is loaded. For CUDA, load `CUDA` and pass
+`CUDA.CUDABackend()`; the extension maps it to `CUDA.CuArray`. This dispatch can
+be queried without a GPU, but allocating a `CuArray` requires a functional CUDA
+driver.
 """
 TA(::CPU) = Array
 

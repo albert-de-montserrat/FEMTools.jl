@@ -1,8 +1,7 @@
 module FEMToolsCUDAExt
 
-using CUDA
+using CUDA: CuArray, CUDABackend
 using FEMTools
-using KernelAbstractions: CUDABackend
 
 FEMTools.TA(::CUDABackend) = CuArray
 

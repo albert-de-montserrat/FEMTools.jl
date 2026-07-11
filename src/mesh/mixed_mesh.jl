@@ -185,6 +185,12 @@ end
 Precompute geometry for both fields of a 2D mixed mesh at the velocity
 integration points.
 
+Both geometry arrays are allocated on `backend`. Coordinates and connectivity
+are converted with [`TA`](@ref) before the kernels are launched, so a cache
+constructed with `CUDABackend()` contains device-resident `CuArray`s. Use the
+same backend for the mesh, cache, solver state, phase arrays, and boundary
+arrays; mixing host and device inputs in an assembly kernel is unsupported.
+
 Fields:
 - `geo_v`: primary-field shape-function gradients and weighted volumes.
 - `geo_P`: secondary-field shape-function gradients and weighted volumes.
