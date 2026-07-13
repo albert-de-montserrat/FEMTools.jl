@@ -96,6 +96,14 @@ function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::A
     return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
+# Three-dimensional Stokes currently uses axis-aligned free-slip boundary-node
+# sets rather than geometric nodal normals. Keep the mixed-mesh representation
+# dimension-generic by storing zero normals until a 3D traction formulation
+# needs face-normal accumulation.
+function _compute_node_normals(coords::AbstractVector{<:SVector{3, FP}}, ::AbstractMatrix{<:Integer}) where FP
+    return fill(zero(SVector{3, FP}), length(coords))
+end
+
 
 function MixedMesh(
     element::ReferenceElement,
@@ -203,19 +211,23 @@ end
 function MixedMeshCache(
     backend,
     workgroup,
-    mesh::MixedMesh{2},
+    mesh::MixedMesh{D},
     element_v::ReferenceElement{TV},
     element_P::ReferenceElement{TP},
-) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+) where {D, NV, NP, FP, TV <: AbstractElement{D, NV, FP}, TP <: AbstractElement{D, NP, FP}}
     ip_v = element_v.integration_points
     NQ_v = length(ip_v.ω)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
+    ξq_v = if D == 2
+        ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
+    else
+        ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q], ip_v.ζ[q]), NQ_v)
+    end
     ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
     ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
-    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}
-    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}
+    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, D, FP, D * NV}, FP}}
+    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, D, FP, D * NP}, FP}}
     geo_v = KA.allocate(backend, GeoV, mesh.nels)
     geo_P = KA.allocate(backend, GeoP, mesh.nels)
 

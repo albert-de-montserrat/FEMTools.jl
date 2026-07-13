@@ -144,3 +144,31 @@ for FP in (FP32, FP64)
         @test eltype(mesh.normals) == SVector{2, FP}
     end
 end
+
+@testset "3D Hex27/Q1 mixed mesh cache" begin
+    velocity_element = ReferenceElement(QuadraticElement{3, 27, Float64})
+    pressure_element = ReferenceElement(LinearElement{3, 8, Float64})
+    reference_nodes = SVector{3, Float64}.([
+        (-1,-1,-1), (1,-1,-1), (1,1,-1), (-1,1,-1),
+        (-1,-1,1), (1,-1,1), (1,1,1), (-1,1,1),
+        (0,-1,-1), (1,0,-1), (0,1,-1), (-1,0,-1),
+        (0,-1,1), (1,0,1), (0,1,1), (-1,0,1),
+        (-1,-1,0), (1,-1,0), (1,1,0), (-1,1,0),
+        (0,0,-1), (0,-1,0), (1,0,0), (0,1,0),
+        (-1,0,0), (0,0,1), (0,0,0),
+    ])
+    el2n = reshape(Int32.(1:27), 27, 1)
+    el2nP = reshape(Int32.(1:8), 8, 1)
+    mesh = MixedMesh(
+        velocity_element, pressure_element, reference_nodes,
+        Int32.(1:27), el2n, el2nP, el2nP,
+    )
+    cache = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
+
+    @test mesh isa MixedMesh{3, 2, 1}
+    @test eltype(mesh.normals) == SVector{3, Float64}
+    @test all(iszero, mesh.normals)
+    @test sum(q[2] for q in cache.geo_v[1]) ≈ 8.0
+    @test all(q[2] > 0 for q in cache.geo_v[1])
+    @test sum(q[2] for q in cache.geo_P[1]) ≈ 8.0
+end

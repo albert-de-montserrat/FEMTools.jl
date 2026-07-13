@@ -44,7 +44,7 @@ where `geo_v_el` provides velocity shape-function gradients and `geo_P_el`
 provides pressure quadrature weights. Note: velocity gradients are currently
 evaluated at velocity integration points rather than pressure points.
 """
-@inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
+@inline function integrate_PH_pressure_residual(v::Tuple{Vararg{<:SVector}}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips

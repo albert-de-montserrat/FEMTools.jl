@@ -87,6 +87,7 @@ include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/helpers.jl")
 include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
+include("stokes/solvers/DR_nd.jl")
 include("stokes/solvers/DR_adjoint.jl")
 
 # Post-processing: strain-rate/stress diagnostics and VTK output of solver results.
@@ -132,6 +133,8 @@ export StokesDR, DruckerPrager,
     pressure_mass,
     rotate_stress!,
     solve_stokes_dyrel!,
+    StokesDRND,
+    solve_stokes_dyrel_nd!,
     solve_stokes_adjoint_dyrel!,
     update_stokes_current_stress!
 
