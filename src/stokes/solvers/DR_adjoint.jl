@@ -9,7 +9,7 @@ Powell-Hestenes / DYREL iteration used by [`solve_stokes_dyrel!`](@ref), and
 store the adjoint fields in `λvx`, `λvy`, `λP` (modified in place).
 
 The adjoint is assembled on the *same* T7/P1-disc spaces, quadrature, and element
-operators as the forward problem and transposed exactly, so `-λᵀ ∂R/∂m` is the
+operators as the forward problem and transposed exactly, so `λᵀ ∂R/∂m` is the
 exact gradient of the discrete objective. The forward state in `dr` must already
 be converged: the transpose Jacobian, its diagonal preconditioner, and λmax are
 frozen at that state, so only λmin (hence the Chebyshev pair) is re-estimated
@@ -140,9 +140,11 @@ function solve_stokes_adjoint_dyrel!(
         # the pressure pullbacks reuse dP.
         copyto!(ResλP, dP)
 
-        # Powell-Hestenes augmented grad-div self-coupling of the velocity adjoint.
-        # The forward momentum uses Pnum(v) = γP·RP(v)/M_P, so the chain through Pnum
-        # closes as (∂RP/∂v)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P).
+        # Powell-Hestenes augmented coupling. The forward momentum uses
+        # Pnum(v, P) = γP·RP(v, P)/M_P, so the chain through Pnum closes as
+        # (∂RP/∂u)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P): the velocity part (∂RP/∂v)ᵀ feeds the
+        # velocity adjoint, and the pressure part (∂RP/∂P)ᵀ feeds ResλP. The
+        # latter is nonzero only for finite `ηb`, where RP depends on P.
         @. seed_RP = γP * dPnum / M_P
         fill!(dP_scratch, 0)
         assemble_pressure_residual_matrices_atomix_adj!(
@@ -150,8 +152,14 @@ function solve_stokes_adjoint_dyrel!(
             mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_P, Δt, workgroup,
         )
+        @. ResλP += dP_scratch
 
-        # Saddle-point coupling to the pressure adjoint λP: (∂RP/∂v)ᵀλP.
+        # Saddle-point coupling to the pressure adjoint λP: (∂RP/∂v)ᵀλP into the
+        # velocity adjoint, and the elastic pressure self-coupling (∂RP/∂P)ᵀλP
+        # into ResλP. The latter is nonzero only for finite bulk modulus
+        # (`ηb`): RP stores pressure elastically through the `-(P-P0)/(ηb·Δt)`
+        # term, so omitting it makes the adjoint (and any gradient built from it)
+        # wrong by O(1/(ηb·Δt)) — exact only in the incompressible limit.
         copyto!(seed_RP, λP)
         fill!(dP_scratch, 0)
         assemble_pressure_residual_matrices_atomix_adj!(
@@ -159,6 +167,7 @@ function solve_stokes_adjoint_dyrel!(
             mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_P, Δt, workgroup,
         )
+        @. ResλP += dP_scratch
 
         @. ResλVx = objective_vx + dvx
         @. ResλVy = objective_vy + dvy

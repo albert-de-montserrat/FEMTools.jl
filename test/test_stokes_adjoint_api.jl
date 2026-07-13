@@ -44,24 +44,20 @@ function _adjoint_gradient_case()
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs)
 end
 
-@testset "solve_stokes_adjoint_dyrel! — gradient matches finite differences" begin
-    case = _adjoint_gradient_case()
+# Solve the forward Stokes problem and its adjoint for the given material, then
+# compare the discrete adjoint gradient dJ/dρ₂ = λᵀ ∂R/∂ρ₂ against a central
+# finite difference of the same discrete objective. `∂R/∂ρ₂` is exact from a
+# residual difference (the momentum residual is linear in density). Returns the
+# two gradients and the forward/adjoint convergence flags.
+function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0, -1.0))
     (; backend, wg, element_v, element_P, mesh, cache, phases,
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs) = case
-
-    η = (1.0, 1.0)
-    ηb = (Inf, Inf)
     α = (0.0, 0.0)
-    K = (Inf, Inf)
-    G = (Inf, Inf)
-    g = SVector(0.0, -1.0)
     Tref = 0.0
-    Δt = 1.0
     nq = length(element_v.integration_points.ω)
 
     objective(vy) = -sum(vy[obs])
 
-    # Converge the forward Stokes problem for a given phase-2 density.
     function solve_forward(ρ2)
         dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, ηb, α;
             ρ0 = (1.0, ρ2), K, g, Tref,
@@ -82,9 +78,7 @@ end
 
     ρ2 = 2.0
     dr, γP, τ_old, fwd = solve_forward(ρ2)
-    @test fwd.converged
 
-    # Adjoint solve: (∂R/∂u)ᵀλ = -∂J/∂u with the velocity objective load.
     objective_vx = zeros(mesh.nnodes)
     objective_vy = zeros(mesh.nnodes)
     objective_vy[obs] .= -1.0
@@ -98,12 +92,7 @@ end
         vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
         verbose = false, verbose_inner = false)
-    @test adj.converged
-    @test any(!iszero, λvy)          # nontrivial adjoint field
 
-    # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
-    # in the density, so R(ρ₂=1) - R(ρ₂=0) at the frozen forward state is the
-    # derivative with respect to the phase-2 density.
     function residual(ρ0_vec)
         Rx = zeros(mesh.nnodes)
         Ry = zeros(mesh.nnodes)
@@ -118,14 +107,36 @@ end
     ∂R∂ρ2_x = Rx1 .- Rx0
     ∂R∂ρ2_y = Ry1 .- Ry0
 
-    # Discrete adjoint gradient dJ/dρ₂ = λᵀ ∂R/∂ρ₂.
+    # dJ/dm = +λᵀ ∂R/∂m (with λ solving (∂R/∂u)ᵀλ = -∂J/∂u).
     grad_adjoint = dot(λvx, ∂R∂ρ2_x) + dot(λvy, ∂R∂ρ2_y)
 
-    # Central finite difference of the same discrete objective.
     δ = 1.0e-4
     dr_plus, = solve_forward(ρ2 + δ)
     dr_minus, = solve_forward(ρ2 - δ)
     grad_fd = (objective(Array(dr_plus.vy)) - objective(Array(dr_minus.vy))) / (2δ)
 
-    @test grad_adjoint ≈ grad_fd rtol = 1.0e-4
+    return (; grad_adjoint, grad_fd,
+        fwd_converged = fwd.converged, adj_converged = adj.converged, λvy)
+end
+
+@testset "solve_stokes_adjoint_dyrel! — gradient matches finite differences" begin
+    # Incompressible viscous limit (K = ηb = Inf): the elastic pressure
+    # self-coupling of the adjoint is exactly zero here.
+    r = _density_gradient_check(_adjoint_gradient_case(), (1.0, 1.0), (Inf, Inf), (Inf, Inf), (Inf, Inf))
+    @test r.fwd_converged
+    @test r.adj_converged
+    @test any(!iszero, r.λvy)          # nontrivial adjoint field
+    @test r.grad_adjoint ≈ r.grad_fd rtol = 1.0e-4
+end
+
+@testset "solve_stokes_adjoint_dyrel! — compressible viscoelastic gradient" begin
+    # Finite bulk modulus (ηb) makes the pressure residual store pressure
+    # elastically through -(P-P0)/(ηb·Δt), so the adjoint must carry the
+    # self-coupling (∂RP/∂P)ᵀλP (both directly and through the augmented Pnum
+    # chain). Omitting it biases every gradient by O(1/(ηb·Δt)); this case fails
+    # by ~10% without those terms and matches finite differences with them.
+    r = _density_gradient_check(_adjoint_gradient_case(), (1.0, 1.0), (4.0, 4.0), (4.0, 4.0), (1.0, 0.5))
+    @test r.fwd_converged
+    @test r.adj_converged
+    @test r.grad_adjoint ≈ r.grad_fd rtol = 1.0e-4
 end

@@ -150,7 +150,7 @@ end
         (ρ_element[iel],), (K[phase],), g, Tref, Δt,
         τ_old_e, nothing, Nq, NqP,
     )
-    contracted_residual[iel] = -(dot(λx_e, Re_x) + dot(λy_e, Re_y))
+    contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y)
 end
 
 function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
@@ -172,7 +172,7 @@ end
                            G, α, K, g, Tref, Δt, Val(NV), Val(NP),
                            backend, workgroup) -> (density_sensitivity, viscosity_sensitivity)
 
-Assemble the per-element material sensitivities `sᵉ(m) = -λᵉᵀ ∂Rᵉ/∂m` of the
+Assemble the per-element material sensitivities `sᵉ(m) = λᵉᵀ ∂Rᵉ/∂m` of the
 converged adjoint state by reverse-differentiating `launch_material_contraction!`
 with respect to the element density and viscosity fields.
 
@@ -237,7 +237,7 @@ The model builds a square domain with a rectangular density/viscosity inclusion,
 applies free-slip boundary conditions, initialises the pressure from a
 lithostatic solve, and runs the Powell-Hestenes/DYREL forward solve. It then
 solves the discrete adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` on the same discretisation and
-contracts `-λᵀ ∂R/∂m` with Enzyme to obtain per-element density and viscosity
+contracts `λᵀ ∂R/∂m` with Enzyme to obtain per-element density and viscosity
 sensitivities.
 
 `backend` selects the KernelAbstractions compute backend. The Triangle mesh is
@@ -514,7 +514,7 @@ function main(;
 
     # Element areas of the (straight-sided) plotting triangles, equal to ∫dΩ over
     # each element. The raw material sensitivities are un-normalized element
-    # integrals sᵉ = -λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(sensitivity density); dividing by areaᵉ
+    # integrals sᵉ = λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(sensitivity density); dividing by areaᵉ
     # recovers the mesh-independent sensitivity density used for plotting, while
     # the phase-wise gradients keep summing the raw integrals.
     element_area = [
@@ -616,7 +616,7 @@ function main(;
     # element operators as the forward problem, and transposed exactly. This is a
     # requirement, not a convenience:
     #   * Transpose consistency. λ solves the transpose of the *discrete* forward
-    #     Jacobian, so -λᵀ ∂R/∂m is the exact gradient of the discrete objective
+    #     Jacobian, so λᵀ ∂R/∂m is the exact gradient of the discrete objective
     #     (it matches a finite-difference check of that objective to machine
     #     precision). A cheaper/mismatched adjoint discretisation would make the
     #     gradient inconsistent and degrade any optimisation built on it.
@@ -662,12 +662,10 @@ function main(;
     # Material sensitivities
     # -----------------------------------------------------------------------
     #
-    # The FD reference differentiates its momentum residual once more after the
-    # adjoint solve, seeding that reverse pass with -λ. We use the same sign
-    # convention here. For a material parameter m and element momentum residual
-    # Rᵉ, the plotted contribution is therefore
+    # With λ solving (∂R/∂u)ᵀλ = -∂J/∂u, the gradient of the discrete objective
+    # with respect to a material parameter m and element momentum residual Rᵉ is
     #
-    #     sᵉ(m) = -λᵉᵀ (∂Rᵉ/∂m).
+    #     sᵉ(m) = λᵉᵀ (∂Rᵉ/∂m).
     #
     # Each entry is the contribution from one element. Summing entries of one
     # phase gives the derivative with respect to that phase's single global
