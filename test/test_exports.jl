@@ -41,7 +41,9 @@ import FEMTools
         :AbstractIntegrationPoints,
         :AbstractMesh,
         :AbstractBoundaryCondition,
+        :assemble_velocity_mass!,
         :assemble_viscosity_weighted_pressure_scaling!,
+        :velocity_mass,
         :pressure_mass,
     )
 

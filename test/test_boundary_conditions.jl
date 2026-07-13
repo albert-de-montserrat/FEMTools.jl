@@ -53,3 +53,18 @@ using SparseArrays
     @test_throws BoundsError apply_bc!(zeros(4, 4), bad_dof)
     @test_throws BoundsError apply_bc!(zeros(4, 4), zeros(4), bad_dof)
 end
+
+@testset "Enzyme Dirichlet pullback" begin
+    dofs = Int32[1, 4]
+    vals = [10.0, -2.0]
+    dvals = zeros(2)
+    v = zeros(4)
+    dv = collect(1.0:4.0)
+
+    returned = FEMTools.apply_dirichlet_pullback!(v, dv, dofs, vals, dvals, 1)
+
+    @test returned === nothing
+    @test v == [10.0, 0.0, 0.0, -2.0]
+    @test dv == [0.0, 2.0, 3.0, 0.0]
+    @test dvals == [1.0, 4.0]
+end

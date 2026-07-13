@@ -78,6 +78,7 @@ include("lithostatic_pressure/solvers/DR.jl")
 
 # Stokes solver: types and assembly.
 include("stokes/types/stokes_types.jl")
+include("stokes/assemblers/velocity_mass.jl")
 include("stokes/assemblers/pressure_residual.jl")
 include("stokes/assemblers/pressure_residual_adj.jl")
 include("stokes/assemblers/pressure_scaling.jl")
@@ -128,7 +129,9 @@ export eval_shape_function,
 export ThermalDiffusionDR, solver!
 export LithostaticPressureDR
 export StokesDR, DruckerPrager,
+    assemble_velocity_mass!,
     assemble_viscosity_weighted_pressure_scaling!,
+    velocity_mass,
     pressure_mass,
     rotate_stress!,
     solve_stokes_dyrel!,
@@ -146,7 +149,7 @@ export compute_strain_rate_stress_postprocess,
 # application, the raw KernelAbstractions kernels, the DR-loop step wrappers, and
 # solver-loop utilities live here rather than in the exported user API.
 public TA, interp2ip, interp2ip_phase
-public apply_dirichlet!
+public apply_dirichlet!, apply_dirichlet_pullback!
 public assemble_diffusion_matrices_atomix!,
     assemble_diffusion_matrices_colored!,
     assemble_lithostatic_pressure_matrices_atomix!,

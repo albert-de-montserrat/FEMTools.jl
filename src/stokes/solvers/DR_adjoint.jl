@@ -11,26 +11,33 @@ store the adjoint fields in `λvx`, `λvy`, `λP` (modified in place).
 The adjoint is assembled on the *same* T7/P1-disc spaces, quadrature, and element
 operators as the forward problem and transposed exactly, so `λᵀ ∂R/∂m` is the
 exact gradient of the discrete objective. The forward state in `dr` must already
-be converged: the transpose Jacobian, its diagonal preconditioner, and λmax are
-frozen at that state, so only λmin (hence the Chebyshev pair) is re-estimated
+be converged: the transpose Jacobian and its diagonal preconditioner are frozen
+at that state. The initial λmax bound uses row sums of the transpose (column sums
+of the forward Jacobian), while λmin and the Chebyshev pair are re-estimated
 during the solve.
 
 `objective_vx` and `objective_vy` carry the velocity part of `-∂J/∂u`
 (the consistently assembled objective load); the pressure adjoint has no explicit
 objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
 forward solve. Homogeneous Dirichlet conditions are applied to the adjoint
-velocity on `vx_nodes`/`vy_nodes`.
+velocity on `vx_nodes`/`vy_nodes`. The forward residual's Dirichlet overwrite
+is included in the transpose operator through Enzyme's pullback: constrained
+residual seeds are projected out before the interior Jacobian transpose is
+applied, and derivatives with respect to the prescribed boundary values are
+formed as part of that pullback.
 
 Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
 inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
-`err`, `err_v`, `err_P`, `converged`, and (when `collect_history`) `history`.
+`err`, `err_v`, `err_P`, `converged`, `bc_gradient_vx`, `bc_gradient_vy`, and
+(when `collect_history`) `history`. The boundary gradients are aligned with
+`vx_nodes` and `vy_nodes`.
 
 All arrays read or written by kernels—including `mesh_stokes` connectivity,
 `geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
 arrays—must reside on `backend`. Construct unstructured meshes with
 `Mesh(backend, coords, el2n)` and geometry with `MixedMeshCache` to maintain
-that invariant. The Enzyme transpose assemblers execute on the backend inferred
-from their output buffers.
+that invariant. The element-local ForwardDiff transpose assemblers execute on
+the backend inferred from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
     dr,
@@ -93,17 +100,22 @@ function solve_stokes_adjoint_dyrel!(
 
     zero_vx_bc = fill!(similar(λvx, length(vx_nodes)), 0)
     zero_vy_bc = fill!(similar(λvy, length(vy_nodes)), 0)
+    residual_bc_gradient_vx = zero(zero_vx_bc)
+    residual_bc_gradient_vy = zero(zero_vy_bc)
+    bc_gradient_vx = zero(zero_vx_bc)
+    bc_gradient_vy = zero(zero_vy_bc)
 
-    # Freeze the transpose velocity block at the converged forward state: assemble
-    # the augmented momentum Jacobian once to obtain the diagonal preconditioner
-    # and λmax. Both stay constant through the adjoint solve.
+    # Freeze the transpose velocity block at the converged forward state. Its
+    # diagonal matches the forward Jacobian, but its conservative λmax bound
+    # needs column sums of the forward Jacobian (row sums of the transpose).
     assemble_augmented_momentum_jacobian_matrices_atomix!(
         dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
         element_v, element_P, phases_v, phases_P,
         τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, M_P, backend, workgroup,
+        dr.ηb, Δt, γP, M_P, backend, workgroup;
+        transpose_operator = true,
     )
 
     λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")
@@ -112,6 +124,7 @@ function solve_stokes_adjoint_dyrel!(
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
     α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
     α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
+    verbose && @info "Initial adjoint momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
     function assemble_adjoint_residual!()
         fill!(ResλVx, 0)
@@ -124,6 +137,21 @@ function solve_stokes_adjoint_dyrel!(
 
         copyto!(seed_Rv_x, λvx)
         copyto!(seed_Rv_y, λvy)
+
+        # The forward momentum operator is boundary-conditioned as B(Rv), with
+        # B overwriting constrained residual entries. Differentiate that same
+        # operation with Enzyme before applying the interior residual
+        # transpose: seed_Rv <- Bᵀλ. Besides projecting constrained state
+        # seeds to zero, the pullback accumulates derivatives with respect to
+        # the overwritten residual values in residual_bc_gradient_*.
+        fill!(residual_bc_gradient_vx, 0)
+        fill!(residual_bc_gradient_vy, 0)
+        apply_dirichlet_pullback!(
+            Rv_x_buf, seed_Rv_x, vx_nodes, zero_vx_bc,
+            residual_bc_gradient_vx, workgroup)
+        apply_dirichlet_pullback!(
+            Rv_y_buf, seed_Rv_y, vy_nodes, zero_vy_bc,
+            residual_bc_gradient_vy, workgroup)
 
         # Momentum transpose: (∂Rv/∂v)ᵀλv → dvx,dvy, (∂Rv/∂P)ᵀλv → dP,
         # and (∂Rv/∂Pnum)ᵀλv → dPnum.
@@ -171,8 +199,18 @@ function solve_stokes_adjoint_dyrel!(
 
         @. ResλVx = objective_vx + dvx
         @. ResλVy = objective_vy + dvy
-        apply_dirichlet!(ResλVx, vx_nodes, zero_vx_bc, backend, workgroup)
-        apply_dirichlet!(ResλVy, vy_nodes, zero_vy_bc, backend, workgroup)
+
+        # Pull back through the state overwrite v[dofs] = bc_vals. This both
+        # projects the adjoint residual onto free state variables and retains
+        # the cotangent of the prescribed velocity values for callers that use
+        # boundary data as controls. The derivative is independent of the
+        # primal boundary values, so the zero-valued scratch primal is valid.
+        fill!(bc_gradient_vx, 0)
+        fill!(bc_gradient_vy, 0)
+        apply_dirichlet_pullback!(
+            Rv_x_buf, ResλVx, vx_nodes, zero_vx_bc, bc_gradient_vx, workgroup)
+        apply_dirichlet_pullback!(
+            Rv_y_buf, ResλVy, vy_nodes, zero_vy_bc, bc_gradient_vy, workgroup)
         return nothing
     end
 
@@ -266,6 +304,8 @@ function solve_stokes_adjoint_dyrel!(
         err_v,
         err_P,
         converged = converged || err < adjoint_tol,
+        bc_gradient_vx,
+        bc_gradient_vy,
         history,
     )
 end

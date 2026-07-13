@@ -56,6 +56,7 @@ end
         @test length(dr.vx) == 10
         @test length(dr.P)  == 12
         @test length(dr.M_P) == 12
+        @test length(dr.M_V) == 10
         @test length(dr.Pnum) == 12
         @test all(==(1), Array(dr.phases_v))
         @test all(==(1), Array(dr.phases_P))
@@ -72,6 +73,7 @@ end
         @test all(iszero, Array(dr.τyy_old))
         @test all(iszero, Array(dr.τxy_old))
         @test all(iszero, Array(dr.M_P))
+        @test all(iszero, Array(dr.M_V))
         @test all(iszero, Array(dr.Pnum))
 
         vx, vy = FEMTools.velocity(dr)
@@ -428,8 +430,59 @@ let
 end
 
 # ---------------------------------------------------------------------------
-# Assembler integration tests (small 2×2 T6 mesh)
+# Assembler integration tests (small 2×2 meshes)
 # ---------------------------------------------------------------------------
+
+@testset "assemble_velocity_mass! — positive T7 diagonal" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 7, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
+    mesh      = MixedMesh(mesh_v, element_P)
+    geo_v     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    M_V       = zeros(FP, mesh.nnodes)
+
+    returned = assemble_velocity_mass!(
+        M_V, mesh, geo_v, element_v, CPU(), 1,
+    )
+
+    @test returned === M_V
+    @test all(isfinite, M_V)
+    @test all(>(0), M_V)
+
+    # Check the assembled diagonal against the same element quadrature carried
+    # out directly on the host.
+    expected = zeros(FP, mesh.nnodes)
+    NqV = shape_function_values(element_v)
+    for iel in 1:mesh.nels, q in eachindex(geo_v[iel]), a in 1:length(element_v)
+        _, dΩ = geo_v[iel][q]
+        expected[mesh.el2n[a, iel]] += abs2(NqV[q][a]) * dΩ
+    end
+    @test M_V ≈ expected atol = 32eps(FP)
+
+    @test_throws DimensionMismatch assemble_velocity_mass!(
+        zeros(FP, mesh.nnodes - 1), mesh, geo_v, element_v, CPU(), 1,
+    )
+end
+
+@testset "mass-weighted residual RMS" begin
+    # A spatially constant residual density must have the same RMS regardless
+    # of how unevenly the nodal mass is distributed.
+    mass = [1.0, 9.0, 90.0]
+    residual_density = 3.0
+    residual = residual_density .* mass
+    @test FEMTools._mass_weighted_rms(residual, mass, sum(mass)) ≈ residual_density
+
+    # A constrained entry has zero residual and its mass is excluded from the
+    # free-component normalization.
+    constrained_residual = [2.0, 0.0]
+    constrained_mass = [1.0, 9.0]
+    @test FEMTools._mass_weighted_rms(
+        constrained_residual, constrained_mass, constrained_mass[1],
+    ) ≈ 2.0
+
+    @test_throws ArgumentError FEMTools._mass_weighted_rms([1.0], [1.0], 0.0)
+end
 
 @testset "assemble_viscosity_weighted_pressure_scaling! — homogeneous viscosity" begin
     FP        = Float64

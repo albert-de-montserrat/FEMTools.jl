@@ -1,4 +1,6 @@
 
+using Printf: @sprintf
+
 """
     precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
 
@@ -42,7 +44,12 @@ function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, half_width, max_area
     tio.pointlist = hcat(rect_pts, incl_pts)
     tio.segmentlist = hcat(rect_segs, incl_segs)
 
-    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
+    # Triangle's switch parser does not accept scientific notation for the
+    # numeric value following `a`. Julia prints sufficiently small Float64s in
+    # exponent form (for example, 1 / 128^2 as `6.103515625e-5`), which Triangle
+    # misreads as a much larger area. Force fixed-point notation here.
+    area_switch = isnothing(max_area) ? "" : "a$(@sprintf("%.17f", max_area))"
+    flags = "pq30o2$(area_switch)Q"
     result, _ = triangulate(flags, tio)
 
     pts = result.pointlist

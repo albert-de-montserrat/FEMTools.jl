@@ -1,18 +1,18 @@
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
 
-using Enzyme
+using ForwardDiff
 using Printf
-using Statistics
 using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
 using Atomix
 using Triangulate
 using FEMTools
+using CUDA
 using GLMakie: Figure, Axis, Colorbar, poly!, lines!, Point2f, DataAspect, axislegend
 
-const backend   = CPU()
+const default_backend = CUDABackend()
 const workgroup = 128
 
 # ---------------------------------------------------------------------------
@@ -150,40 +150,26 @@ function assemble_objective_vy!(
 end
 
 # ---------------------------------------------------------------------------
-# Material contraction: sᵉ(G) = -λᵉᵀ ∂Rᵉ/∂G, differentiated by Enzyme
+# Material contraction: sᵉ(G) = λᵉᵀ ∂Rᵉ/∂G
 # ---------------------------------------------------------------------------
 
-"""
-    G_contraction_kernel!(...)
-
-Contract the converged adjoint state with each element momentum residual,
-writing `contracted_residual[iel] = λₓᵉ·Rₓᵉ + λᵧᵉ·Rᵧᵉ`.
-
-The residual is evaluated with the element's own shear modulus threaded through
-a single-entry `G` tuple `(G_element[iel],)` and a phase vector of all ones,
-while `η`, `α`, `ρ0`, and `K` are still read at the true material `phase`.
-Reverse-differentiating this kernel with respect to `G_element` then yields the
-per-element sensitivity `∂(λᵀR)/∂G = λᵀ ∂R/∂G` at fixed forward and adjoint
-states. With `λ` solving `(∂R/∂u)ᵀλ = -∂J/∂u`, this equals `dJ/dG`, the discrete
-gradient of `J` with respect to element shear modulus.
-"""
-@kernel function G_contraction_kernel!(
-    contracted_residual,
+@kernel function G_sensitivity_kernel!(
+    G_sensitivity,
     @Const(vx), @Const(vy), @Const(P), @Const(T),
     @Const(λvx), @Const(λvy),
     @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
-    @Const(τ_old), G_element,
+    @Const(τ_old), @Const(G_element), @Const(plastic),
     @Const(η), @Const(α), @Const(ρ0), @Const(K), @Const(g), Tref, Δt,
     @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
-    pressure_dofs  = SVector{NP, Int}(ntuple(i -> dofsP[i, iel], Val(NP)))
+    pressure_dofs = SVector{NP, Int}(ntuple(i -> dofsP[i, iel], Val(NP)))
     phase = Int(phases[1, iel])
     vx_e = SVector{NV}(ntuple(i -> vx[velocity_nodes[i]], Val(NV)))
     vy_e = SVector{NV}(ntuple(i -> vy[velocity_nodes[i]], Val(NV)))
-    P_e  = SVector{NP}(ntuple(i -> P[pressure_dofs[i]], Val(NP)))
-    T_e  = SVector{NP}(ntuple(i -> T[pressure_dofs[i]], Val(NP)))
+    P_e = SVector{NP}(ntuple(i -> P[pressure_dofs[i]], Val(NP)))
+    T_e = SVector{NP}(ntuple(i -> T[pressure_dofs[i]], Val(NP)))
     λx_e = SVector{NV}(ntuple(i -> λvx[velocity_nodes[i]], Val(NV)))
     λy_e = SVector{NV}(ntuple(i -> λvy[velocity_nodes[i]], Val(NV)))
     phase_e = SVector{NV, Int}(ntuple(_ -> 1, Val(NV)))
@@ -192,64 +178,128 @@ gradient of `J` with respect to element shear modulus.
         SVector(ntuple(q -> τ_old[2][q, iel], length(Nq))),
         SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
     )
-    Re_x, Re_y = FEMTools.integrate_momentum_residual(
-        (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
-        (η[phase],), (G_element[iel],), (α[phase],),
-        (ρ0[phase],), (K[phase],), g, Tref, Δt,
-        τ_old_e, nothing, Nq, NqP,
+    plastic_e = DruckerPrager{1, typeof(plastic.C[phase])}(
+        (plastic.cosϕ[phase],), (plastic.sinϕ[phase],),
+        (plastic.sinΨ[phase],), (plastic.C[phase],),
+        (plastic.η_reg[phase],), (plastic.Kb[phase],),
     )
-    contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y)
-end
-
-function launch_G_contraction!(out, vx, vy, P, T, λvx, λvy,
-    el2n, dofsP, geo, phases, τ_old, G_element,
-    η, α, ρ0, K, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
-) where {NV, NP}
-    fill!(out, 0)
-    backend = KernelAbstractions.get_backend(out)
-    G_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
-        el2n, dofsP, geo, phases, τ_old, G_element,
-        η, α, ρ0, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
-    KernelAbstractions.synchronize(backend)
-    return nothing
+    contraction = function (Glocal)
+        Re_x, Re_y = FEMTools.integrate_momentum_residual(
+            (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
+            (η[phase],), (Glocal,), (α[phase],),
+            (ρ0[phase],), (K[phase],), g, Tref, Δt,
+            τ_old_e, plastic_e, Nq, NqP,
+        )
+        dot(λx_e, Re_x) + dot(λy_e, Re_y)
+    end
+    G_sensitivity[iel] = ForwardDiff.derivative(contraction, G_element[iel])
 end
 
 """
     shear_modulus_sensitivities(...) -> Vector
 
 Assemble the per-element shear-modulus sensitivity `sᵉ(G) = λᵉᵀ ∂Rᵉ/∂G` of the
-converged adjoint state by reverse-differentiating `launch_G_contraction!` with
-respect to the element shear-modulus field. `cell_phase[iel]` selects the phase
-whose `G` value seeds element `iel`. Summing the entries of one phase gives
-`dJ/dG` for that phase's global shear modulus.
+converged adjoint state. Each backend work item differentiates its local scalar
+contraction with ForwardDiff. `cell_phase[iel]` selects the phase whose `G`
+value seeds element `iel`; summing one phase gives its global `dJ/dG`.
 """
 function shear_modulus_sensitivities(
     dr, mesh_stokes, λvx, λvy, geo_v, phases, τ_old,
-    element_v, element_P, η, α, ρ0, K, G, cell_phase,
+    element_v, element_P, η, α, ρ0, K, G, plastic, cell_phase,
     g, Tref, Δt, ::Val{NV}, ::Val{NP}, backend, workgroup,
 ) where {NV, NP}
-    contracted_residual = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
-    contracted_seed = KernelAbstractions.ones(backend, Float64, mesh_stokes.nels)
     G_element = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
-    copyto!(G_element, G[cell_phase])
-    G_sensitivity_backend = zero(G_element)
+    copyto!(G_element, collect(G[cell_phase]))
+    G_sensitivity_backend = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
     Nq_v = shape_function_values(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
 
-    Enzyme.autodiff_deferred(
-        Enzyme.set_runtime_activity(Enzyme.Reverse),
-        Enzyme.Const(launch_G_contraction!), Enzyme.Const,
-        Enzyme.Duplicated(contracted_residual, contracted_seed),
-        Enzyme.Const(dr.vx), Enzyme.Const(dr.vy), Enzyme.Const(dr.P), Enzyme.Const(dr.T),
-        Enzyme.Const(λvx), Enzyme.Const(λvy),
-        Enzyme.Const(mesh_stokes.el2n), Enzyme.Const(mesh_stokes.DoFsP),
-        Enzyme.Const(geo_v), Enzyme.Const(phases), Enzyme.Const(τ_old),
-        Enzyme.Duplicated(G_element, G_sensitivity_backend),
-        Enzyme.Const(η), Enzyme.Const(α), Enzyme.Const(ρ0), Enzyme.Const(K), Enzyme.Const(g),
-        Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
-        Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
+    G_sensitivity_kernel!(backend, workgroup)(
+        G_sensitivity_backend,
+        dr.vx, dr.vy, dr.P, dr.T, λvx, λvy,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, phases, τ_old, G_element, plastic,
+        η, α, ρ0, K, g, Tref, Δt, Nq_v, Nq_P, Val(NV), Val(NP);
+        ndrange = mesh_stokes.nels,
     )
+    KernelAbstractions.synchronize(backend)
     return Array(G_sensitivity_backend)
+end
+
+@kernel function friction_angle_sensitivity_kernel!(
+    ϕ_sensitivity,
+    @Const(vx), @Const(vy), @Const(P), @Const(T),
+    @Const(λvx), @Const(λvy),
+    @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
+    @Const(τ_old), @Const(ϕ_element), @Const(plastic),
+    @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K), @Const(g), Tref, Δt,
+    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
+    pressure_dofs = SVector{NP, Int}(ntuple(i -> dofsP[i, iel], Val(NP)))
+    phase = Int(phases[1, iel])
+    vx_e = SVector{NV}(ntuple(i -> vx[velocity_nodes[i]], Val(NV)))
+    vy_e = SVector{NV}(ntuple(i -> vy[velocity_nodes[i]], Val(NV)))
+    P_e = SVector{NP}(ntuple(i -> P[pressure_dofs[i]], Val(NP)))
+    T_e = SVector{NP}(ntuple(i -> T[pressure_dofs[i]], Val(NP)))
+    λx_e = SVector{NV}(ntuple(i -> λvx[velocity_nodes[i]], Val(NV)))
+    λy_e = SVector{NV}(ntuple(i -> λvy[velocity_nodes[i]], Val(NV)))
+    phase_e = SVector{NV, Int}(ntuple(_ -> 1, Val(NV)))
+    τ_old_e = FEMTools.IntegrationPointStress(
+        SVector(ntuple(q -> τ_old[1][q, iel], length(Nq))),
+        SVector(ntuple(q -> τ_old[2][q, iel], length(Nq))),
+        SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
+    )
+    contraction = function (ϕlocal)
+        # Promote every cached phase parameter to the active angle's scalar
+        # type, then reconstruct the one-phase law. This differentiates the
+        # coupled cos(ϕ) and sin(ϕ) dependence with respect to ϕ itself.
+        plastic_e = DruckerPrager(
+            (ϕlocal,),
+            (zero(ϕlocal) + asin(plastic.sinΨ[phase]),),
+            (zero(ϕlocal) + plastic.C[phase],),
+            (zero(ϕlocal) + plastic.η_reg[phase],),
+            (zero(ϕlocal) + plastic.Kb[phase],),
+        )
+        Re_x, Re_y = FEMTools.integrate_momentum_residual(
+            (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
+            (η[phase],), (G[phase],), (α[phase],),
+            (ρ0[phase],), (K[phase],), g, Tref, Δt,
+            τ_old_e, plastic_e, Nq, NqP,
+        )
+        dot(λx_e, Re_x) + dot(λy_e, Re_y)
+    end
+    ϕ_sensitivity[iel] = ForwardDiff.derivative(contraction, ϕ_element[iel])
+end
+
+"""
+    friction_angle_sensitivities(...) -> Vector
+
+Assemble the elementwise adjoint sensitivity `dJ/dϕᵉ` with respect to the
+Drucker–Prager friction angle in radians. Summing elements belonging to phase
+`p` gives the derivative with respect to that phase's global angle `ϕ[p]`.
+"""
+function friction_angle_sensitivities(
+    dr, mesh_stokes, λvx, λvy, geo_v, phases, τ_old,
+    element_v, element_P, η, α, ρ0, K, G, plastic, ϕ, cell_phase,
+    g, Tref, Δt, ::Val{NV}, ::Val{NP}, backend, workgroup,
+) where {NV, NP}
+    ϕ_element = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
+    copyto!(ϕ_element, collect(ϕ[cell_phase]))
+    ϕ_sensitivity_backend = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
+    Nq_v = shape_function_values(element_v)
+    Nq_P = shape_function_values(element_P, element_v.integration_points)
+
+    friction_angle_sensitivity_kernel!(backend, workgroup)(
+        ϕ_sensitivity_backend,
+        dr.vx, dr.vy, dr.P, dr.T, λvx, λvy,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, phases, τ_old,
+        ϕ_element, plastic, η, G, α, ρ0, K, g, Tref, Δt,
+        Nq_v, Nq_P, Val(NV), Val(NP);
+        ndrange = mesh_stokes.nels,
+    )
+    KernelAbstractions.synchronize(backend)
+    return Array(ϕ_sensitivity_backend)
 end
 
 # ---------------------------------------------------------------------------
@@ -257,20 +307,21 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; max_area=1/64^2, Δt=1.0, n_circle=96, show_plot=true, check_fd=true, kwargs...) -> NamedTuple
+    main(; backend=CUDABackend(), max_area=1/64^2, Δt=1.0, n_circle=96,
+         show_plot=true, check_fd=true, write_vtk_output=true,
+         out_dir=joinpath(@__DIR__, "output_stokes"), kwargs...) -> NamedTuple
 
-Solve one viscoelastic pure-shear Stokes step on a T7/P1-disc mesh with a
-circular inclusion, then its discrete adjoint, and assemble the sensitivity of
+Solve one viscoelastoplastic pure-shear Stokes step on a T7/P1-disc mesh with a
+circular inclusion, then its discrete adjoint, and assemble the sensitivities of
 
     J(vᵧ) = -∫_Ωₒᵦₛ vᵧ dΩ
 
-with respect to the shear modulus `G`. The observation box `Ωₒᵦₛ` is a small
-rectangle sitting on top of the circular inclusion.
+with respect to the shear modulus `G` and friction angle `ϕ`. The observation
+box is a small rectangle sitting on top of the circular inclusion.
 
-The two phases (matrix / inclusion) differ only in `G`, so the sensitivity map
-isolates how the shear modulus of each region controls the vertical velocity
-sampled above the inclusion. When `check_fd` is true, the phase-summed adjoint
-gradient is verified against a central finite difference of `J(G)`.
+The controls are the phase shear moduli and Drucker–Prager friction angles;
+angle derivatives are reported per radian. When `check_fd` is true, both
+phase-summed adjoint gradients are checked against central differences.
 
 The adjoint gradient matches the central finite difference to a few parts in
 1e5 across bulk moduli and elastic time steps, because `solve_stokes_adjoint_dyrel!`
@@ -278,16 +329,26 @@ carries the full transpose Jacobian including the elastic pressure self-coupling
 `(∂RP/∂P)ᵀλP` (nonzero for finite `K`). The finite-difference check reports the
 per-phase agreement.
 
-Returns the solver state, the forward and adjoint statistics, the adjoint
-fields, the per-element `G_sensitivity`, and its phase sums
-`G_gradient_by_phase`.
+Returns the solver state, forward and adjoint statistics, adjoint fields,
+per-element `G_sensitivity` and `ϕ_sensitivity`, and their phase sums
+`G_gradient_by_phase` and `ϕ_gradient_by_phase`.
+
+When `write_vtk_output` is true, separate forward-state and adjoint-sensitivity
+VTK files are written to `out_dir`; their paths are returned as `vtk_paths`.
+
+The Triangle mesh is constructed on the host and uploaded together with all
+solver-facing topology and boundary arrays. Pass `backend=CPU()` to run the
+same code on the host.
 """
 function main(;
+    backend = default_backend,
     max_area = 1 / 64^2,
     Δt = 1.0,
     n_circle = 96,
     show_plot = true,
     check_fd = true,
+    write_vtk_output = true,
+    out_dir = joinpath(@__DIR__, "output_stokes"),
     Kmat = (4.0, 4.0),
     ncheck = 100,
     ϵ_tol = 1.0e-8,
@@ -306,8 +367,7 @@ function main(;
     Lx, Ly = 1.0, 1.0
     ε̇_bg = 1.0
 
-    # Material (2 phases: matrix + inclusion). Only G differs between phases, so
-    # the objective's sensitivity is driven entirely by the shear modulus.
+    # Material (2 phases: matrix + inclusion).
     η    = (1.0, 1.0)   # shear viscosity
     α    = (0.0, 0.0)   # thermal expansivity (isothermal)
     ρ0   = (1.0, 1.0)   # reference density
@@ -316,7 +376,13 @@ function main(;
     G    = (1.0, 0.5)   # shear modulus: softer inclusion
     g    = (0.0, 0.0)   # no gravity
     Tref = 0.0
-    plastic = nothing   # purely viscoelastic, so the adjoint stays linear
+    # Cohesion gives the zero-pressure yield stress C·cosϕ = 1 at ϕ = 30°.
+    τy    = 1.0 / cosd(30)
+    ϕ     = (π / 6, π / 6)        # friction angle [rad]
+    Ψ     = (0.0, 0.0)           # dilation angle [rad] (non-associated)
+    C     = (τy, τy)           # cohesion
+    η_reg = (8.0e-3, 8.0e-3)   # plastic regularisation viscosity
+    plastic = DruckerPrager(ϕ, Ψ, C, η_reg, K)
 
     # Circular inclusion, centred in the box.
     r_incl = 0.1
@@ -338,13 +404,15 @@ function main(;
     coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_triangle_t7_inclusion_mesh(;
         Lx, Ly, cx, cy, r = r_incl, n_circle, max_area,
     )
-    DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = Mesh(element_v, nothing, nothing, coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes)
+    # Triangle builds the mesh on the host. The backend-aware constructor
+    # uploads coordinates, connectivity, DoFs, and detected boundary nodes so
+    # every array read by the assembly kernels lives on the compute backend.
+    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
     TDev = FEMTools.TA(backend)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels n_interface_nodes=length(circle_nodes)
+    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels n_outer_nodes=length(outer_nodes) n_interface_nodes=length(circle_nodes)
 
     NV = length(element_v)
     NP = length(element_P)
@@ -369,12 +437,15 @@ function main(;
     # Phase assignment — circular inclusion
     # -----------------------------------------------------------------------
 
+    # Phase classification runs on the host (scalar coordinate access), so read
+    # host copies of the mixed-mesh topology; the solver kernels consume the
+    # device-resident `phases_solve` upload below.
     in_incl(c) = (c[1] - cx)^2 + (c[2] - cy)^2 ≤ r_incl^2
     coords_v  = Array(mesh_stokes.coords)
     el2nP_cpu = Array(mesh_stokes.el2nP)
     DoFsP_cpu = Array(mesh_stokes.DoFsP)
     cell_phase = Int[
-        in_incl(sum(a -> coords_v[mesh_stokes.el2n[a, iel]], 1:NV) / NV) ? 2 : 1
+        in_incl(sum(a -> coords_v[el2n_v_cpu[a, iel]], 1:NV) / NV) ? 2 : 1
         for iel in 1:mesh_stokes.nels
     ]
     phases_solve = TDev(reshape(cell_phase, 1, :))
@@ -415,17 +486,16 @@ function main(;
     # J = -∫_box vᵧ dΩ = ⟨∂J/∂vᵧ, vᵧ⟩ for the consistently assembled load.
     objective_value() = dot(objective_vy, dr.vy)
 
-    # Re-runnable forward solve at a given shear-modulus tuple, returning J. The
-    # inclusion phase reads Gval[2], the matrix Gval[1]; the mesh, boundary data,
-    # and pressure scaling are held fixed.
-    function run_forward!(Gval; verbose = false, collect_history = false)
+    # Re-runnable forward solve at given phase shear moduli and friction angles.
+    function run_forward!(Gval, ϕval = ϕ; verbose = false, collect_history = false)
+        plastic_val = DruckerPrager(ϕval, Ψ, C, η_reg, K)
         copyto!(dr.vx, vx_init); copyto!(dr.vy, vy_init)
         fill!(dr.P, 0); fill!(dr.P0, 0)
         apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
         apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
         stats = solve_stokes_dyrel!(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_solve, phases_solve, τ_old, plastic, Gval, Δt, γP,
+            phases_solve, phases_solve, τ_old, plastic_val, Gval, Δt, γP,
             Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
             ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0 = 0.1,
             verbose, verbose_inner = false, vx_nodes, vy_nodes, collect_history,
@@ -437,16 +507,17 @@ function main(;
     # Forward solve at the reference G
     # -----------------------------------------------------------------------
 
-    @info "Forward viscoelastic pure-shear solve" Δt G
+    @info "Forward viscoelastoplastic pure-shear solve" Δt G ϕ
     solve_stats = run_forward!(G; verbose = true, collect_history = true)
     solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
     J0 = objective_value()
     @info "Objective at reference G" J0
 
-    # Snapshot the forward fields for plotting before the FD check overwrites dr.
-    vx_fwd = Array(dr.vx)
-    vy_fwd = Array(dr.vy)
-    P_fwd  = Array(dr.P)
+    # Preserve the reference forward solution: finite-difference checks below
+    # rerun the solver and overwrite `dr`.
+    vx_forward = Array(dr.vx)
+    vy_forward = Array(dr.vy)
+    P_forward = Array(dr.P)
 
     # -----------------------------------------------------------------------
     # Adjoint solve:  (∂R/∂u)ᵀ λ = −∂J/∂u
@@ -474,17 +545,83 @@ function main(;
 
     G_sensitivity = shear_modulus_sensitivities(
         dr, mesh_stokes, λvx, λvy, geo_v, phases_solve, τ_old,
-        element_v, element_P, η, α, ρ0, K, G, cell_phase,
+        element_v, element_P, η, α, ρ0, K, G, plastic, cell_phase,
         g, Tref, Δt, Val(NV), Val(NP), backend, workgroup,
     )
     G_gradient_by_phase = ntuple(p -> sum(G_sensitivity[cell_phase .== p]), length(G))
     @info "Shear-modulus sensitivities assembled" G_gradient_by_phase
 
     # -----------------------------------------------------------------------
+    # Friction-angle sensitivity: sᵉ(ϕ) = λᵉᵀ ∂Rᵉ/∂ϕ = dJ/dϕᵉ
+    # -----------------------------------------------------------------------
+
+    ϕ_sensitivity = friction_angle_sensitivities(
+        dr, mesh_stokes, λvx, λvy, geo_v, phases_solve, τ_old,
+        element_v, element_P, η, α, ρ0, K, G, plastic, ϕ, cell_phase,
+        g, Tref, Δt, Val(NV), Val(NP), backend, workgroup,
+    )
+    ϕ_gradient_by_phase = ntuple(p -> sum(ϕ_sensitivity[cell_phase .== p]), length(ϕ))
+    @info "Friction-angle sensitivities assembled (per radian)" ϕ_gradient_by_phase
+
+    # Element areas convert integrated material derivatives to sensitivity
+    # densities for VTK and plotting.
+    element_area = [
+        let a = coords_v[el2nP_cpu[1, i]], b = coords_v[el2nP_cpu[2, i]], c = coords_v[el2nP_cpu[3, i]]
+            abs((b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2])) / 2
+        end for i in 1:mesh_stokes.nels
+    ]
+
+    vtk_paths = nothing
+    if write_vtk_output
+        mkpath(out_dir)
+        forward_path = joinpath(out_dir, "stokes_2D_pure_shear_triangle_forward.vtk")
+        adjoint_path = joinpath(out_dir, "stokes_2D_pure_shear_triangle_adjoint.vtk")
+
+        P_cell = [sum(P_forward[DoFsP_cpu[:, i]]) / size(DoFsP_cpu, 1)
+                  for i in 1:mesh_stokes.nels]
+        λP_cpu = Array(λP)
+        λP_cell = [sum(λP_cpu[DoFsP_cpu[:, i]]) / size(DoFsP_cpu, 1)
+                   for i in 1:mesh_stokes.nels]
+        λvx_cpu = Array(λvx)
+        λvy_cpu = Array(λvy)
+
+        write_vtk(
+            forward_path, mesh_stokes;
+            point_data = (;
+                Vx = vx_forward,
+                Vy = vy_forward,
+                V = hypot.(vx_forward, vy_forward),
+            ),
+            cell_data = (; P = P_cell, phase = cell_phase),
+            title = "FEMTools pure-shear forward model",
+        )
+        write_vtk(
+            adjoint_path, mesh_stokes;
+            point_data = (;
+                lambda_vx = λvx_cpu,
+                lambda_vy = λvy_cpu,
+                lambda_v = hypot.(λvx_cpu, λvy_cpu),
+            ),
+            cell_data = (;
+                lambda_P = λP_cell,
+                dJ_dG = G_sensitivity,
+                dJ_dG_density = G_sensitivity ./ element_area,
+                dJ_dphi = ϕ_sensitivity,
+                dJ_dphi_density = ϕ_sensitivity ./ element_area,
+                phase = cell_phase,
+            ),
+            title = "FEMTools pure-shear adjoint sensitivities",
+        )
+        vtk_paths = (; forward = forward_path, adjoint = adjoint_path)
+        @info "Wrote forward and adjoint VTK files" forward_path adjoint_path
+    end
+
+    # -----------------------------------------------------------------------
     # Finite-difference verification of the phase-summed gradient
     # -----------------------------------------------------------------------
 
     fd_gradient_by_phase = nothing
+    fd_ϕ_gradient_by_phase = nothing
     if check_fd
         fd = zeros(length(G))
         for p in eachindex(G)
@@ -499,6 +636,20 @@ function main(;
         rel_err = ntuple(p -> abs(G_gradient_by_phase[p] - fd[p]) /
                               max(abs(fd[p]), eps()), length(G))
         @info "Finite-difference check (dJ/dG per phase)" adjoint=G_gradient_by_phase finite_difference=fd_gradient_by_phase rel_err
+
+        fd_ϕ = zeros(length(ϕ))
+        for p in eachindex(ϕ)
+            h = 1e-4 * max(abs(ϕ[p]), 1.0)
+            ϕp = ntuple(q -> q == p ? ϕ[q] + h : ϕ[q], length(ϕ))
+            ϕm = ntuple(q -> q == p ? ϕ[q] - h : ϕ[q], length(ϕ))
+            run_forward!(G, ϕp); Jp = objective_value()
+            run_forward!(G, ϕm); Jm = objective_value()
+            fd_ϕ[p] = (Jp - Jm) / (2h)
+        end
+        fd_ϕ_gradient_by_phase = Tuple(fd_ϕ)
+        ϕ_rel_err = ntuple(p -> abs(ϕ_gradient_by_phase[p] - fd_ϕ[p]) /
+                                  max(abs(fd_ϕ[p]), eps()), length(ϕ))
+        @info "Finite-difference check (dJ/dϕ per phase, radians)" adjoint=ϕ_gradient_by_phase finite_difference=fd_ϕ_gradient_by_phase rel_err=ϕ_rel_err
     end
 
     # -----------------------------------------------------------------------
@@ -509,14 +660,6 @@ function main(;
         pts   = [Point2f(c) for c in coords_v]
         polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
                  for i in 1:mesh_stokes.nels]
-
-        # Element areas normalise the raw sensitivity integrals sᵉ = λᵉᵀ ∂Rᵉ/∂G
-        # to a mesh-independent sensitivity density for plotting.
-        element_area = [
-            let a = coords_v[el2nP_cpu[1, i]], b = coords_v[el2nP_cpu[2, i]], c = coords_v[el2nP_cpu[3, i]]
-                abs((b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2])) / 2
-            end for i in 1:mesh_stokes.nels
-        ]
 
         θ    = LinRange(0, 2π, 300)
         xs_c = cx .+ r_incl .* cos.(θ)
@@ -530,13 +673,10 @@ function main(;
             return nothing
         end
 
-        el(dofs, conn) = [mean(dofs[conn[:, i]]) for i in 1:mesh_stokes.nels]
-        fig = Figure(size = (1100, 900))
+        fig = Figure(size = (1100, 760))
         for (row, col, title, values, colormap) in (
-                (1, 1, "Forward Vx", el(vx_fwd, el2nP_cpu), :vik),
-                (1, 3, "Forward Vy", el(vy_fwd, el2nP_cpu), :vik),
-                (2, 1, "Forward P",  el(P_fwd,  DoFsP_cpu), :glasgow),
-                (2, 3, "dJ/dG sensitivity (per area)", G_sensitivity ./ element_area, :vik),
+                (1, 1, "dJ/dG sensitivity (per area)", G_sensitivity ./ element_area, :vik),
+                (1, 3, "dJ/dϕ sensitivity (per area, rad⁻¹)", ϕ_sensitivity ./ element_area, :vik),
             )
             limits = extrema(values)
             ax = Axis(fig[row, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
@@ -545,26 +685,24 @@ function main(;
             draw_overlays!(ax)
         end
 
-        ax = Axis(fig[3, 1:4]; xlabel = "iteration", ylabel = "log10 residual",
-            title = "Residual evolution")
+        ax = Axis(fig[2, 1:4]; xlabel = "iteration", ylabel = "log10 residual",
+            title = "Adjoint residual evolution")
         logres(v) = log10.(max.(v, eps()))
-        if !isempty(solve_stats.history)
-            it = Float64[h.iter for h in solve_stats.history]
-            lines!(ax, it, logres([h.err_v for h in solve_stats.history]); label = "forward V")
-            lines!(ax, it, logres([h.err_P for h in solve_stats.history]); label = "forward P")
-        end
         if !isempty(adjoint_stats.history)
             it = Float64[h.iter for h in adjoint_stats.history]
-            lines!(ax, it, logres([h.err_v for h in adjoint_stats.history]); label = "adjoint V", linestyle = :dash)
-            lines!(ax, it, logres([h.err_P for h in adjoint_stats.history]); label = "adjoint P", linestyle = :dash)
+            lines!(ax, it, logres([h.err_v for h in adjoint_stats.history]); label = "velocity")
+            lines!(ax, it, logres([h.err_P for h in adjoint_stats.history]); label = "pressure")
         end
-        (isempty(solve_stats.history) && isempty(adjoint_stats.history)) || axislegend(ax; position = :rt)
+        isempty(adjoint_stats.history) || axislegend(ax; position = :rt)
         display(fig)
     end
 
     return (;
         dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP,
-        objective_vy, J0, G_sensitivity, G_gradient_by_phase, fd_gradient_by_phase,
+        objective_vy, J0,
+        G_sensitivity, G_gradient_by_phase, fd_gradient_by_phase,
+        ϕ_sensitivity, ϕ_gradient_by_phase, fd_ϕ_gradient_by_phase,
+        vtk_paths,
     )
 end
 

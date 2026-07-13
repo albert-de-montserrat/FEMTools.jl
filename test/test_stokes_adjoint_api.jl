@@ -49,7 +49,9 @@ end
 # finite difference of the same discrete objective. `∂R/∂ρ₂` is exact from a
 # residual difference (the momentum residual is linear in density). Returns the
 # two gradients and the forward/adjoint convergence flags.
-function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0, -1.0))
+function _density_gradient_check(case, η, ηb, K, G;
+    Δt = 1.0, g = SVector(0.0, -1.0), check_boundary = false,
+)
     (; backend, wg, element_v, element_P, mesh, cache, phases,
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs) = case
     α = (0.0, 0.0)
@@ -58,7 +60,7 @@ function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0
 
     objective(vy) = -sum(vy[obs])
 
-    function solve_forward(ρ2)
+    function solve_forward(ρ2; bcy_values = bcy)
         dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, ηb, α;
             ρ0 = (1.0, ρ2), K, g, Tref,
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
@@ -70,8 +72,8 @@ function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0
         stats = solve_stokes_dyrel!(
             dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
             phases, phases, τ_old, nothing, G, Δt, γP,
-            Γ, bcx, bcy, backend, wg;
-            ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
+            Γ, bcx, bcy_values, backend, wg;
+            ncheck = 100, ϵ_tol = 1.0e-12, iterMax = 200_000, total_iterMax = 200_000,
             rel_drop0 = 0.1, verbose = false, verbose_inner = false, vx_nodes, vy_nodes)
         return dr, γP, τ_old, stats
     end
@@ -89,7 +91,7 @@ function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0
         dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
-        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-12, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
         verbose = false, verbose_inner = false)
 
@@ -115,7 +117,27 @@ function _density_gradient_check(case, η, ηb, K, G; Δt = 1.0, g = SVector(0.0
     dr_minus, = solve_forward(ρ2 - δ)
     grad_fd = (objective(Array(dr_plus.vy)) - objective(Array(dr_minus.vy))) / (2δ)
 
+    boundary_gradient_adjoint = nothing
+    boundary_gradient_fd = nothing
+    if check_boundary
+        # Use a constrained top-wall velocity as a boundary control. Enzyme's
+        # pullback of vy[vy_nodes] .= bcy must return the same reduced gradient
+        # as perturbing that prescribed value in the complete forward solve.
+        ibc = findfirst(n -> mesh.coords[n][2] > 0.9, vy_nodes)
+        δbc = 1.0e-4
+        bcy_plus = copy(bcy)
+        bcy_minus = copy(bcy)
+        bcy_plus[ibc] += δbc
+        bcy_minus[ibc] -= δbc
+        dr_bc_plus, = solve_forward(ρ2; bcy_values = bcy_plus)
+        dr_bc_minus, = solve_forward(ρ2; bcy_values = bcy_minus)
+        boundary_gradient_fd =
+            (objective(Array(dr_bc_plus.vy)) - objective(Array(dr_bc_minus.vy))) / (2δbc)
+        boundary_gradient_adjoint = Array(adj.bc_gradient_vy)[ibc]
+    end
+
     return (; grad_adjoint, grad_fd,
+        boundary_gradient_adjoint, boundary_gradient_fd,
         fwd_converged = fwd.converged, adj_converged = adj.converged, λvy)
 end
 
@@ -135,8 +157,12 @@ end
     # self-coupling (∂RP/∂P)ᵀλP (both directly and through the augmented Pnum
     # chain). Omitting it biases every gradient by O(1/(ηb·Δt)); this case fails
     # by ~10% without those terms and matches finite differences with them.
-    r = _density_gradient_check(_adjoint_gradient_case(), (1.0, 1.0), (4.0, 4.0), (4.0, 4.0), (1.0, 0.5))
+    r = _density_gradient_check(
+        _adjoint_gradient_case(), (1.0, 1.0), (4.0, 4.0),
+        (4.0, 4.0), (1.0, 0.5); check_boundary = true,
+    )
     @test r.fwd_converged
     @test r.adj_converged
     @test r.grad_adjoint ≈ r.grad_fd rtol = 1.0e-4
+    @test r.boundary_gradient_adjoint ≈ r.boundary_gradient_fd rtol = 1.0e-4
 end

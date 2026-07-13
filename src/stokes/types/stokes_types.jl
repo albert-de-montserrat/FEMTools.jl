@@ -27,6 +27,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `Rv_y0`    | Residual snapshot for λ_min estimate      |
 | `∂Rv_y∂vy` | Row-sum Jacobian estimate for y-momentum  |
 | `PC_vy`    | Diagonal preconditioner for y-momentum    |
+| `M_V`      | Positive velocity mass diagonal (`∫ N_i² dΩ`) |
 | `phases_v` | Per-node phase index (1-based integer)    |
 | `τxx`      | Current deviatoric stress xx              |
 | `τyy`      | Current deviatoric stress yy              |
@@ -89,6 +90,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     Rv_y0::_T
     ∂Rv_y∂vy::_T
     PC_vy::_T
+    M_V::_T
     # velocity-node phase assignment
     phases_v::_TI
     # deviatoric stress history
@@ -152,6 +154,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
             newv(), newv(), newv(), newv(),           # vx, vy, ∂vx∂τ, ∂vy∂τ
             newv(), newv(), newv(), newv(),           # Rv_x, Rv_x0, ∂Rv_x∂vx, PC_vx
             newv(), newv(), newv(), newv(),           # Rv_y, Rv_y0, ∂Rv_y∂vy, PC_vy
+            newv(),                                    # M_V
             newiv(),                                  # phases_v
             τxx, newτ(), newτ(),                      # τxx, τyy, τxy
             newτ(), newτ(), newτ(),                   # τxx_old, τyy_old, τxy_old

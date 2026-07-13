@@ -16,11 +16,7 @@ constrained diagonal entries to one, and assigns constrained RHS values.
 All methods mutate their arguments in place and return `nothing`.
 """
 function apply_bc!(rhs::AbstractVector, ΓD::DirichletBoundaryCondition)
-    for i in eachindex(ΓD.DoFs)
-        idof = ΓD.DoFs[i]
-        val = ΓD.vals[i]
-        rhs[idof] = val
-    end
+    rhs[ΓD.DoFs] .= ΓD.vals
     return nothing
 end
 

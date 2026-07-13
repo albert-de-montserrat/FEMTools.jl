@@ -462,15 +462,14 @@ function main(;
     #
     # Use the helper to assemble both:
     #   dr.M_P = ∫ N_i dΩ
-    #   γP      = mean-viscosity pressure update scale
+    #   γP      = phase-local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction without
-    # letting phase-local viscosity extremes set the pressure step.
-    ηγP = ntuple(_ -> mean(η), Val(length(η)))
+    # losing the local scaling across viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh_stokes, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v = phases_solve, η = ηγP,
+        phases_v = phases_solve, η,
     )
 
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor

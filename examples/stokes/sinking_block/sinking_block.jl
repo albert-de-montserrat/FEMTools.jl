@@ -1,14 +1,16 @@
+using FEMTools
+
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
 
+using CUDA
 using Statistics
 using StaticArrays
 using KernelAbstractions
 using Triangulate
-using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect
 
-const backend   = CPU()
+const default_backend = CUDABackend()
 const workgroup = 128
 
 include("mesher.jl")
@@ -17,21 +19,32 @@ include("mesher.jl")
 # ---------------------------------------------------------------------------
 
 """
-    main(; max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
+    main(; backend=CUDABackend(), max_area=1 / 64^2, Δt=1.0,
+         show_plot=true, kwargs...) -> NamedTuple
 
 Run one unstructured T7/P1-disc sinking-block Stokes solve.
 
 The model builds a square domain with a rectangular inclusion, applies free-slip
 boundary conditions, solves the Stokes system once, writes one VTK file, and
-returns the stress diagnostics.
+returns the stress diagnostics. Pass `backend=CPU()` to run the same kernels
+on the host.
 """
-function main(; max_area = 1 / (1 * 64^2), show_plot = true)
-    Δt = 1
+function main(;
+    backend = default_backend,
+    max_area = 1 / 64^2,
+    Δt = 1.0,
+    show_plot = true,
+    ncheck = 50,
+    ϵ_tol = 1.0e-6,
+    iterMax = 50_000,
+    total_iterMax = 50_000,
+    γfact = 10.0,
+    out_dir = joinpath(@__DIR__, "output_stokes"),
+)
     # Domain
     Lx, Ly = 1.0, 1.0
 
     # Material (2 phases: matrix + inclusion)
-    γfact = 20.0
     η     = (1.0,     1e2)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
@@ -42,10 +55,6 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     plastic = nothing
     g     = (0.0,     -1.0)   # gravity vector
     Tref  = 0.0
-
-    # DR solver
-    ncheck = 50         # convergence check interval
-    ϵ_tol  = 1e-6        # relative residual tolerance
 
     # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
     # constrained boundary, so no element crosses the material interface.
@@ -65,14 +74,17 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         cx, cy, half_width,
         max_area,
     )
-    DoFs_v_cpu = Int32.(1:length(coords_v_cpu))
-    mesh_v = Mesh(
-        element_v, nothing, nothing,
-        coords_v_cpu, DoFs_v_cpu, el2n_v_cpu, outer_nodes,
-    )
+    # Triangle constructs the mesh on the host; the backend-aware constructor
+    # uploads coordinates, connectivity, DoFs, and boundary-node indices.
+    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
     mesh_stokes = MixedMesh(mesh_v, element_P)
+    TDev = FEMTools.TA(backend)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
+    ndofs_Vx = mesh_stokes.nnodes
+    ndofs_Vy = mesh_stokes.nnodes
+    ndofs_P = mesh_stokes.nnodesP
+    ndofs_total = ndofs_Vx + ndofs_Vy + ndofs_P
+    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels ndofs_Vx ndofs_Vy ndofs_P ndofs_total half_width max_area n_interface_nodes=length(interface_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
@@ -83,15 +95,8 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -128,7 +133,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         in_incl((coords_v[el2nP_cpu[1, i]] + coords_v[el2nP_cpu[2, i]] + coords_v[el2nP_cpu[3, i]]) / 3) ? 2 : 1
         for i in 1:mesh_stokes.nels
     ]
-    phases_solve = reshape(cell_phase, 1, :)
+    phases_solve = TDev(reshape(cell_phase, 1, :))
 
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
     corner_id = Dict{Int32, Int32}(old => Int32(i) for (i, old) in enumerate(corner_nodes))
@@ -142,17 +147,24 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     NQ_litho = length(ip_litho.ω)
     ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
     ∂N∂ξq_litho = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_litho[q]), NQ_litho)
-    geo_litho = Vector{NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_litho.nels)
-    precompute_geometry!(geo_litho, mesh_litho.coords, mesh_litho.el2n, ∂N∂ξq_litho, ip_litho.ω, Val(NP), mesh_litho.nels)
+    GeoLitho = NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}
+    geo_litho = KernelAbstractions.allocate(backend, GeoLitho, mesh_litho.nels)
+    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
+        geo_litho, mesh_litho.coords, mesh_litho.el2n,
+        ∂N∂ξq_litho, ip_litho.ω, Val(NP);
+        ndrange = mesh_litho.nels,
+    )
+    KernelAbstractions.synchronize(backend)
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
-    P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly - c[2]) for c in coords_litho]
+    P0_litho = Float64[ρ0[1] * abs(g[2]) * (-c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
-    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly) ≤ litho_tol]
-    top_zero = zeros(Float64, length(top_nodes_litho))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_litho, top_zero, top_zero,
+    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2]) ≤ litho_tol]
+    top_nodes_dev = TDev(top_nodes_litho)
+    top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
+    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
         backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
@@ -170,14 +182,15 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     # normal velocity is zero, tangential velocity is unconstrained.
     # ---------------------------------------------------------------------------
 
-    Γnodes = Array(mesh_v.Γnodes)
+    Γnodes_cpu = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
-    vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - Ly) ≤ tol]
+    vx_nodes = TDev(Int32[n for n in Γnodes_cpu if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol])
+    vy_nodes = TDev(Int32[n for n in Γnodes_cpu if abs(coords[n][2]) ≤ tol || abs(coords[n][2] + Ly) ≤ tol])
+    Γnodes = TDev(Int32.(Γnodes_cpu))
 
-    bc_vx_vals = zeros(Float64, length(vx_nodes))
-    bc_vy_vals = zeros(Float64, length(vy_nodes))
+    bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
+    bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
 
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
@@ -195,19 +208,16 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     #
     # Use the helper to assemble both:
     #   dr.M_P = ∫ N_i dΩ
-    #   γP      = mean-viscosity pressure update scale
+    #   γP      = phase-local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction without
-    # letting phase-local viscosity extremes set the pressure step.
-    ηγP = ntuple(_ -> mean(η), Val(length(η)))
+    # sacrificing the local scaling across viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh_stokes, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v = phases_solve, η = ηγP,
+        phases_v = phases_solve, η,
     )
 
-    iterMax       = 50_000   # max inner DR iterations per PH step
-    total_iterMax = 50_000   # max total inner DR iterations
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor
     verbose_PH    = true
     verbose_DR    = false
@@ -215,7 +225,6 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
-    out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
 
     solve_stats = solve_stokes_dyrel!(
@@ -232,6 +241,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         vx_nodes = vx_nodes,
         vy_nodes = vy_nodes,
     )
+    solve_stats.converged || @warn "Sinking-block solve did not reach tolerance" solve_stats
 
     update_stokes_current_stress!(
         dr, mesh_stokes, geo_v, element_v, element_P,
@@ -245,7 +255,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         vx_cpu, vy_cpu,
         el2n_v_cpu,
         Array(geo_v),
-        τ,
+        map(Array, τ),
         element_v,
     )
     mean_tauII = mean(post.tauII)
@@ -265,7 +275,8 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         cell_data = (; phase = cell_phase),
     )
     @info "Wrote VTK file" vtk_path mean_tauII iter=solve_stats.iter err=solve_stats.err
-    show_plot || return (; mean_tauII, post)
+    result = (; dr, mesh_stokes, solve_stats, mean_tauII, post, vtk_path)
+    show_plot || return result
 
     # ---------------------------------------------------------------------------
     # Visualisation
@@ -280,19 +291,35 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
             for i in 1:mesh_stokes.nels]
 
-    fig = Figure(size = (1400, 440))
+    fig = Figure(
+        size = (1400, 440).*2,
+        fontsize = 24
+    )
     axes = Axis[]
     for (col, title, label, values, colormap) in (
-        (1, "Horizontal velocity Vx", "Vx", el_Vx, :vik),
-        (3, "Vertical velocity Vy", "Vy", el_Vy, :vik),
-        (5, "Pressure P", "P", el_P, :glasgow),
+        (1, "Vx", "Vx", el_Vx, :batlow),
+        (3, "Vy", "Vy", el_Vy, :batlow),
+        (5, "P", "P", el_P, :bilbao),
     )
         limits = extrema(values)
-        ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
+        ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y", 
+            xautolimitmargin = (0, 0), yautolimitmargin = (0, 0))
         poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
-        Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
+        Colorbar(fig[1, col + 1]; colormap, limits, width = 15, tellheight = false)
+        # Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
         push!(axes, ax)
     end
+
+    xlo, xhi = cx - half_width, cx + half_width
+    ylo, yhi = cy - half_width, cy + half_width
+    for ax in axes
+        lines!(
+            ax, 
+            [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; 
+            color = :yellow, linewidth = 3, linestyle = :dash)
+    end
+    display(fig)
+
 
     # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
     # arrow_step = max(1, length(arrow_nodes) ÷ 250)
@@ -310,15 +337,13 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     #     tiplength = 8,
     # )
 
-    xlo, xhi = cx - half_width, cx + half_width
-    ylo, yhi = cy - half_width, cy + half_width
-    for ax in axes
-        lines!(ax, [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; color = :white, linewidth = 1.5, linestyle = :dash)
-    end
-
-    show_plot && display(fig)
-    # return (; mean_tauII, post)
-    nothing
+    return nothing # result
 end
 
-main()
+@time main(;
+    max_area = 1 / 256^2,
+    ϵ_tol = 1.0e-6,
+    ncheck = 50,
+    iterMax = 50_000,
+    total_iterMax = 150_000,
+)

@@ -979,6 +979,18 @@ end
     phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
+    return element_augmented_momentum_jacobians(
+        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        MP, Nq, NqP, iel, Val(NV), Val(NP), Val(false),
+    )
+end
+
+@inline function element_augmented_momentum_jacobians(
+    vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+    phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+    MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP}, ::Val{TRANSPOSE},
+) where {NV, NP, TRANSPOSE}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
@@ -1012,10 +1024,6 @@ end
         ),
         vyloc,
     )
-    rowsums_x = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVx∂vy[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
     diags_x = SVector{NV}(ntuple(i -> abs(∂RVx∂vx[i, i]), Val(NV)))
 
     ∂RVy∂vy = ForwardDiff.jacobian(
@@ -1034,10 +1042,28 @@ end
         ),
         vxloc,
     )
-    rowsums_y = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVy∂vx[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
+    rowsums_x = if TRANSPOSE
+        SVector{NV}(ntuple(
+            j -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVy∂vx[i, j]) for i in 1:NV),
+            Val(NV),
+        ))
+    else
+        SVector{NV}(ntuple(
+            i -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVx∂vy[i, j]) for j in 1:NV),
+            Val(NV),
+        ))
+    end
+    rowsums_y = if TRANSPOSE
+        SVector{NV}(ntuple(
+            j -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVx∂vy[i, j]) for i in 1:NV),
+            Val(NV),
+        ))
+    else
+        SVector{NV}(ntuple(
+            i -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVy∂vx[i, j]) for j in 1:NV),
+            Val(NV),
+        ))
+    end
     diags_y = SVector{NV}(ntuple(i -> abs(∂RVy∂vy[i, i]), Val(NV)))
 
     return local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y
@@ -1060,7 +1086,9 @@ Jacobian by computing `Pnum = γ_eff * RP(v) / M_P` inline inside each
 ForwardDiff call via `element_augmented_momentum_jacobians`. This captures
 the velocity–pressure coupling and produces a more effective preconditioner
 for incompressible Stokes flows. `P0`, `T0`, `ηb`, `γ_eff`, and `MP` are
-the additional arguments relative to the non-augmented assembler.
+the additional arguments relative to the non-augmented assembler. With
+`transpose_operator=true`, assemble column sums of the forward Jacobian,
+which are the row sums required for a conservative transpose-operator bound.
 """
 function assemble_augmented_momentum_jacobian_matrices_atomix!(
     ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
@@ -1129,7 +1157,8 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     η, G, α, ρ0, K,
     g, Tref,
     ηb, Δt, γ_eff, MP,
-    backend, workgroup,
+    backend, workgroup;
+    transpose_operator = false,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq  = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
@@ -1141,7 +1170,8 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     augmented_momentum_jacobian_atomic_kernel!(backend, workgroup)(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases_v, phases_P,
-        τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP, Nq, NqP, Val(NV), Val(NP);
+        τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP, Nq, NqP,
+        Val(NV), Val(NP), Val(transpose_operator);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -1160,13 +1190,13 @@ end
     plastic,
     η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
     @Const(MP),
-    Nq, NqP, ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+    Nq, NqP, ::Val{NV}, ::Val{NP}, ::Val{TRANSPOSE},
+) where {NV, NP, TRANSPOSE}
     iel = @index(Global)
     local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-        MP, Nq, NqP, iel, Val(NV), Val(NP),
+        MP, Nq, NqP, iel, Val(NV), Val(NP), Val(TRANSPOSE),
     )
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += rowsums_x[i]

@@ -20,6 +20,72 @@ function _convergence_geometry(coords, el2n, nels, element::ReferenceElement{E})
     return geo
 end
 
+@testset "Stokes PH uses per-cycle targets and fresh final residuals" begin
+    backend = CPU()
+    workgroup = 1
+    element_v = ReferenceElement(QuadraticElement{2, 6, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    nq = length(element_v.integration_points.ω)
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (Inf,), (0.0,);
+        ρ0 = (1.0,), K = (Inf,), g = (0.0, -1.0),
+        stress_size = (nq, mesh.nels),
+    )
+    γP = zeros(Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, cache.geo_P, element_v, element_P,
+        20.0, 1.0, backend, workgroup,
+    )
+    τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+
+    coords = Array(mesh.coords)
+    Γnodes = Array(mesh_v.Γnodes)
+    vx_nodes = Int32[n for n in Γnodes if coords[n][1] ≈ 0.0 || coords[n][1] ≈ 1.0]
+    vy_nodes = Int32[n for n in Γnodes if coords[n][2] ≈ 0.0 || coords[n][2] ≈ 1.0]
+    bc_vx = zeros(Float64, length(vx_nodes))
+    bc_vy = zeros(Float64, length(vy_nodes))
+
+    stats = solve_stokes_dyrel!(
+        dr, mesh, cache, element_v, element_P,
+        dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
+        Int32.(Γnodes), bc_vx, bc_vy, backend, workgroup;
+        ncheck = 1,
+        ϵ_tol = 0.0,
+        iterMax = 3,
+        total_iterMax = 5,
+        max_ph_iterations = 5,
+        rel_drop0 = 0.5,
+        verbose = false,
+        verbose_inner = false,
+        vx_nodes,
+        vy_nodes,
+        collect_history = true,
+    )
+
+    @test stats.iter == 5
+    @test stats.reached_total_iter
+    @test !stats.converged
+    @test all(h.itPT ≤ 3 for h in stats.history)
+    for itPH in unique(h.itPH for h in stats.history)
+        cycle = filter(h -> h.itPH == itPH, stats.history)
+        @test all(h.target_v == first(cycle).target_v for h in cycle)
+    end
+
+    total_mass_V = sum(dr.M_V)
+    free_mass_vx = total_mass_V - sum(dr.M_V[vx_nodes])
+    free_mass_vy = total_mass_V - sum(dr.M_V[vy_nodes])
+    expected_err_v = max(
+        FEMTools._mass_weighted_rms(dr.Rv_x, dr.M_V, free_mass_vx),
+        FEMTools._mass_weighted_rms(dr.Rv_y, dr.M_V, free_mass_vy),
+    ) / 2
+    expected_err_P = FEMTools._mass_weighted_rms(dr.RP, dr.M_P, sum(dr.M_P))
+    @test stats.err_v ≈ expected_err_v
+    @test stats.err_P ≈ expected_err_P
+end
+
 function _tiny_triangle_mesh()
     element = ReferenceElement(LinearElement{2, 3, Float64})
     mesh = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element, (1, 1))

@@ -103,6 +103,40 @@ function apply_dirichlet!(v, dofs, vals, backend, workgroup)
     return nothing
 end
 
+# Deliberately omit synchronization here: Enzyme differentiates the
+# KernelAbstractions launch itself, while the public pullback wrapper below
+# synchronizes after the reverse launch has been emitted.
+function _launch_dirichlet_no_sync!(v, dofs, vals, workgroup)
+    backend = KA.get_backend(v)
+    dirichlet_kernel!(backend, workgroup)(v, dofs, vals; ndrange = length(dofs))
+    return nothing
+end
+
+"""
+    apply_dirichlet_pullback!(v, dv, dofs, vals, dvals, workgroup)
+
+Apply Enzyme's reverse-mode pullback of `v[dofs] .= vals`. On return, `dv`
+is zero at constrained entries (the transpose projection onto unconstrained
+state variables), while `dvals` has accumulated the incoming constrained
+seeds (the derivative with respect to prescribed boundary values).
+
+All primal and shadow arrays must share a KernelAbstractions backend. The
+primal `v` is overwritten at `dofs`, matching [`apply_dirichlet!`](@ref).
+"""
+function apply_dirichlet_pullback!(v, dv, dofs, vals, dvals, workgroup)
+    isempty(dofs) && return nothing
+    Enzyme.autodiff_deferred(
+        Enzyme.set_runtime_activity(Enzyme.Reverse),
+        Enzyme.Const(_launch_dirichlet_no_sync!), Enzyme.Const,
+        Enzyme.Duplicated(v, dv),
+        Enzyme.Const(dofs),
+        Enzyme.Duplicated(vals, dvals),
+        Enzyme.Const(workgroup),
+    )
+    KA.synchronize(KA.get_backend(v))
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # Pseudo-transient update kernels
 # ---------------------------------------------------------------------------

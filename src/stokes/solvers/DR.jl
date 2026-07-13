@@ -9,6 +9,12 @@ function _stokes_cheb(Δτ, λmin, c_fact)
     return (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
 end
 
+function _mass_weighted_rms(r, mass, total_mass)
+    total_mass > zero(total_mass) ||
+        throw(ArgumentError("residual mass must have a positive sum"))
+    return sqrt(sum(abs2.(r) ./ mass) / total_mass)
+end
+
 @inline _normalize_stokes_verbose(verbose, verbose_inner, ::Nothing, ::Nothing) =
     (Bool(verbose), Bool(verbose_inner))
 
@@ -33,7 +39,10 @@ Run the Powell-Hestenes / DYREL-style velocity-pressure iteration for a Stokes
 state with Dirichlet velocity boundary conditions on `Γnodes`. Use `vx_nodes`
 and `vy_nodes` when the two velocity components are constrained on different
 boundaries.
-`dr.M_P` must be filled before calling.
+`dr.M_P` must be filled before calling. The solver assembles `dr.M_V`, the
+positive velocity mass diagonal, from `geo_v` before evaluating convergence.
+Both momentum and pressure convergence errors use mass-weighted RMS norms, so
+locally refined regions are weighted by physical support rather than node count.
 Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
 inner dynamic-relaxation trace.
 """
@@ -101,9 +110,33 @@ function solve_stokes_dyrel!(
     verbose, verbose_inner = _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
 
     M_P = dr.M_P
+    M_V = dr.M_V
     nout = ncheck
     zero_vx_bc = zero(bc_vx_vals)
     zero_vy_bc = zero(bc_vy_vals)
+    nfree_vx = mesh_stokes.nnodes - length(vx_nodes)
+    nfree_vy = mesh_stokes.nnodes - length(vy_nodes)
+    nfree_vx < 0 && error("vx_nodes contains more entries than velocity nodes")
+    nfree_vy < 0 && error("vy_nodes contains more entries than velocity nodes")
+
+    assemble_velocity_mass!(M_V, mesh_stokes, geo_v, element_v, backend, workgroup)
+    total_mass_V = sum(M_V)
+    free_mass_vx = total_mass_V - sum(M_V[vx_nodes])
+    free_mass_vy = total_mass_V - sum(M_V[vy_nodes])
+    total_mass_P = sum(M_P)
+
+    # Momentum residuals are weak/integrated nodal loads. Dividing by the
+    # positive velocity mass diagonal converts them to a pointwise scale. The
+    # mass-weighted RMS is insensitive to local node density, unlike an
+    # unweighted nodal RMS on refined meshes. Dirichlet residual entries are
+    # projected to zero before every norm; their mass is also excluded from the
+    # component-specific normalization.
+    free_rms(r, nfree, free_mass) = iszero(nfree) ? zero(eltype(r)) :
+        _mass_weighted_rms(r, M_V, free_mass)
+    velocity_residual_norm() = max(
+        free_rms(dr.Rv_x, nfree_vx, free_mass_vx),
+        free_rms(dr.Rv_y, nfree_vy, free_mass_vy),
+    ) / 2
 
     fill!(dr.∂vx∂τ, 0)
     fill!(dr.∂vy∂τ, 0)
@@ -134,7 +167,6 @@ function solve_stokes_dyrel!(
     err_rel = Inf
     err_v0 = 1.0
     err_P0 = 1.0
-    err_v00 = 1.0
     err_v = Inf
     err_P = Inf
     err_v_rel = Inf
@@ -167,8 +199,8 @@ function solve_stokes_dyrel!(
         apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
         apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
 
-        err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
-        err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
+        err_P = _mass_weighted_rms(dr.RP, M_P, total_mass_P)
+        err_v = velocity_residual_norm()
         if itPH == 1
             err_P0 = err_P + eps(err_P)
             err_v0 = err_v + eps(err_v)
@@ -195,10 +227,15 @@ function solve_stokes_dyrel!(
         end
         err_min = min(err_min, err)
 
-        ϵ_vel = err * rel_drop
+        # Solve momentum only to a fixed relative reduction from the start of
+        # this PH cycle. The old criterion mixed the combined outer error with
+        # a velocity residual normalized once at global iteration `ncheck`, so
+        # later PH cycles increasingly over-solved velocity before updating P.
+        target_v = max(err_v * rel_drop, ϵ)
+        err_v_inner = err_v
         itPT = 0
 
-        while err > ϵ_vel && itPT ≤ iterMax
+        while err_v_inner > target_v && itPT < iterMax && iter < total_iterMax
             itPT += 1
             iter += 1
 
@@ -238,18 +275,43 @@ function solve_stokes_dyrel!(
             apply_dirichlet!(dr.vx, vx_nodes, bc_vx_vals, backend, workgroup)
             apply_dirichlet!(dr.vy, vy_nodes, bc_vy_vals, backend, workgroup)
 
-            if iszero(iter % nout)
-                err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
-                if iter == nout
-                    err_v00 = err_v_inner + eps(err_v_inner)
-                end
-                err = max(err_v_inner / err_v00, err_v_inner)
-                isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
-                err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+            if iszero(itPT % nout) || itPT == iterMax || iter == total_iterMax
+                # Refresh the augmented residual at the updated velocity so the
+                # stopping decision and λmin estimate describe the current state.
+                copyto!(dr.Rv_x0, dr.Rv_x)
+                copyto!(dr.Rv_y0, dr.Rv_y)
+                assemble_pressure_residual_matrices_atomix!(
+                    dr.RP,
+                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                    element_v, element_P,
+                    phases_P, dr.α, dr.ηb, Δt,
+                    backend, workgroup,
+                )
+                @. dr.Pnum = γP * dr.RP / M_P
+                assemble_momentum_residual_matrices_atomix!(
+                    dr.Rv_x, dr.Rv_y,
+                    dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+                    element_v, element_P,
+                    phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                    backend, workgroup,
+                )
+                apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
+                apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
 
-                collect_history && push!(history, (; iter, err_v = err_v_inner, err_P))
+                err_v_inner = velocity_residual_norm()
+                isnan(err_v_inner) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
+                err_v_inner > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
-                verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
+                collect_history && push!(history, (;
+                    iter, itPH, itPT, err_v = err_v_inner, err_P, target_v,
+                ))
+
+                verbose_inner && @printf(
+                    "  it = %d, iter = %d, err_v = %.3e, target_v = %.3e\n",
+                    itPT, iter, err_v_inner, target_v,
+                )
 
                 λmin_vx = _stokes_λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
                 λmin_vy = _stokes_λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
@@ -272,16 +334,56 @@ function solve_stokes_dyrel!(
                 α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
             end
-
-            itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
-            iter > total_iterMax && break
         end
 
+        verbose_inner && itPT == iterMax && err_v_inner > target_v &&
+            @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
+
+        # RP from the last inner assembly may precede the final velocity update.
+        # Reassemble it at the accepted velocity before the PH pressure step.
+        assemble_pressure_residual_matrices_atomix!(
+            dr.RP,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P,
+            phases_P, dr.α, dr.ηb, Δt,
+            backend, workgroup,
+        )
         @. dr.P += γP * dr.RP / M_P
         # remove_pressure_mean!(dr.P, M_P)
 
-        iter > total_iterMax && break
+        iter >= total_iterMax && break
     end
+
+    # Always report residuals of the returned state, including exits caused by
+    # iteration limits immediately after a pressure update.
+    assemble_pressure_residual_matrices_atomix!(
+        dr.RP,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+        element_v, element_P,
+        phases_P, dr.α, dr.ηb, Δt,
+        backend, workgroup,
+    )
+    assemble_momentum_residual_matrices_atomix!(
+        dr.Rv_x, dr.Rv_y,
+        dr.vx, dr.vy, dr.P, dr.T, nothing,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+        element_v, element_P,
+        phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+        backend, workgroup,
+    )
+    apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
+    apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+
+    err_P = _mass_weighted_rms(dr.RP, M_P, total_mass_P)
+    err_v = velocity_residual_norm()
+    err_v_rel = err_v / err_v0
+    err_P_rel = err_P / err_P0
+    err_abs = max(err_v, err_P)
+    err_rel = max(err_v_rel, err_P_rel)
+    err = min(err_abs, err_rel)
+    converged = err < ϵ
 
     return (;
         itPH = itPH_done,
@@ -291,8 +393,8 @@ function solve_stokes_dyrel!(
         err_rel,
         err_v,
         err_P,
-        converged = err < ϵ,
-        reached_total_iter = iter > total_iterMax,
+        converged,
+        reached_total_iter = !converged && iter >= total_iterMax,
         history,
     )
 end

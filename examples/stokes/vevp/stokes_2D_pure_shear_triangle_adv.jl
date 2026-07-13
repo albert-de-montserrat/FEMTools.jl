@@ -1,3 +1,5 @@
+using FEMTools
+
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
 
@@ -9,7 +11,6 @@ using DomainSets
 using DomainSets: ×
 using KernelAbstractions
 using Triangulate
-using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, DataAspect
 
 const backend   = CPU()

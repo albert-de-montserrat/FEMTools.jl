@@ -83,3 +83,10 @@ end
 Return the lumped pressure mass field (`M_P`) of a Stokes solver state.
 """
 pressure_mass(dr::StokesDR) = dr.M_P
+
+"""
+    velocity_mass(dr::StokesDR)
+
+Return the positive velocity mass diagonal (`M_V`) of a Stokes solver state.
+"""
+velocity_mass(dr::StokesDR) = dr.M_V
