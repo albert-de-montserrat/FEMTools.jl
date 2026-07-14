@@ -18,6 +18,30 @@ const workgroup = 128
 
 include("mesher.jl")
 
+corner_mesh_hmin(coords, el2n) = minimum(
+    norm(coords[Int(el2n[b, e])] - coords[Int(el2n[a, e])])
+    for e in axes(el2n, 2), (a, b) in ((1, 2), (2, 3), (3, 1)))
+
+corner_max_speed(vx, vy, el2n) = maximum(
+    hypot(vx[Int(el2n[a, e])], vy[Int(el2n[a, e])])
+    for e in axes(el2n, 2), a in 1:3)
+
+function advect_t7_mesh!(coords, el2n, vx, vy, dt)
+    visited = falses(length(coords))
+    @inbounds for e in axes(el2n, 2), a in 1:3
+        n = Int(el2n[a, e])
+        visited[n] || (coords[n] += dt * SVector(vx[n], vy[n]); visited[n] = true)
+    end
+    @inbounds for e in axes(el2n, 2)
+        n1, n2, n3 = Int.(el2n[1:3, e])
+        coords[Int(el2n[4, e])] = (coords[n1] + coords[n2]) / 2
+        coords[Int(el2n[5, e])] = (coords[n2] + coords[n3]) / 2
+        coords[Int(el2n[6, e])] = (coords[n3] + coords[n1]) / 2
+        coords[Int(el2n[7, e])] = (coords[n1] + coords[n2] + coords[n3]) / 3
+    end
+    return coords
+end
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -116,11 +140,11 @@ end
 
 @kernel function material_contraction_kernel!(
     contracted_residual,
-    @Const(vx), @Const(vy), @Const(P), @Const(T),
-    @Const(λvx), @Const(λvy),
-    @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
-    @Const(τ_old), η_element, ρ_element,
-    @Const(G), @Const(α), @Const(K), @Const(g), Tref, Δt,
+    @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
+    @Const(λvx), @Const(λvy), @Const(λP),
+    @Const(el2n), @Const(dofsP), @Const(geo), @Const(geo_P), @Const(phases),
+    @Const(τ_old), η_element, ρ_element, G_element, K_element,
+    @Const(α), @Const(g), Tref, Δt,
     @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
@@ -130,9 +154,12 @@ end
     vx_e = SVector{NV}(ntuple(i -> vx[velocity_nodes[i]], Val(NV)))
     vy_e = SVector{NV}(ntuple(i -> vy[velocity_nodes[i]], Val(NV)))
     P_e  = SVector{NP}(ntuple(i -> P[pressure_dofs[i]], Val(NP)))
+    P0_e = SVector{NP}(ntuple(i -> P0[pressure_dofs[i]], Val(NP)))
     T_e  = SVector{NP}(ntuple(i -> T[pressure_dofs[i]], Val(NP)))
+    T0_e = SVector{NP}(ntuple(i -> T0[pressure_dofs[i]], Val(NP)))
     λx_e = SVector{NV}(ntuple(i -> λvx[velocity_nodes[i]], Val(NV)))
     λy_e = SVector{NV}(ntuple(i -> λvy[velocity_nodes[i]], Val(NV)))
+    λP_e = SVector{NP}(ntuple(i -> λP[pressure_dofs[i]], Val(NP)))
     # The material sensitivity is taken with respect to this element's own η and ρ,
     # so the residual is evaluated with single-entry material tuples and a phase
     # vector that indexes that lone entry (all ones). Differentiating w.r.t.
@@ -146,22 +173,27 @@ end
     )
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
         (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
-        (η_element[iel],), (G[phase],), (α[phase],),
-        (ρ_element[iel],), (K[phase],), g, Tref, Δt,
+        (η_element[iel],), (G_element[iel],), (α[phase],),
+        (ρ_element[iel],), (K_element[iel],), g, Tref, Δt,
         τ_old_e, nothing, Nq, NqP,
     )
-    contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y)
+    phase_P = SVector{NP, Int}(ntuple(_ -> 1, Val(NP)))
+    RP_e = FEMTools.integrate_PH_pressure_residual(
+        (vx_e, vy_e), P_e, P0_e, T_e, T0_e, geo[iel], geo_P[iel],
+        phase_P, (α[phase],), (K_element[iel],), Δt, NqP,
+    )
+    contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y) + dot(λP_e, RP_e)
 end
 
-function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
-    el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-    G, α, K, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
+function launch_material_contraction!(out, vx, vy, P, P0, T, T0, λvx, λvy, λP,
+    el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element,
+    α, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
-    material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
-        el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-        G, α, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
+    material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, P0, T, T0, λvx, λvy, λP,
+        el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element,
+        α, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
 end
@@ -186,7 +218,7 @@ and adjoint fields must be on that same backend. Only the completed sensitivity
 vectors are transferred to the CPU for reduction and plotting.
 """
 function material_sensitivities(
-    dr, mesh_stokes, λvx, λvy, geo_v, phases, τ_old,
+    dr, mesh_stokes, λvx, λvy, λP, geo_v, geo_P, phases, τ_old,
     element_v, element_P, η, ρ0, cell_phase,
     G, α, K, g, Tref, Δt, ::Val{NV}, ::Val{NP}, backend, workgroup,
 ) where {NV, NP}
@@ -194,10 +226,16 @@ function material_sensitivities(
     contracted_seed = KernelAbstractions.ones(backend, Float64, mesh_stokes.nels)
     η_element = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nels)
     ρ_element = similar(η_element)
+    G_element = similar(η_element)
+    K_element = similar(η_element)
     copyto!(η_element, η[cell_phase])
     copyto!(ρ_element, ρ0[cell_phase])
+    copyto!(G_element, collect(G[cell_phase]))
+    copyto!(K_element, collect(K[cell_phase]))
     viscosity_sensitivity_backend = zero(η_element)
     density_sensitivity_backend = zero(ρ_element)
+    G_sensitivity_backend = zero(G_element)
+    K_sensitivity_backend = zero(K_element)
     Nq_v = shape_function_values(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
 
@@ -205,20 +243,23 @@ function material_sensitivities(
         Enzyme.set_runtime_activity(Enzyme.Reverse),
         Enzyme.Const(launch_material_contraction!), Enzyme.Const,
         Enzyme.Duplicated(contracted_residual, contracted_seed),
-        Enzyme.Const(dr.vx), Enzyme.Const(dr.vy), Enzyme.Const(dr.P), Enzyme.Const(dr.T),
-        Enzyme.Const(λvx), Enzyme.Const(λvy),
+        Enzyme.Const(dr.vx), Enzyme.Const(dr.vy), Enzyme.Const(dr.P), Enzyme.Const(dr.P0),
+        Enzyme.Const(dr.T), Enzyme.Const(dr.T0), Enzyme.Const(λvx), Enzyme.Const(λvy), Enzyme.Const(λP),
         Enzyme.Const(mesh_stokes.el2n), Enzyme.Const(mesh_stokes.DoFsP),
-        Enzyme.Const(geo_v), Enzyme.Const(phases), Enzyme.Const(τ_old),
+        Enzyme.Const(geo_v), Enzyme.Const(geo_P), Enzyme.Const(phases), Enzyme.Const(τ_old),
         Enzyme.Duplicated(η_element, viscosity_sensitivity_backend),
         Enzyme.Duplicated(ρ_element, density_sensitivity_backend),
-        Enzyme.Const(G), Enzyme.Const(α), Enzyme.Const(K), Enzyme.Const(g),
+        Enzyme.Duplicated(G_element, G_sensitivity_backend),
+        Enzyme.Duplicated(K_element, K_sensitivity_backend),
+        Enzyme.Const(α), Enzyme.Const(g),
         Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
     )
 
     # Plotting and phase-wise reductions are CPU-side, so transfer only the two
     # completed element fields after the backend FEM integration has finished.
-    return Array(density_sensitivity_backend), Array(viscosity_sensitivity_backend)
+    return (Array(density_sensitivity_backend), Array(viscosity_sensitivity_backend),
+            Array(G_sensitivity_backend), Array(K_sensitivity_backend))
 end
 
 
@@ -246,8 +287,12 @@ geometry caches, phases, boundary arrays, and solver state are placed on that
 backend. Load CUDA before passing `CUDABackend()`; use `show_plot=false` for
 headless runs.
 
-`max_area` sets the Triangle mesh refinement, `Δt` the (visco)elastic time step,
-and `show_plot` toggles the GLMakie forward and summary figures. The remaining
+`nsteps` defaults to five, `max_area` sets the Triangle mesh refinement, and
+`Δt` is the maximum (visco)elastic time step. The actual step is capped by
+`mesh_cfl*hmin/vmax`; after each solve the T7 mesh is advected, straightened,
+and its geometry caches are rebuilt. With `write_vtk_output=true`, each step
+writes paired forward and adjoint-sensitivity VTK files to `out_dir`.
+`show_plot` toggles the GLMakie summary figure. The remaining
 keyword arguments (`ncheck`, `ϵ_tol`, `iterMax`, `total_iterMax`, and their
 `adjoint_*` counterparts) tune the forward and adjoint solver tolerances and
 iteration budgets.
@@ -255,14 +300,19 @@ iteration budgets.
 Returns a `NamedTuple` with the solver state (`dr`, `mesh_stokes`), forward and
 adjoint statistics (`solve_stats`, `adjoint_stats`), the adjoint fields
 (`λvx`, `λvy`, `λP`), the objective load `objective_vy`, the per-element
-`density_sensitivity`/`viscosity_sensitivity`, and the phase-summed
-`density_gradient_by_phase`/`viscosity_gradient_by_phase`.
+`density_sensitivity`, `viscosity_sensitivity`, `G_sensitivity`, and
+`K_sensitivity`, together with their phase-summed gradients, per-step solver
+statistics, and the generated `vtk_paths`.
 """
 function main(;
     backend = default_backend,
+    nsteps = 5,
     max_area = 1 / 64^2,
-    Δt = 1,
+    Δt = 0.1,
+    mesh_cfl = 0.25,
     show_plot = true,
+    write_vtk_output = true,
+    out_dir = joinpath(@__DIR__, "output_stokes"),
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -289,9 +339,9 @@ function main(;
     η     = (1.0,     1e0)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
-    K     = (Inf,     Inf)   # bulk modulus  (Inf → incompressible)
+    K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
     ηb    = K                # pressure storage modulus; residual uses ηb * Δt
-    G     = (Inf,     Inf)   # Shear modulus
+    G     = (1e0,     1e0)   # Shear modulus
     G_stokes = G
     plastic = nothing
     g     = (0.0,     -1.0)   # gravity vector
@@ -303,7 +353,7 @@ function main(;
     half_width = 0.1
     cx         = 0.0
     cy         = 0.0
-    objective_bounds = (-0.2, 0.2, 0.2, 0.3)
+    objective_bounds = (-0.2, 0.2, 0.4, 0.5)
 
     # ---------------------------------------------------------------------------
     # Meshes
@@ -340,6 +390,9 @@ function main(;
     NQ_v  = length(ip_v.ω)
     NV    = length(element_v)
     NP    = length(element_P)
+    ξq_v = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
+    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
+    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
     # Allocate and fill both geometry caches on the selected backend. This also
     # evaluates the discontinuous-pressure geometry at the velocity quadrature
@@ -430,8 +483,9 @@ function main(;
     @info "Phases" n_incl=count(==(2), cell_phase)
 
     # ---------------------------------------------------------------------------
-    # Boundary conditions — free slip on every wall:
-    # normal velocity is zero, tangential velocity is unconstrained.
+    # Boundary conditions: free slip on the side and bottom walls, with a true
+    # traction-free top surface. The top has no velocity Dirichlet condition,
+    # so its nodes move with the material during mesh advection.
     # ---------------------------------------------------------------------------
 
     # Classify the constrained wall nodes on the host (needs scalar coordinate
@@ -441,7 +495,8 @@ function main(;
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
     vx_nodes = TDev(Int32[n for n in Γnodes if abs(abs(coords[n][1]) - Lx / 2) ≤ tol])
-    vy_nodes = TDev(Int32[n for n in Γnodes if abs(abs(coords[n][2]) - Ly / 2) ≤ tol])
+    vy_nodes = TDev(Int32[n for n in Γnodes if abs(coords[n][2] + Ly / 2) ≤ tol])
+    free_surface_nodes = Int32[n for n in Γnodes if abs(coords[n][2] - Ly / 2) ≤ tol]
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
@@ -449,7 +504,7 @@ function main(;
     apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
 
-    @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
+    @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_free_surface = length(free_surface_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -479,29 +534,7 @@ function main(;
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
-    out_dir = joinpath(@__DIR__, "output_stokes")
-    mkpath(out_dir)
-
-    # ---------------------------------------------------------------------------
-    # Forward solve
-    # ---------------------------------------------------------------------------
-
-    solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-        ncheck,
-        ϵ_tol,
-        iterMax,
-        total_iterMax,
-        rel_drop0,
-        verbose = verbose_PH,
-        verbose_inner = verbose_DR,
-        vx_nodes,
-        vy_nodes,
-        collect_history = true,
-    )
-    solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
+    write_vtk_output && mkpath(out_dir)
 
     # ---------------------------------------------------------------------------
     # Visualisation helper — per-element average of nodal fields on the P triangles
@@ -561,31 +594,31 @@ function main(;
         return fig
     end
 
-    # Combined figure matching the finite-difference reference: forward Vx/Vy/P,
-    # density/viscosity sensitivities, and the forward + adjoint residual trace.
+    # Material-sensitivity maps and the forward + adjoint residual trace.
     # The sensitivities are already element fields, but they are raw element
     # integrals; dividing by `element_area` yields the sensitivity density, which
     # is mesh-independent and free of the per-element speckle that the
     # area-weighted integrals show on an irregular mesh.
-    function plot_summary(vx_dofs, vy_dofs, P_dofs, density_sensitivity,
-                          viscosity_sensitivity, fwd_hist, adj_hist)
-        el(dofs, conn) = [mean(dofs[conn[:, i]]) for i in 1:mesh_stokes.nels]
-        fig = Figure(size = (1100, 1300))
+    function plot_summary(density_sensitivity, viscosity_sensitivity,
+                          G_sensitivity, K_sensitivity, fwd_hist, adj_hist)
+        current_pts = [Point2f(c) for c in coords_v]
+        current_polys = [[current_pts[el2nP_cpu[1, i]], current_pts[el2nP_cpu[2, i]], current_pts[el2nP_cpu[3, i]]]
+                         for i in 1:mesh_stokes.nels]
+        fig = Figure(size = (1100, 900))
         for (row, col, title, values, colormap) in (
-                (1, 1, "Vx",  el(vx_dofs,  el2nP_cpu), :vik),
-                (1, 3, "Vy",  el(vy_dofs,  el2nP_cpu), :vik),
-                (2, 1, "P",   el(P_dofs,   DoFsP_cpu), :glasgow),
-                (2, 3, "Density sensitivity (per area)",   density_sensitivity ./ element_area,   :vik),
-                (3, 1, "Viscosity sensitivity (per area)", viscosity_sensitivity ./ element_area, :vik),
+                (1, 1, "Density sensitivity (per area)", density_sensitivity ./ element_area, :vik),
+                (1, 3, "Viscosity sensitivity (per area)", viscosity_sensitivity ./ element_area, :vik),
+                (2, 1, "dJ/dG sensitivity (per area)", G_sensitivity ./ element_area, :vik),
+                (2, 3, "dJ/dK sensitivity (per area)", K_sensitivity ./ element_area, :vik),
             )
             limits = extrema(values)
             ax = Axis(fig[row, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y")
-            poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
+            poly!(ax, current_polys; color = values, colormap, colorrange = limits, strokewidth = 0)
             Colorbar(fig[row, col + 1]; colormap, limits, width = 15, tellheight = false)
             draw_geometry_boxes!(ax)
         end
 
-        ax = Axis(fig[3, 3:4]; xlabel = "iteration", ylabel = "log10 residual",
+        ax = Axis(fig[3, 1:4]; xlabel = "iteration", ylabel = "log10 residual",
             title = "Residual evolution")
         logres(v) = log10.(max.(v, eps()))
         if !isempty(fwd_hist)
@@ -603,9 +636,6 @@ function main(;
         display(fig)
         return fig
     end
-
-    show_plot && plot_fields(Array(dr.vx), Array(dr.vy), Array(dr.P),
-        ("Forward Vx", "Forward Vy", "Forward P"))
 
     # ---------------------------------------------------------------------------
     # Adjoint solve: (dR/du)' λ + dJ/du = 0
@@ -633,13 +663,47 @@ function main(;
         objective_bounds..., workgroup,
     )
 
-    λvx = zero(dr.vx)
-    λvy = zero(dr.vy)
-    λP  = zero(dr.P)
+    solve_stats_by_step = NamedTuple[]
+    adjoint_stats_by_step = NamedTuple[]
+    vtk_paths = NamedTuple[]
+    solve_stats = adjoint_stats = nothing
+    λvx = λvy = λP = nothing
+    density_sensitivity = viscosity_sensitivity = G_sensitivity = K_sensitivity = nothing
+    density_gradient_by_phase = viscosity_gradient_by_phase = nothing
+    G_gradient_by_phase = K_gradient_by_phase = nothing
+    t = 0.0
 
-    adjoint_stats = solve_stokes_adjoint_dyrel!(
+    for istep in 1:nsteps
+        vx_previous, vy_previous = Array(dr.vx), Array(dr.vy)
+        vmax = corner_max_speed(vx_previous, vy_previous, el2n_v_cpu)
+        hmin = corner_mesh_hmin(coords_v, el2n_v_cpu)
+        dt_step = iszero(vmax) ? Δt : min(Δt, mesh_cfl * hmin / vmax)
+        t += dt_step
+        copyto!(dr.P0, dr.P)
+        copyto!(dr.T0, dr.T)
+        assemble_viscosity_weighted_pressure_scaling!(
+            γP, dr, mesh_stokes, geo_P, element_v, element_P,
+            γfact, dt_step, backend, workgroup; phases_v = phases_solve, η)
+        @info "Physical time step" istep nsteps t dt_step hmin vmax
+
+        solve_stats = solve_stokes_dyrel!(
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_solve, phases_solve, τ_old, plastic, G_stokes, dt_step, γP,
+            Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+            ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0,
+            verbose = verbose_PH, verbose_inner = verbose_DR,
+            vx_nodes, vy_nodes, collect_history = true,
+        )
+        solve_stats.converged || @warn "Forward solve did not reach tolerance" istep solve_stats
+        push!(solve_stats_by_step, solve_stats)
+
+        λvx = zero(dr.vx)
+        λvy = zero(dr.vy)
+        λP  = zero(dr.P)
+
+        adjoint_stats = solve_stokes_adjoint_dyrel!(
         dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
+        phases_solve, phases_solve, τ_old, plastic, G_stokes, dt_step, γP,
         objective_vx, objective_vy, λvx, λvy, λP,
         backend, workgroup;
         vx_nodes,
@@ -654,8 +718,9 @@ function main(;
         verbose_inner = adjoint_verbose_inner,
         collect_history = true,
     )
-    adjoint_history = adjoint_stats.history
-    adjoint_verbose && @info "Adjoint solve complete" adjoint_stats
+        adjoint_history = adjoint_stats.history
+        push!(adjoint_stats_by_step, adjoint_stats)
+        adjoint_verbose && @info "Adjoint solve complete" istep adjoint_stats
 
     # -----------------------------------------------------------------------
     # Material sensitivities
@@ -670,10 +735,10 @@ function main(;
     # phase gives the derivative with respect to that phase's single global
     # material value. Keeping the contributions element-wise gives the spatial
     # sensitivity maps analogous to `dρc` and `η_sens` in the FD script.
-    density_sensitivity, viscosity_sensitivity = material_sensitivities(
-        dr, mesh_stokes, λvx, λvy, geo_v, phases_solve, τ_old,
+    density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity = material_sensitivities(
+        dr, mesh_stokes, λvx, λvy, λP, geo_v, geo_P, phases_solve, τ_old,
         element_v, element_P, η, ρ0, cell_phase,
-        G_stokes, α, K, g, Tref, Δt, Val(NV), Val(NP), backend, workgroup,
+        G_stokes, α, K, g, Tref, dt_step, Val(NV), Val(NP), backend, workgroup,
     )
 
     density_gradient_by_phase = ntuple(
@@ -682,18 +747,70 @@ function main(;
     viscosity_gradient_by_phase = ntuple(
         p -> sum(viscosity_sensitivity[cell_phase .== p]), length(η),
     )
-    @info "Material sensitivities assembled" density_gradient_by_phase viscosity_gradient_by_phase
+    G_gradient_by_phase = ntuple(p -> sum(G_sensitivity[cell_phase .== p]), length(G))
+    K_gradient_by_phase = ntuple(p -> sum(K_sensitivity[cell_phase .== p]), length(K))
+    @info "Material sensitivities assembled" density_gradient_by_phase viscosity_gradient_by_phase G_gradient_by_phase K_gradient_by_phase
 
-    show_plot && plot_summary(Array(dr.vx), Array(dr.vy), Array(dr.P),
-        density_sensitivity, viscosity_sensitivity, solve_stats.history, adjoint_history)
+        update_stokes_current_stress!(
+            dr, mesh_stokes, geo_v, element_v, element_P,
+            phases_solve, τ_old, plastic, τ, G_stokes, dt_step, backend, workgroup)
+        rotate_stress!(dr, mesh_stokes, geo_v, element_v, dt_step)
 
-    return (;
-        dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy,
-        density_sensitivity, viscosity_sensitivity,
-        density_gradient_by_phase, viscosity_gradient_by_phase,
-    )
+        vx_cpu, vy_cpu = Array(dr.vx), Array(dr.vy)
+        advect_t7_mesh!(coords_v, el2n_v_cpu, vx_cpu, vy_cpu, dt_step)
+        @inbounds for i in eachindex(element_area)
+            a, b, c = coords_v[el2nP_cpu[1, i]], coords_v[el2nP_cpu[2, i]], coords_v[el2nP_cpu[3, i]]
+            element_area[i] = abs((b[1] - a[1]) * (c[2] - a[2]) -
+                                  (c[1] - a[1]) * (b[2] - a[2])) / 2
+        end
+        copyto!(mesh_v.coords, coords_v)
+        copyto!(mesh_stokes.coords, coords_v)
+        FEMTools.precompute_stokes_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n,
+            ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels, backend, workgroup)
+        FEMTools.precompute_stokes_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP,
+            ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels, backend, workgroup)
+
+        if write_vtk_output
+            step = lpad(istep, 4, '0')
+            P_cpu, λP_cpu = Array(dr.P), Array(λP)
+            λvx_cpu, λvy_cpu = Array(λvx), Array(λvy)
+            P_cell = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+            λP_cell = [mean(λP_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
+            forward_path = joinpath(out_dir, "sinking_block_forward_$step.vtk")
+            sensitivity_path = joinpath(out_dir, "sinking_block_adjoint_$step.vtk")
+            write_vtk(forward_path, mesh_stokes;
+                point_data = (; velocity = SVector.(vx_cpu, vy_cpu), Vx = vx_cpu, Vy = vy_cpu),
+                cell_data = (; P = P_cell, phase = cell_phase),
+                title = "Sinking block forward solution, step $istep")
+            write_vtk(sensitivity_path, mesh_stokes;
+                point_data = (; adjoint_velocity = SVector.(λvx_cpu, λvy_cpu),
+                    lambda_vx = λvx_cpu, lambda_vy = λvy_cpu),
+                cell_data = (; lambda_P = λP_cell, dJ_drho = density_sensitivity,
+                    dJ_deta = viscosity_sensitivity, dJ_dG = G_sensitivity,
+                    dJ_dK = K_sensitivity, phase = cell_phase),
+                title = "Sinking block adjoint sensitivities, step $istep")
+            push!(vtk_paths, (; forward = forward_path, adjoint = sensitivity_path))
+            @info "Wrote forward and adjoint VTK files" istep forward_path sensitivity_path
+        end
+
+        show_plot && istep == nsteps && plot_summary(
+            density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity,
+            solve_stats.history, adjoint_history)
+
+    end
+
+    # return (;
+    #     dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy,
+    #     solve_stats_by_step, adjoint_stats_by_step, vtk_paths,
+    #     density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity,
+    #     density_gradient_by_phase, viscosity_gradient_by_phase,
+    #     G_gradient_by_phase, K_gradient_by_phase,
+    # )
+    nothing
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    main()
-end
+# if abspath(PROGRAM_FILE) == @__FILE__
+main(;
+    nsteps = 50,
+)
+# end

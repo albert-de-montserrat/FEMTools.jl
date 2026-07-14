@@ -241,9 +241,10 @@ end
 
 Write a legacy ASCII VTK unstructured-grid file for `Mesh` or `MixedMesh`.
 
-High-order elements are linearized to their corner nodes. Scalar `point_data`
-fields may have either one value per mesh coordinate node or one value per
-written VTK point. Scalar `cell_data` fields must have one value per element.
+High-order elements are linearized to their corner nodes. Scalar or vector
+`point_data` fields may have either one value per mesh coordinate node or one
+value per written VTK point. Two-component vectors are padded with a zero
+z-component. `cell_data` fields must have one value per element.
 """
 function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_data = (;), title = "FEMTools")
     topo = _vtk_topology(mesh)
@@ -279,14 +280,14 @@ function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_da
         if !isempty(point_fields)
             println(io, "POINT_DATA $(length(topo.nodes))")
             for (name, field) in point_fields
-                _vtk_write_scalar_field(io, name, _vtk_point_values(field, topo, name))
+                _vtk_write_field(io, name, _vtk_point_values(field, topo, name))
             end
         end
 
         if !isempty(cell_fields)
             println(io, "CELL_DATA $(topo.nels)")
             for (name, field) in cell_fields
-                _vtk_write_scalar_field(io, name, _vtk_cell_values(field, topo, name))
+                _vtk_write_field(io, name, _vtk_cell_values(field, topo, name))
             end
         end
     end
@@ -380,6 +381,21 @@ function _vtk_write_scalar_field(io, name, values)
     println(io, "LOOKUP_TABLE default")
     for value in values
         println(io, value)
+    end
+end
+
+function _vtk_write_field(io, name, values)
+    isempty(values) || first(values) isa Number || return _vtk_write_vector_field(io, name, values)
+    return _vtk_write_scalar_field(io, name, values)
+end
+
+function _vtk_write_vector_field(io, name, values)
+    println(io, "VECTORS $(string(name)) float")
+    for value in values
+        length(value) in (2, 3) || throw(DimensionMismatch(
+            "vector field $(string(name)) must have two or three components"))
+        println(io, length(value) == 2 ? "$(value[1]) $(value[2]) 0.0" :
+                                        "$(value[1]) $(value[2]) $(value[3])")
     end
 end
 

@@ -39,6 +39,18 @@ end
     @test occursin("SCALARS Q float 1", text)
 end
 
+@testset "write_vtk writes vector point fields" begin
+    coords = SVector{2, Float64}[SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)]
+    mesh = Mesh(coords, reshape(Int32[1, 2, 3], 3, 1))
+    velocity = SVector{2, Float64}[SVector(1.0, 2.0), SVector(3.0, 4.0), SVector(5.0, 6.0)]
+
+    text = _read_temp_vtk() do path
+        write_vtk(path, mesh; point_data = (; velocity))
+    end
+
+    @test occursin("VECTORS velocity float\n1.0 2.0 0.0\n3.0 4.0 0.0", text)
+end
+
 @testset "write_vtk linearizes high-order triangle corners" begin
     coords = SVector{2, Float64}[
         SVector(0.0, 0.0),
