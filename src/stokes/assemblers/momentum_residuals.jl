@@ -610,6 +610,19 @@ function assemble_momentum_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
+                                       el2n_v, el2nP, geo_v, nels, phases,
+                                       τ_old, plastic, τ_store,
+                                       η, G, α, ρ0, K, g, Tref, Δt,
+                                       Nq, NqP, Val(NV), Val(NP), workgroup)
+
+Launch the Atomix-backed momentum-residual kernel and synchronize the backend.
+
+Lower-level entry point used by `assemble_momentum_residual_matrices_atomix!`
+once the reference-element shape-function values `Nq`, `NqP` and node counts
+(`Val(NV)`, `Val(NP)`) have been extracted from `element_v`/`element_P`.
+"""
 function assemble_momentum_residual_kernel!(
     Rv_x, Rv_y,
     vx, vy, P, T, Pnum,

@@ -1,4 +1,11 @@
-"""Apply the transpose pressure-residual Jacobian to the seed `dRP`."""
+"""
+    assemble_pressure_residual_matrices_atomix_adj!(dr, dRP, dvx, dvy, dP,
+                                                    mesh_stokes, geo_v, geo_P,
+                                                    element_v, element_P,
+                                                    phases, Δt, workgroup)
+
+Apply the transpose pressure-residual Jacobian to the seed `dRP`.
+"""
 function assemble_pressure_residual_matrices_atomix_adj!(
     dr::StokesDR,
     dRP, dvx, dvy, dP,

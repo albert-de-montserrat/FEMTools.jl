@@ -167,9 +167,32 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     end
 end
 
+"""
+    velocity(dr::StokesDR) -> (vx, vy)
+
+Return the current velocity components of a Stokes solver state.
+"""
 velocity(dr::StokesDR) = (dr.vx, dr.vy)
+
+"""
+    stress(dr::StokesDR) -> (τxx, τyy, τxy)
+
+Return the current deviatoric stress components of a Stokes solver state.
+"""
 stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
+
+"""
+    pressure(dr::StokesDR) -> P
+
+Return the current pressure field of a Stokes solver state.
+"""
 pressure(dr::StokesDR) = dr.P
+
+"""
+    temperature(dr::StokesDR) -> T
+
+Return the current temperature field of a Stokes solver state.
+"""
 temperature(dr::StokesDR) = dr.T
 
 StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =

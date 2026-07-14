@@ -13,9 +13,9 @@ function to unroll all loops at compile time.
     quote
         @inline
         ∇V = zero(∂N∂x_v[1, 1] * v[1][1])
-        Base.@nexprs $N j-> begin
+        @nexprs $N j-> begin
             v_j = v[j]
-            Base.@nexprs $M i-> begin
+            @nexprs $M i-> begin
                 ∇V += ∂N∂x_v[i,j] * v_j[i]
             end
         end
@@ -119,6 +119,18 @@ function assemble_pressure_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
+                                       el2n_v, el2nP, geo_v, geo_P, nels,
+                                       phases, α, ηb, Δt, NqP,
+                                       Val(NV), Val(NP), workgroup)
+
+Launch the Atomix-backed pressure-residual kernel and synchronize the backend.
+
+Lower-level entry point used by `assemble_pressure_residual_matrices_atomix!`
+once the pressure shape-function values `NqP` and node counts (`Val(NV)`,
+`Val(NP)`) have been extracted from `element_v`/`element_P`.
+"""
 function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0,
     el2n_v, el2nP, geo_v, geo_P, nels,
