@@ -91,6 +91,11 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP}
     end
 end
 
+"""
+    temperature(dr::ThermalDiffusionDR) -> T
+
+Return the current temperature field of a heat-diffusion solver state.
+"""
 temperature(dr::ThermalDiffusionDR) = dr.T
 
 ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K; kwargs...) =

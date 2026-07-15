@@ -8,7 +8,7 @@ using Statistics
 using StaticArrays
 using KernelAbstractions
 using Triangulate
-using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect
+using GLMakie: Figure, GridLayout, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect, save
 
 const default_backend = CUDABackend()
 const workgroup = 128
@@ -45,7 +45,7 @@ function main(;
     Lx, Ly = 1.0, 1.0
 
     # Material (2 phases: matrix + inclusion)
-    η     = (1.0,     1e2)   # shear viscosity
+    η     = (1.0,     1e1)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
     K     = (Inf,     Inf)   # bulk modulus  (Inf → incompressible)
@@ -178,15 +178,15 @@ function main(;
     @info "Phases" n_incl=count(==(2), cell_phase)
 
     # ---------------------------------------------------------------------------
-    # Boundary conditions — free slip on every wall:
-    # normal velocity is zero, tangential velocity is unconstrained.
+    # Boundary conditions: free slip on the side and bottom walls, with a true
+    # traction-free top surface (no velocity Dirichlet condition at y=0).
     # ---------------------------------------------------------------------------
 
     Γnodes_cpu = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
     vx_nodes = TDev(Int32[n for n in Γnodes_cpu if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol])
-    vy_nodes = TDev(Int32[n for n in Γnodes_cpu if abs(coords[n][2]) ≤ tol || abs(coords[n][2] + Ly) ≤ tol])
+    vy_nodes = TDev(Int32[n for n in Γnodes_cpu if abs(coords[n][2] + Ly) ≤ tol])
     Γnodes = TDev(Int32.(Γnodes_cpu))
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
@@ -292,21 +292,22 @@ function main(;
             for i in 1:mesh_stokes.nels]
 
     fig = Figure(
-        size = (1400, 440).*2,
+        size = (1400, 1200),
         fontsize = 24
     )
     axes = Axis[]
-    for (col, title, label, values, colormap) in (
-        (1, "Vx", "Vx", el_Vx, :batlow),
-        (3, "Vy", "Vy", el_Vy, :batlow),
-        (5, "P", "P", el_P, :bilbao),
+    for (row, col, title, label, values, colormap) in (
+        (1, 1, "Vx", "Vx", el_Vx, :batlow),
+        (1, 2, "Vy", "Vy", el_Vy, :batlow),
+        (2, 1, "P", "P", el_P, :bilbao),
     )
         limits = extrema(values)
-        ax = Axis(fig[1, col]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y", 
+        panel = fig[row, col] = GridLayout()
+        ax = Axis(panel[1, 1]; aspect = DataAspect(), title, xlabel = "x", ylabel = "y",
             xautolimitmargin = (0, 0), yautolimitmargin = (0, 0))
         poly!(ax, polys; color = values, colormap, colorrange = limits, strokewidth = 0)
-        Colorbar(fig[1, col + 1]; colormap, limits, width = 15, tellheight = false)
-        # Colorbar(fig[1, col + 1]; colormap, limits, label, width = 15, tellheight = false)
+        Colorbar(panel[1, 2]; colormap, limits, width = 15, tellheight = false)
+        # Colorbar(panel[1, 2]; colormap, limits, label, width = 15, tellheight = false)
         push!(axes, ax)
     end
 
@@ -318,8 +319,8 @@ function main(;
             [xlo, xhi, xhi, xlo, xlo], [ylo, ylo, yhi, yhi, ylo]; 
             color = :yellow, linewidth = 3, linestyle = :dash)
     end
+    save("sinking_forward.png", fig)
     display(fig)
-
 
     # arrow_nodes = sort!(unique(vec(el2nP_cpu)))
     # arrow_step = max(1, length(arrow_nodes) ÷ 250)
@@ -341,7 +342,7 @@ function main(;
 end
 
 @time main(;
-    max_area = 1 / 256^2,
+    max_area = 1 / 128^2,
     ϵ_tol = 1.0e-6,
     ncheck = 50,
     iterMax = 50_000,

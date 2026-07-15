@@ -15,16 +15,17 @@ coordinates. GPU backend dispatch is handled via `TA(backend)`, which returns
 the array constructor for the target compute backend (e.g. `CuArray` for CUDA).
 """ FEMTools
 
-using Printf
-using ForwardDiff
-using Enzyme
-using Atomix
-using StaticArrays
-using DomainSets
-using SparseArrays
-using KernelAbstractions
+using Printf: Printf, @printf
+using ForwardDiff: ForwardDiff
+using Enzyme: Enzyme
+using Atomix: Atomix
+using StaticArrays: StaticArrays, SA, SMatrix, SVector
+using DomainSets: DomainSets, ClosedInterval, boundary, leftendpoint, rightendpoint
+using SparseArrays: SparseArrays, sparse
+using KernelAbstractions: KernelAbstractions, @Const, @index, @kernel, CPU
 import KernelAbstractions as KA
-using LinearAlgebra
+using LinearAlgebra: LinearAlgebra, SymTridiagonal, det, dot, eigen, norm
+using Base.Cartesian: @nexprs, @ncall, @ntuple
 
 """
     TA(backend) -> Array type
@@ -89,6 +90,8 @@ include("stokes/helpers.jl")
 include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
 include("stokes/solvers/DR_adjoint.jl")
+include("stokes/stokes_adjoint_experimental/spectral_estimates.jl")
+include("stokes/stokes_adjoint_experimental/coupled_DR.jl")
 
 # Post-processing: strain-rate/stress diagnostics and VTK output of solver results.
 include("postprocess/postprocess.jl")
@@ -136,6 +139,7 @@ export StokesDR, DruckerPrager,
     rotate_stress!,
     solve_stokes_dyrel!,
     solve_stokes_adjoint_dyrel!,
+    solve_stokes_adjoint_coupled_experimental!,
     update_stokes_current_stress!
 
 # Post-processing: strain-rate/stress diagnostics and VTK output.
@@ -161,7 +165,8 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_matrices_atomix!,
     assemble_pressure_residual_kernel!,
     assemble_pressure_residual_matrices_atomix_adj!,
-    assemble_momentum_residual_matrices_atomix_adj!
+    assemble_momentum_residual_matrices_atomix_adj!,
+    assemble_experimental_adjoint_spectral_diagnostics!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!

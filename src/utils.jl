@@ -11,7 +11,7 @@ scalar type as the entries of `N`.
     quote
         @inline
         out = zero(T)
-        Base.@nexprs $M i -> out += N[i] * v[i]
+        @nexprs $M i -> out += N[i] * v[i]
         out
     end
 end
@@ -30,7 +30,7 @@ value, and it is weighted by `N[i]` and accumulated.
     quote
         @inline
         out = zero(T)
-        Base.@nexprs $M i -> out += N[i] * var[phase[i]]
+        @nexprs $M i -> out += N[i] * var[phase[i]]
         out
     end
 end
@@ -48,8 +48,8 @@ interpolate those nodal values to one integration point with weights `N`.
     quote
         @inline
         out = zero(T)
-        Base.@nexprs $M i -> out += begin
-            argsᵢ = Base.@ntuple $A j -> getindex(args[j], i)
+        @nexprs $M i -> out += begin
+            argsᵢ = @ntuple $A j -> getindex(args[j], i)
             N[i] * f(argsᵢ...)
         end
         out

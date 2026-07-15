@@ -465,7 +465,7 @@ kernels without dynamic dispatch.
     M = fieldcount(T)
     quote
         @inline
-        Base.@nexprs $M i -> x_i = N[i](coords...)
-        Base.@ncall $M SVector x
+        @nexprs $M i -> x_i = N[i](coords...)
+        @ncall $M SVector x
     end
 end
