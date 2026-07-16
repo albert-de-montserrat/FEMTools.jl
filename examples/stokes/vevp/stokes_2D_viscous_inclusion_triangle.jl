@@ -124,7 +124,13 @@ The model builds a square domain with a circular inclusion, applies pure-shear
 boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
 VTK file per physical step, and returns the stress-history diagnostics.
 """
-function main(; nsteps = 1, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(; 
+    nsteps = 1, 
+    n_circle = 96,
+    max_area = 1 / (1 * 64^2),
+    Δt = 1 / 6,
+    show_plot = true,
+)
     # Domain
     Lx, Ly = 1.0, 1.0
 
@@ -403,7 +409,16 @@ function main(; nsteps = 1, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 
             label = "P", width = 15, tellheight = false)
     lines!(ax1, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
+    errP = @. log10(abs((el_P_num-el_P_anal)))
+    ax3 = Axis(fig[1, 5]; aspect = DataAspect(),
+            title = "Pressure  error", xlabel = "x", ylabel = "y")
+    p = poly!(ax3, polys; color = errP, colormap = :vik, strokewidth = 0)
+    Colorbar(fig[1, 6], p; 
+            label = "log10(err)", width = 15, tellheight = false)
+    lines!(ax3, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
+
     show_plot && display(fig)
+
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
