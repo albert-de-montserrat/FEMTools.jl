@@ -1,7 +1,11 @@
 using FEMTools
 
-# Experimental variant: λvx, λvy, and λP are advanced together by
-# `solve_stokes_adjoint_coupled_experimental!` in one pseudo-time loop.
+# The adjoint is solved with the production PH/DYREL solver
+# `solve_stokes_adjoint_dyrel!`: a velocity DYREL loop alternating with
+# Arrow-Hurwicz pressure-adjoint updates. The γP-scaled pressure step is what
+# keeps the pressure adjoint advancing at the SI magnitudes used here; the
+# experimental coupled solver's mass-preconditioned λP update stalls on
+# dimensional problems.
 
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "../.."))
@@ -149,7 +153,7 @@ end
     @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
     @Const(λvx), @Const(λvy), @Const(λP),
     @Const(el2n), @Const(dofsP), @Const(geo), @Const(geo_P), @Const(phases),
-    @Const(τ_old), η_element, ρ_element, G_element, K_element,
+    @Const(τ_old), η_element, ρ_element, G_element, K_element, Q_element,
     @Const(α), @Const(g), Tref, Δt,
     @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
@@ -166,6 +170,7 @@ end
     λx_e = SVector{NV}(ntuple(i -> λvx[velocity_nodes[i]], Val(NV)))
     λy_e = SVector{NV}(ntuple(i -> λvy[velocity_nodes[i]], Val(NV)))
     λP_e = SVector{NP}(ntuple(i -> λP[pressure_dofs[i]], Val(NP)))
+    Q_e = SVector{NP}(ntuple(_ -> Q_element[iel], Val(NP)))
     # The material sensitivity is taken with respect to this element's own η and ρ,
     # so the residual is evaluated with single-entry material tuples and a phase
     # vector that indexes that lone entry (all ones). Differentiating w.r.t.
@@ -185,20 +190,20 @@ end
     )
     phase_P = SVector{NP, Int}(ntuple(_ -> 1, Val(NP)))
     RP_e = FEMTools.integrate_PH_pressure_residual(
-        (vx_e, vy_e), P_e, P0_e, T_e, T0_e, geo[iel], geo_P[iel],
+        (vx_e, vy_e), P_e, P0_e, T_e, T0_e, Q_e, geo[iel], geo_P[iel],
         phase_P, (α[phase],), (K_element[iel],), Δt, NqP,
     )
     contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y) + dot(λP_e, RP_e)
 end
 
 function launch_material_contraction!(out, vx, vy, P, P0, T, T0, λvx, λvy, λP,
-    el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element,
+    el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element, Q_element,
     α, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
     material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, P0, T, T0, λvx, λvy, λP,
-        el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element,
+        el2n, dofsP, geo, geo_P, phases, τ_old, η_element, ρ_element, G_element, K_element, Q_element,
         α, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -208,11 +213,12 @@ end
     material_sensitivities(dr, mesh_stokes, λvx, λvy, geo_v, phases, τ_old,
                            element_v, element_P, η, ρ0, cell_phase,
                            G, α, K, g, Tref, Δt, Val(NV), Val(NP),
-                           backend, workgroup) -> (density_sensitivity, viscosity_sensitivity)
+                           backend, workgroup) -> (..., Q_sensitivity, Q_element)
 
 Assemble the per-element material sensitivities `sᵉ(m) = λᵉᵀ ∂Rᵉ/∂m` of the
 converged adjoint state by reverse-differentiating `launch_material_contraction!`
-with respect to the element density and viscosity fields.
+with respect to the element density, viscosity, elastic moduli, and uniform
+element volumetric source fields.
 
 `cell_phase[iel]` selects the phase whose `η`/`ρ0` value seeds element `iel`.
 Returns the two element fields as CPU arrays; summing the entries of one phase
@@ -234,14 +240,19 @@ function material_sensitivities(
     ρ_element = similar(η_element)
     G_element = similar(η_element)
     K_element = similar(η_element)
+    Q_element = similar(η_element)
     copyto!(η_element, η[cell_phase])
     copyto!(ρ_element, ρ0[cell_phase])
     copyto!(G_element, collect(G[cell_phase]))
     copyto!(K_element, collect(K[cell_phase]))
+    Q_cpu = Array(dr.Q)
+    dofsP_cpu = Array(mesh_stokes.DoFsP)
+    copyto!(Q_element, [sum(Q_cpu[dofsP_cpu[:, iel]]) / NP for iel in 1:mesh_stokes.nels])
     viscosity_sensitivity_backend = zero(η_element)
     density_sensitivity_backend = zero(ρ_element)
     G_sensitivity_backend = zero(G_element)
     K_sensitivity_backend = zero(K_element)
+    Q_sensitivity_backend = zero(Q_element)
     Nq_v = shape_function_values(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
 
@@ -257,6 +268,7 @@ function material_sensitivities(
         Enzyme.Duplicated(ρ_element, density_sensitivity_backend),
         Enzyme.Duplicated(G_element, G_sensitivity_backend),
         Enzyme.Duplicated(K_element, K_sensitivity_backend),
+        Enzyme.Duplicated(Q_element, Q_sensitivity_backend),
         Enzyme.Const(α), Enzyme.Const(g),
         Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
@@ -265,7 +277,8 @@ function material_sensitivities(
     # Plotting and phase-wise reductions are CPU-side, so transfer only the two
     # completed element fields after the backend FEM integration has finished.
     return (Array(density_sensitivity_backend), Array(viscosity_sensitivity_backend),
-            Array(G_sensitivity_backend), Array(K_sensitivity_backend))
+            Array(G_sensitivity_backend), Array(K_sensitivity_backend),
+            Array(Q_sensitivity_backend), Array(Q_element))
 end
 
 
@@ -274,12 +287,12 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; backend=CPU(), max_area=1/64^2, Δt=1, show_plot=true, kwargs...) -> NamedTuple
+    main(; backend=CPU(), max_area=(20e3/64)^2, Δt=100yr, show_plot=true, kwargs...)
 
 Solve one unstructured T7/P1-disc sinking-block Stokes problem and its discrete
-adjoint, advancing all three adjoint variables in the experimental coupled DR
-loop, then assemble the material sensitivities of the observation-box velocity
-objective `J(vᵧ) = -∫_Ωₒᵇₛ vᵧ dΩ`.
+adjoint with the production PH/DYREL adjoint solver, then assemble the material
+sensitivities of the observation-box velocity objective
+`J(vᵧ) = -∫_Ωₒᵇₛ vᵧ dΩ`.
 
 The model builds a square domain with a rectangular density/viscosity inclusion,
 applies free-slip boundary conditions, initialises the pressure from a
@@ -294,15 +307,21 @@ geometry caches, phases, boundary arrays, and solver state are placed on that
 backend. Load CUDA before passing `CUDABackend()`; use `show_plot=false` for
 headless runs.
 
-`nsteps` defaults to five, `max_area` sets the Triangle mesh refinement, and
-`Δt` is the maximum (visco)elastic time step. The actual step is capped by
+`nsteps` defaults to one. `max_area` sets the Triangle element-area bound on
+the chamber, the conduit, and the volcanic edifice; away from those features
+the bound grows with distance — the target edge length increases at rate
+`mesh_grading` per unit distance — up to `coarsening_ratio * max_area` on the
+lateral sides. `Δt` is the maximum (visco)elastic time step in seconds (100
+years by default). The actual step is capped by
 `mesh_cfl*hmin/vmax`; after each solve the T7 mesh is advected, straightened,
-and its geometry caches are rebuilt. With `write_vtk_output=true`, each step
+and its geometry caches are rebuilt. `q_magma` is the positive volumetric
+source rate applied to the chamber (phase 3) pressure DoFs. With
+`write_vtk_output=true`, each step
 writes paired forward and adjoint-sensitivity VTK files to `out_dir`.
 `show_plot` toggles the GLMakie summary figure. The remaining
 keyword arguments (`ncheck`, `ϵ_tol`, `iterMax`, `total_iterMax`, and their
-`adjoint_*` counterparts) tune the forward and experimental coupled-adjoint
-solver tolerances, spectral damping, and iteration budget.
+`adjoint_*` counterparts) tune the forward and adjoint solver tolerances and
+iteration budgets.
 
 Returns a `NamedTuple` with the solver state (`dr`, `mesh_stokes`), forward and
 adjoint statistics (`solve_stats`, `adjoint_stats`), the adjoint fields
@@ -314,12 +333,15 @@ statistics, and the generated `vtk_paths`.
 function main(;
     backend = default_backend,
     nsteps = 1,
-    max_area = 1 / 64^2,
-    Δt = 0.1,
+    max_area = (20.0e3 / 64)^2,
+    coarsening_ratio = 25.0,
+    mesh_grading = 0.3,
+    Δt = 100 * 365.25 * 24 * 3600,
     mesh_cfl = 0.25,
+    q_magma = 1.0e-13,
     show_plot = true,
     write_vtk_output = true,
-    out_dir = joinpath(@__DIR__, "output_stokes_adjoint_experimental"),
+    out_dir = joinpath(@__DIR__, "Volcano_dims_output_stokes_adjoint"),
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -327,10 +349,6 @@ function main(;
     adjoint_tol = 1.0e-6,
     adjoint_iterMax = 50_000,
     adjoint_verbose = true,
-    adjoint_CFL_v = 0.9,
-    adjoint_CFL_P = 0.9,
-    adjoint_c_fact = 0.7,
-    adjoint_pressure_gauge = :auto,
     # Powell-Hestenes augmentation strength and DYREL Chebyshev damping. A
     # stronger augmentation (γfact) and lighter damping (c_fact) than the historical
     # 20/0.9 cut the forward iteration count by ~15% on this problem without
@@ -340,27 +358,42 @@ function main(;
     c_fact = 0.7,
 )
     # Domain
-    Lx, Ly = 1.0, 1.0
+    Lx, Ly = 100.0e3, 20.0e3
 
-    # Material (2 phases: matrix + inclusion)
-    η     = (1,   1e0)   # shear viscosity
-    α     = (1.0,     1.0)   # thermal expansivity  (zero → isothermal)
-    ρ0    = (1.0,     1e0)   # reference density
-    K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
-    ηb    = K                # pressure storage modulus; residual uses ηb * Δt
-    G     = (1e0,     1e0)   # Shear modulus
+    # Material (3 phases: lower background, upper background, inclusion). The
+    # background is split by the horizontal line y = cy through the inclusion
+    # centre; the two halves start with identical properties and can be tuned
+    # independently.
+    # SI properties: lower crust, upper crust, silicic magma chamber.
+    # Phase 3 is an effective crystal-rich magma/mush rheology. A pure-melt
+    # viscosity (~10⁷ Pa s) creates a 10¹³ contrast that the Stokes DR
+    # preconditioner cannot resolve on this mesh.
+    η     = (1.0e22, 1.0e21, 1.0e18)      # shear viscosity [Pa s]
+    α     = (3.0e-5, 3.0e-5, 5.0e-5)      # thermal expansivity [K⁻¹]
+    ρ0    = (2900.0, 2700.0, 2400.0)      # reference density [kg m⁻³]
+    K     = (60.0e9, 50.0e9, 10.0e9)      # bulk modulus [Pa]
+    Cp    = (1000.0, 1000.0, 1200.0)       # heat capacity [J kg⁻¹ K⁻¹]
+    k     = (2.5, 2.5, 1.5)               # conductivity [W m⁻¹ K⁻¹]
+    ηb    = K                             # pressure storage modulus [Pa]
+    G     = (30.0e9, 30.0e9, 5.0e9)       # shear modulus [Pa]
     G_stokes = G
     plastic = nothing
-    g     = (0.0,     -1.0)   # gravity vector
-    Tref  = 0.0
+    g     = (0.0, -9.81)                   # gravity [m s⁻²]
+    Tref  = 288.15                         # 15 °C [K]
 
     # DR solver
-    # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
+    # Inclusion geometry. The Triangle PSLG uses this circle as an internal
     # constrained boundary, so no element crosses the material interface.
-    half_width = 0.1
-    cx         = 0.0
-    cy         = 0.0
-    objective_bounds = (-0.2, 0.2, 0.4, 0.5)
+    chamber_half_width = 5.7e3
+    chamber_half_height = 0.5e3
+    chamber_depth = 7.5e3
+    volcano_rim_radius = 300.0
+    volcano_half_span = 20.0e3
+    volcano_peak_height = 3400.0
+    conduit_half_width = volcano_rim_radius
+    cx = 0.0
+    cy = Ly / 2 - chamber_depth
+    objective_bounds = (-20.0e3, 20.0e3, Ly / 2 - 0.75e3, Ly / 2)
 
     # ---------------------------------------------------------------------------
     # Meshes
@@ -369,10 +402,45 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
+    # Volcano top surface centred over the inclusion: a flat base, linear flanks,
+    # and a flat summit plateau (no crater). Heights are measured above the flat
+    # top y=0 in the mesher's frame, so profile(0)=profile(Lx)=0 keeps the side
+    # walls vertical.
+    volcano_topography(x) = volcano_profile(
+        x; volcano_cx = Lx / 2, volcano_half_span,
+        volcano_peak_height, volcano_rim_radius,
+    )
+    # Graded resolution (mesher frame: x ∈ [0, Lx], flat top at y = 0): the
+    # target edge length is √(2 max_area) on the chamber, the conduit, and the
+    # volcanic edifice (including the near-surface objective layer), and grows
+    # linearly with distance from those features up to a far-field cap, so the
+    # lateral sides carry far fewer elements than the region of interest.
+    h_fine = sqrt(2 * max_area)
+    h_coarse = sqrt(2 * coarsening_ratio * max_area)
+    box_distance(x, y, x1, x2, y1, y2) =
+        hypot(max(x1 - x, x - x2, 0.0), max(y1 - y, y - y2, 0.0))
+    max_area_at = (x, y) -> begin
+        d = min(
+            # chamber (bounding box of the ellipse)
+            box_distance(x, y, Lx / 2 - chamber_half_width, Lx / 2 + chamber_half_width,
+                -chamber_depth - chamber_half_height, -chamber_depth + chamber_half_height),
+            # conduit, from the chamber centre up to the summit
+            box_distance(x, y, Lx / 2 - conduit_half_width, Lx / 2 + conduit_half_width,
+                -chamber_depth, volcano_peak_height),
+            # edifice and the near-surface objective layer beneath it
+            box_distance(x, y, Lx / 2 - volcano_half_span, Lx / 2 + volcano_half_span,
+                -0.75e3, volcano_peak_height),
+        )
+        h = min(h_fine + mesh_grading * d, h_coarse)
+        return h^2 / 2
+    end
     coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_triangle_t7_inclusion_mesh(;
         Lx, Ly,
-        cx = Lx / 2, cy = -Ly / 2, half_width,
-        max_area,
+        cx = Lx / 2, cy = -chamber_depth,
+        ellipse_half_width = chamber_half_width,
+        ellipse_half_height = chamber_half_height,
+        conduit_half_width,
+        max_area_at, split_background = true, topography = volcano_topography,
     )
     shift = SVector(-Lx / 2, Ly / 2)
     coords_v_cpu = [c + shift for c in coords_v_cpu]
@@ -380,14 +448,14 @@ function main(;
     # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
     # one place, so every array read by a subsequent assembly kernel lives on
     # the same device as the solver fields.
-    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
+    mesh_v = FEMTools.Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
     # Device array constructor for uploading host-built index/BC/phase arrays to
     # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
     TDev = FEMTools.TA(backend)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
+    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels chamber_half_width chamber_half_height chamber_depth conduit_half_width max_area n_interface_nodes=length(interface_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
@@ -430,20 +498,51 @@ function main(;
     # Phase assignment — rectangular inclusion
     # ---------------------------------------------------------------------------
 
-    in_incl(c) = abs(c[1] - cx) ≤ half_width && abs(c[2] - cy) ≤ half_width
+    # A point lies in the circular inclusion within a small tolerance; the
+    # constrained circle boundary keeps every element wholly inside or outside.
+    incl_tol = 1.0e-6
+    chamber_conduit_junction = cy + chamber_half_height *
+        sqrt(1 - (conduit_half_width / chamber_half_width)^2)
+    in_chamber(c) = hypot(
+        (c[1] - cx) / chamber_half_width,
+        (c[2] - cy) / chamber_half_height,
+    ) ≤ 1 + incl_tol
+    in_conduit(c) = abs(c[1] - cx) ≤ conduit_half_width + incl_tol &&
+        c[2] ≥ chamber_conduit_junction - incl_tol
+    in_incl(c) = in_chamber(c) || in_conduit(c)
+    # Phase 3 is the inclusion; the background splits at the horizontal line
+    # y = cy into a lower half (phase 1) and an upper half (phase 2).
+    phase_of(c) = in_incl(c) ? 3 : (c[2] < cy ? 1 : 2)
 
     coords_v     = Array(mesh_stokes.coords)
 
     el2nP_cpu    = Array(mesh_stokes.el2nP)
     DoFsP_cpu    = Array(mesh_stokes.DoFsP)
+    # An element is the inclusion only when all three corners lie in the disk:
+    # the centroid alone can fall in the thin gap between a boundary chord and
+    # the arc. The background half then follows the element-centroid height.
     cell_phase = Int[
-        in_incl((coords_v[el2nP_cpu[1, i]] + coords_v[el2nP_cpu[2, i]] + coords_v[el2nP_cpu[3, i]]) / 3) ? 2 : 1
+        let c1 = coords_v[el2nP_cpu[1, i]], c2 = coords_v[el2nP_cpu[2, i]], c3 = coords_v[el2nP_cpu[3, i]]
+            (in_incl(c1) && in_incl(c2) && in_incl(c3)) ? 3 :
+                ((c1[2] + c2[2] + c3[2]) / 3 < cy ? 1 : 2)
+        end
         for i in 1:mesh_stokes.nels
     ]
     # `cell_phase` stays on the host for the reductions and material-field
     # gathers below; the solver reads phases inside kernels, so upload a device
     # copy for the assembly path.
     phases_solve = TDev(reshape(cell_phase, 1, :))
+
+    # Apply a small, constant volumetric source only inside the magmatic
+    # chamber. P1-disc pressure DoFs belong to exactly one element, so this
+    # assignment introduces no ambiguity at the chamber boundary.
+    Q_cpu = zeros(Float64, mesh_stokes.nnodesP)
+    @inbounds for iel in eachindex(cell_phase)
+        all(a -> in_chamber(coords_v[el2nP_cpu[a, iel]]), 1:3) &&
+            (Q_cpu[DoFsP_cpu[:, iel]] .= q_magma)
+    end
+    copyto!(dr.Q, Q_cpu)
+    @info "Magmatic chamber source" q_magma n_source_dofs=count(x -> !iszero(x), Q_cpu)
 
 
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
@@ -453,16 +552,21 @@ function main(;
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
+    mesh_litho = FEMTools.Mesh(backend, coords_litho, el2n_litho)
    
     geo_litho = FEMTools.precompute_geometry(backend, workgroup, mesh_litho, element_P)
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
-    copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
+    copyto!(lp_dr.phases, Int[phase_of(c) for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
-    litho_tol = max(Lx, Ly) * eps(Float64) * 32
-    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
+    litho_tol = max(Lx, Ly) * sqrt(eps(Float64))
+    top_nodes_litho = Int32[
+        corner_id[Int32(n)] for n in outer_nodes
+        if haskey(corner_id, Int32(n)) &&
+           abs(abs(coords_v[n][1]) - Lx / 2) > litho_tol &&
+           abs(coords_v[n][2] + Ly / 2) > litho_tol
+    ]
     top_nodes_dev = TDev(top_nodes_litho)
     top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
     solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
@@ -476,7 +580,7 @@ function main(;
     copyto!(dr.P, P_hydro)
     copyto!(dr.P0, P_hydro)
 
-    @info "Phases" n_incl=count(==(2), cell_phase)
+    @info "Phases" n_incl=count(==(3), cell_phase) n_lower=count(==(1), cell_phase) n_upper=count(==(2), cell_phase)
 
     # ---------------------------------------------------------------------------
     # Initial temperature field: a linear background between the free surface
@@ -484,13 +588,14 @@ function main(;
     # constant T_inclusion inside the density/viscosity inclusion.
     # ---------------------------------------------------------------------------
 
-    T_top       = 0.0
-    T_bottom    = 1.0
-    T_inclusion = 0.9
+    geothermal_gradient = 25.0 / 1.0e3     # 25 K/km
+    T_top       = 288.15                    # 15 °C
+    T_bottom    = T_top + geothermal_gradient * Ly
+    T_inclusion = 1173.15                   # 900 °C silicic magma
     T_init = Vector{Float64}(undef, mesh_stokes.nnodesP)
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         dof = DoFsP_cpu[a, iel]
-        if cell_phase[iel] == 2
+        if cell_phase[iel] == 3
             T_init[dof] = T_inclusion
         else
             z = (Ly / 2 - coords_v[el2nP_cpu[a, iel]][2]) / Ly
@@ -513,10 +618,14 @@ function main(;
     # consume to the backend.
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
-    tol = max(Lx, Ly) * eps(Float64) * 32
+    tol = max(Lx, Ly) * sqrt(eps(Float64))
     vx_nodes = TDev(Int32[n for n in Γnodes if abs(abs(coords[n][1]) - Lx / 2) ≤ tol])
     vy_nodes = TDev(Int32[n for n in Γnodes if abs(coords[n][2] + Ly / 2) ≤ tol])
-    free_surface_nodes = Int32[n for n in Γnodes if abs(coords[n][2] - Ly / 2) ≤ tol]
+    free_surface_nodes = Int32[
+        n for n in Γnodes
+        if abs(abs(coords[n][1]) - Lx / 2) > tol &&
+           abs(coords[n][2] + Ly / 2) > tol
+    ]
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
@@ -525,6 +634,39 @@ function main(;
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_free_surface = length(free_surface_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
+
+    # Thermal diffusion uses the continuous P1 corner mesh. Temperatures are
+    # transferred to the discontinuous Stokes pressure/temperature DOFs after
+    # every thermal solve, with the same dimensional phase properties as Stokes.
+    thermal_dr = ThermalDiffusionDR(
+        backend, mesh_litho.nnodes, k, Cp, ρ0, α, K;
+        CFL = 0.9, ϵ = 1.0e-6)
+    copyto!(thermal_dr.phases, Int[phase_of(c) for c in coords_litho])
+    thermal_T_init = Float64[
+        in_incl(c) ? T_inclusion :
+        T_top + (T_bottom - T_top) * (Ly / 2 - c[2]) / Ly
+        for c in coords_litho
+    ]
+    copyto!(thermal_dr.T, thermal_T_init)
+    copyto!(thermal_dr.T0, thermal_T_init)
+
+    thermal_top = Int32[
+        corner_id[Int32(n)] for n in Γnodes
+        if haskey(corner_id, Int32(n)) &&
+           abs(abs(coords[n][1]) - Lx / 2) > tol &&
+           abs(coords[n][2] + Ly / 2) > tol
+    ]
+    thermal_bottom = Int32[
+        corner_id[Int32(n)] for n in Γnodes
+        if haskey(corner_id, Int32(n)) && abs(coords[n][2] + Ly / 2) ≤ tol
+    ]
+    thermal_dofs = TDev(vcat(thermal_top, thermal_bottom))
+    thermal_vals = TDev(vcat(fill(T_top, length(thermal_top)),
+                            fill(T_bottom, length(thermal_bottom))))
+    thermal_zero = zero(thermal_vals)
+    FEMTools.apply_dirichlet!(
+        thermal_dr.T, thermal_dofs, thermal_vals, backend, workgroup)
+    copyto!(thermal_dr.T0, thermal_dr.T)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -561,7 +703,11 @@ function main(;
     # ---------------------------------------------------------------------------
 
     element_area = FEMTools.element_triangle_areas(coords_v, el2nP_cpu)
-    incl_bounds = (cx - half_width, cx + half_width, cy - half_width, cy + half_width)
+    incl_bounds = (;
+        cx, cy, rx = chamber_half_width, ry = chamber_half_height,
+        conduit_half_width, conduit_bottom = chamber_conduit_junction,
+        conduit_top = Ly / 2 + 3400.0,
+    )
     obs_bounds  = objective_bounds
 
     # ---------------------------------------------------------------------------
@@ -628,7 +774,7 @@ function main(;
         λvy = zero(dr.vy)
         λP  = zero(dr.P)
 
-        adjoint_stats = solve_stokes_adjoint_coupled_experimental!(
+        adjoint_stats = solve_stokes_adjoint_dyrel!(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_solve, phases_solve, τ_old, plastic, G_stokes, dt_step, γP,
             objective_vx, objective_vy, λvx, λvy, λP,
@@ -638,17 +784,14 @@ function main(;
             ncheck,
             adjoint_tol,
             iterMax = adjoint_iterMax,
+            total_iterMax = adjoint_iterMax,
             verbose = adjoint_verbose,
             collect_history = true,
-            pressure_gauge = adjoint_pressure_gauge,
-            CFL_v = adjoint_CFL_v,
-            CFL_P = adjoint_CFL_P,
-            c_fact = adjoint_c_fact,
         )
         adjoint_history = adjoint_stats.history
         push!(adjoint_stats_by_step, adjoint_stats)
-        adjoint_stats.converged || @warn "Experimental coupled adjoint did not reach tolerance" istep adjoint_stats
-        adjoint_verbose && @info "Experimental coupled adjoint solve complete" istep adjoint_stats
+        adjoint_stats.converged || @warn "Adjoint solve did not reach tolerance" istep adjoint_stats
+        adjoint_verbose && @info "Adjoint solve complete" istep adjoint_stats
 
     # -----------------------------------------------------------------------
     # Material sensitivities
@@ -663,7 +806,8 @@ function main(;
     # phase gives the derivative with respect to that phase's single global
     # material value. Keeping the contributions element-wise gives the spatial
     # sensitivity maps analogous to `dρc` and `η_sens` in the FD script.
-    density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity = material_sensitivities(
+    density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity,
+        Q_sensitivity, Q_element = material_sensitivities(
         dr, mesh_stokes, λvx, λvy, λP, geo_v, geo_P, phases_solve, τ_old,
         element_v, element_P, η, ρ0, cell_phase,
         G_stokes, α, K, g, Tref, dt_step, Val(NV), Val(NP), backend, workgroup,
@@ -677,7 +821,27 @@ function main(;
     )
     G_gradient_by_phase = ntuple(p -> sum(G_sensitivity[cell_phase .== p]), length(G))
     K_gradient_by_phase = ntuple(p -> sum(K_sensitivity[cell_phase .== p]), length(K))
-    @info "Material sensitivities assembled" density_gradient_by_phase viscosity_gradient_by_phase G_gradient_by_phase K_gradient_by_phase
+    Q_gradient_by_phase = ntuple(p -> sum(Q_sensitivity[cell_phase .== p]), length(K))
+    objective_terms = Array(objective_vy) .* Array(dr.vy)
+    J = sum(objective_terms)
+    J_scale = max(abs(J), sum(abs, objective_terms), eps(Float64))
+    density_log_sensitivity = density_sensitivity .* [ρ0[p] for p in cell_phase] ./ J_scale
+    viscosity_log_sensitivity = viscosity_sensitivity .* [η[p] for p in cell_phase] ./ J_scale
+    G_log_sensitivity = G_sensitivity .* [G[p] for p in cell_phase] ./ J_scale
+    K_log_sensitivity = K_sensitivity .* [K[p] for p in cell_phase] ./ J_scale
+    Q_log_sensitivity = Q_sensitivity .* Q_element ./ J_scale
+    density_log_gradient_by_phase = ntuple(
+        p -> ρ0[p] * density_gradient_by_phase[p] / J_scale, length(ρ0))
+    viscosity_log_gradient_by_phase = ntuple(
+        p -> η[p] * viscosity_gradient_by_phase[p] / J_scale, length(η))
+    G_log_gradient_by_phase = ntuple(
+        p -> G[p] * G_gradient_by_phase[p] / J_scale, length(G))
+    K_log_gradient_by_phase = ntuple(
+        p -> K[p] * K_gradient_by_phase[p] / J_scale, length(K))
+    Q_log_gradient_by_phase = ntuple(
+        p -> sum(Q_log_sensitivity[cell_phase .== p]), length(K))
+    sensitivity_area = copy(element_area)
+    @info "Dimensionless logarithmic material sensitivities" J J_scale density_log_gradient_by_phase viscosity_log_gradient_by_phase G_log_gradient_by_phase K_log_gradient_by_phase Q_gradient_by_phase Q_log_gradient_by_phase
 
         update_stokes_current_stress!(
             dr, mesh_stokes, geo_v, element_v, element_P,
@@ -685,6 +849,19 @@ function main(;
         post = write_vtk_output ? compute_strain_rate_stress_postprocess(
             Array(dr.vx), Array(dr.vy), el2n_v_cpu, Array(geo_v), map(Array, τ), element_v,
         ) : nothing
+
+        P_cpu = Array(dr.P)
+        copyto!(thermal_dr.T0, thermal_dr.T)
+        solver!(thermal_dr, dt_step, mesh_litho, geo_litho, element_P,
+            thermal_dofs, thermal_zero, thermal_vals, backend, workgroup;
+            ncheck = 100, iterMax = 50_000, verbose = false, Tref = Tref)
+        thermal_T = Array(thermal_dr.T)
+        T_cpu = similar(P_cpu)
+        @inbounds for iel in 1:mesh_stokes.nels, a in 1:NP
+            T_cpu[DoFsP_cpu[a, iel]] = thermal_T[corner_id[Int32(el2nP_cpu[a, iel])]]
+        end
+        copyto!(dr.T, T_cpu)
+
         rotate_stress!(dr, mesh_stokes, geo_v, element_v, dt_step)
 
         vx_cpu, vy_cpu = Array(dr.vx), Array(dr.vy)
@@ -692,6 +869,9 @@ function main(;
         element_area = FEMTools.element_triangle_areas(coords_v, el2nP_cpu)
         copyto!(mesh_v.coords, coords_v)
         copyto!(mesh_stokes.coords, coords_v)
+        copyto!(mesh_litho.coords, coords_v[Int.(corner_nodes)])
+        geo_litho = FEMTools.precompute_geometry(
+            backend, workgroup, mesh_litho, element_P)
         FEMTools.precompute_stokes_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n,
             ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels, backend, workgroup)
         FEMTools.precompute_stokes_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP,
@@ -705,8 +885,8 @@ function main(;
             P_cell = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
             T_cell = [mean(T_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
             λP_cell = [mean(λP_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
-            forward_path = joinpath(out_dir,     "hot_sinking_block_forward_experimental_$step")
-            sensitivity_path = joinpath(out_dir, "hot_sinking_block_adjoint_experimental_$step")
+            forward_path = joinpath(out_dir,     "volcano_dims_forward_$step")
+            sensitivity_path = joinpath(out_dir, "volcano_dims_adjoint_$step")
             FEMTools.write_vtu(forward_path, mesh_stokes;
                 point_data = (; velocity = SVector.(vx_cpu, vy_cpu), Vx = vx_cpu, Vy = vy_cpu),
                 cell_data = (; P = P_cell, T = T_cell,
@@ -719,19 +899,23 @@ function main(;
                 point_data = (; adjoint_velocity = SVector.(λvx_cpu, λvy_cpu),
                     lambda_vx = λvx_cpu, lambda_vy = λvy_cpu),
                 cell_data = (; lambda_P = λP_cell,
-                    dJ_drho = density_sensitivity ./ element_area,
-                    dJ_deta = viscosity_sensitivity ./ element_area,
-                    dJ_dG = G_sensitivity ./ element_area,
-                    dJ_dK = K_sensitivity ./ element_area,
+                    dlnJ_dlnrho = density_log_sensitivity ./ sensitivity_area,
+                    dlnJ_dlneta = viscosity_log_sensitivity ./ sensitivity_area,
+                    dlnJ_dlnG = G_log_sensitivity ./ sensitivity_area,
+                    dlnJ_dlnK = K_log_sensitivity ./ sensitivity_area,
+                    dJ_dQ = Q_sensitivity ./ sensitivity_area,
+                    dlnJ_dlnQ = Q_log_sensitivity ./ sensitivity_area,
                     phase = cell_phase))
             push!(vtk_paths, (; forward = forward_path, adjoint = sensitivity_path))
-            @info "Wrote forward and experimental-adjoint VTK files" istep forward_path sensitivity_path
+            @info "Wrote forward and adjoint VTK files" istep forward_path sensitivity_path
         end
 
         show_plot && istep == nsteps && FEMTools.plot_summary(
-            density_sensitivity, viscosity_sensitivity, G_sensitivity, K_sensitivity,
+            density_log_sensitivity, viscosity_log_sensitivity,
+            G_log_sensitivity, K_log_sensitivity,
             solve_stats.history, adjoint_history,
-            coords_v, el2nP_cpu, element_area, incl_bounds, obs_bounds)
+            coords_v, el2nP_cpu, sensitivity_area, incl_bounds, obs_bounds;
+            log_scaled = true, Q_sensitivity = Q_log_sensitivity)
 
     end
 
@@ -745,4 +929,4 @@ function main(;
     nothing
 end
 
-main(; nsteps = 200)
+main(; nsteps = 50)

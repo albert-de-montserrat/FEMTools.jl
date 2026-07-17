@@ -297,7 +297,9 @@ headless runs.
 `nsteps` defaults to five, `max_area` sets the Triangle mesh refinement, and
 `Δt` is the maximum (visco)elastic time step. The actual step is capped by
 `mesh_cfl*hmin/vmax`; after each solve the T7 mesh is advected, straightened,
-and its geometry caches are rebuilt. With `write_vtk_output=true`, each step
+and its geometry caches are rebuilt. `q_magma` is the positive volumetric
+source rate applied to the chamber (phase 3) pressure DoFs. With
+`write_vtk_output=true`, each step
 writes paired forward and adjoint-sensitivity VTK files to `out_dir`.
 `show_plot` toggles the GLMakie summary figure. The remaining
 keyword arguments (`ncheck`, `ϵ_tol`, `iterMax`, `total_iterMax`, and their
@@ -317,9 +319,10 @@ function main(;
     max_area = 1 / 64^2,
     Δt = 0.1,
     mesh_cfl = 0.25,
+    q_magma = 1.0e-2,
     show_plot = true,
     write_vtk_output = true,
-    out_dir = joinpath(@__DIR__, "output_stokes_adjoint_experimental"),
+    out_dir = joinpath(@__DIR__, "Volcano_output_stokes_adjoint"),
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -340,27 +343,31 @@ function main(;
     c_fact = 0.7,
 )
     # Domain
-    Lx, Ly = 1.0, 1.0
+    Lx, Ly = 2.0, 1.0
 
-    # Material (2 phases: matrix + inclusion)
-    η     = (1,   1e0)   # shear viscosity
-    α     = (1.0,     1.0)   # thermal expansivity  (zero → isothermal)
-    ρ0    = (1.0,     1e0)   # reference density
-    K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
-    ηb    = K                # pressure storage modulus; residual uses ηb * Δt
-    G     = (1e0,     1e0)   # Shear modulus
+    # Material (3 phases: lower background, upper background, inclusion). The
+    # background is split by the horizontal line y = cy through the inclusion
+    # centre; the two halves start with identical properties and can be tuned
+    # independently.
+    η     = (1e2,   5e1,   1e0)   # shear viscosity
+    α     = (1.0,   1.0,   1.0)   # thermal expansivity  (zero → isothermal)
+    ρ0    = (1.0,   1.0,   1e0)   # reference density
+    K     = (4e0,   4e0,   4e0)   # bulk modulus  (Inf → incompressible)
+    Cp    = (1.0,   1.0,   1.0)   # specific heat capacity
+    ηb    = K                     # pressure storage modulus; residual uses ηb * Δt
+    G     = (1e0,   1e0,   1.1e0)   # Shear modulus
     G_stokes = G
     plastic = nothing
     g     = (0.0,     -1.0)   # gravity vector
     Tref  = 0.0
 
     # DR solver
-    # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
+    # Inclusion geometry. The Triangle PSLG uses this circle as an internal
     # constrained boundary, so no element crosses the material interface.
-    half_width = 0.1
+    radius     = 0.1
     cx         = 0.0
     cy         = 0.0
-    objective_bounds = (-0.2, 0.2, 0.4, 0.5)
+    objective_bounds = (-0.8, 0.8, 0.45, 0.5)
 
     # ---------------------------------------------------------------------------
     # Meshes
@@ -369,10 +376,18 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
+    # Volcano top surface centred over the inclusion: a flat base, linear flanks,
+    # and a flat summit plateau (no crater). Heights are measured above the flat
+    # top y=0 in the mesher's frame, so profile(0)=profile(Lx)=0 keeps the side
+    # walls vertical.
+    volcano_topography(x) = volcano_profile(
+        x; volcano_cx = Lx / 2, volcano_half_span = 0.1,
+        volcano_peak_height = 0.05Ly, volcano_rim_radius = 0.025,
+    )
     coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_triangle_t7_inclusion_mesh(;
         Lx, Ly,
-        cx = Lx / 2, cy = -Ly / 2, half_width,
-        max_area,
+        cx = Lx / 2, cy = -Ly / 2, radius,
+        max_area, split_background = true, topography = volcano_topography,
     )
     shift = SVector(-Lx / 2, Ly / 2)
     coords_v_cpu = [c + shift for c in coords_v_cpu]
@@ -380,14 +395,14 @@ function main(;
     # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
     # one place, so every array read by a subsequent assembly kernel lives on
     # the same device as the solver fields.
-    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
+    mesh_v = FEMTools.Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
     # Device array constructor for uploading host-built index/BC/phase arrays to
     # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
     TDev = FEMTools.TA(backend)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
+    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels radius max_area n_interface_nodes=length(interface_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
@@ -430,20 +445,42 @@ function main(;
     # Phase assignment — rectangular inclusion
     # ---------------------------------------------------------------------------
 
-    in_incl(c) = abs(c[1] - cx) ≤ half_width && abs(c[2] - cy) ≤ half_width
+    # A point lies in the circular inclusion within a small tolerance; the
+    # constrained circle boundary keeps every element wholly inside or outside.
+    incl_tol = radius * 1.0e-6
+    in_incl(c) = hypot(c[1] - cx, c[2] - cy) ≤ radius + incl_tol
+    # Phase 3 is the inclusion; the background splits at the horizontal line
+    # y = cy into a lower half (phase 1) and an upper half (phase 2).
+    phase_of(c) = in_incl(c) ? 3 : (c[2] < cy ? 1 : 2)
 
     coords_v     = Array(mesh_stokes.coords)
 
     el2nP_cpu    = Array(mesh_stokes.el2nP)
     DoFsP_cpu    = Array(mesh_stokes.DoFsP)
+    # An element is the inclusion only when all three corners lie in the disk:
+    # the centroid alone can fall in the thin gap between a boundary chord and
+    # the arc. The background half then follows the element-centroid height.
     cell_phase = Int[
-        in_incl((coords_v[el2nP_cpu[1, i]] + coords_v[el2nP_cpu[2, i]] + coords_v[el2nP_cpu[3, i]]) / 3) ? 2 : 1
+        let c1 = coords_v[el2nP_cpu[1, i]], c2 = coords_v[el2nP_cpu[2, i]], c3 = coords_v[el2nP_cpu[3, i]]
+            (in_incl(c1) && in_incl(c2) && in_incl(c3)) ? 3 :
+                ((c1[2] + c2[2] + c3[2]) / 3 < cy ? 1 : 2)
+        end
         for i in 1:mesh_stokes.nels
     ]
     # `cell_phase` stays on the host for the reductions and material-field
     # gathers below; the solver reads phases inside kernels, so upload a device
     # copy for the assembly path.
     phases_solve = TDev(reshape(cell_phase, 1, :))
+
+    # Apply a small, constant volumetric source only inside the magmatic
+    # chamber. P1-disc pressure DoFs belong to exactly one element, so this
+    # assignment introduces no ambiguity at the chamber boundary.
+    Q_cpu = zeros(Float64, mesh_stokes.nnodesP)
+    @inbounds for iel in eachindex(cell_phase)
+        cell_phase[iel] == 3 && (Q_cpu[DoFsP_cpu[:, iel]] .= q_magma)
+    end
+    copyto!(dr.Q, Q_cpu)
+    @info "Magmatic chamber source" q_magma n_source_dofs=count(x -> !iszero(x), Q_cpu)
 
 
     corner_nodes = sort!(unique(vec(el2nP_cpu)))
@@ -453,12 +490,12 @@ function main(;
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
+    mesh_litho = FEMTools.Mesh(backend, coords_litho, el2n_litho)
    
     geo_litho = FEMTools.precompute_geometry(backend, workgroup, mesh_litho, element_P)
 
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
-    copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
+    copyto!(lp_dr.phases, Int[phase_of(c) for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
@@ -476,7 +513,7 @@ function main(;
     copyto!(dr.P, P_hydro)
     copyto!(dr.P0, P_hydro)
 
-    @info "Phases" n_incl=count(==(2), cell_phase)
+    @info "Phases" n_incl=count(==(3), cell_phase) n_lower=count(==(1), cell_phase) n_upper=count(==(2), cell_phase)
 
     # ---------------------------------------------------------------------------
     # Initial temperature field: a linear background between the free surface
@@ -490,7 +527,7 @@ function main(;
     T_init = Vector{Float64}(undef, mesh_stokes.nnodesP)
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         dof = DoFsP_cpu[a, iel]
-        if cell_phase[iel] == 2
+        if cell_phase[iel] == 3
             T_init[dof] = T_inclusion
         else
             z = (Ly / 2 - coords_v[el2nP_cpu[a, iel]][2]) / Ly
@@ -525,6 +562,45 @@ function main(;
     apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_free_surface = length(free_surface_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
+
+    # Thermal diffusion uses the continuous P1 corner mesh. Temperatures are
+    # transferred to the discontinuous Stokes pressure/temperature DOFs after
+    # every thermal solve. Use constant density in the heat equation: the
+    # nondimensional Stokes EOS coefficients (α = 1, K = 4) are intentionally
+    # strong and make the thermal DR iteration unstable when reused there.
+    thermal_conductivity = (1.0, 1.0, 1.0)
+    thermal_α = ntuple(_ -> 0.0, length(α))
+    thermal_bulk_modulus = ntuple(_ -> 1.0e12, length(K))
+    thermal_dr = ThermalDiffusionDR(
+        backend, mesh_litho.nnodes, thermal_conductivity, Cp, ρ0,
+        thermal_α, thermal_bulk_modulus;
+        CFL = 0.9, ϵ = 1.0e-6)
+    copyto!(thermal_dr.phases, Int[phase_of(c) for c in coords_litho])
+    thermal_T_init = Float64[
+        in_incl(c) ? T_inclusion :
+        T_top + (T_bottom - T_top) * (Ly / 2 - c[2]) / Ly
+        for c in coords_litho
+    ]
+    copyto!(thermal_dr.T, thermal_T_init)
+    copyto!(thermal_dr.T0, thermal_T_init)
+
+    thermal_top = Int32[
+        corner_id[Int32(n)] for n in Γnodes
+        if haskey(corner_id, Int32(n)) &&
+           abs(abs(coords[n][1]) - Lx / 2) > tol &&
+           abs(coords[n][2] + Ly / 2) > tol
+    ]
+    thermal_bottom = Int32[
+        corner_id[Int32(n)] for n in Γnodes
+        if haskey(corner_id, Int32(n)) && abs(coords[n][2] + Ly / 2) ≤ tol
+    ]
+    thermal_dofs = TDev(vcat(thermal_top, thermal_bottom))
+    thermal_vals = TDev(vcat(fill(T_top, length(thermal_top)),
+                            fill(T_bottom, length(thermal_bottom))))
+    thermal_zero = zero(thermal_vals)
+    FEMTools.apply_dirichlet!(
+        thermal_dr.T, thermal_dofs, thermal_vals, backend, workgroup)
+    copyto!(thermal_dr.T0, thermal_dr.T)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -561,7 +637,7 @@ function main(;
     # ---------------------------------------------------------------------------
 
     element_area = FEMTools.element_triangle_areas(coords_v, el2nP_cpu)
-    incl_bounds = (cx - half_width, cx + half_width, cy - half_width, cy + half_width)
+    incl_bounds = (; cx, cy, r = radius)
     obs_bounds  = objective_bounds
 
     # ---------------------------------------------------------------------------
@@ -685,6 +761,19 @@ function main(;
         post = write_vtk_output ? compute_strain_rate_stress_postprocess(
             Array(dr.vx), Array(dr.vy), el2n_v_cpu, Array(geo_v), map(Array, τ), element_v,
         ) : nothing
+
+        P_cpu = Array(dr.P)
+        copyto!(thermal_dr.T0, thermal_dr.T)
+        solver!(thermal_dr, dt_step, mesh_litho, geo_litho, element_P,
+            thermal_dofs, thermal_zero, thermal_vals, backend, workgroup;
+            ncheck = 100, iterMax = 50_000, verbose = false, Tref = Tref)
+        thermal_T = Array(thermal_dr.T)
+        T_cpu = similar(P_cpu)
+        @inbounds for iel in 1:mesh_stokes.nels, a in 1:NP
+            T_cpu[DoFsP_cpu[a, iel]] = thermal_T[corner_id[Int32(el2nP_cpu[a, iel])]]
+        end
+        copyto!(dr.T, T_cpu)
+
         rotate_stress!(dr, mesh_stokes, geo_v, element_v, dt_step)
 
         vx_cpu, vy_cpu = Array(dr.vx), Array(dr.vy)
@@ -692,6 +781,9 @@ function main(;
         element_area = FEMTools.element_triangle_areas(coords_v, el2nP_cpu)
         copyto!(mesh_v.coords, coords_v)
         copyto!(mesh_stokes.coords, coords_v)
+        copyto!(mesh_litho.coords, coords_v[Int.(corner_nodes)])
+        geo_litho = FEMTools.precompute_geometry(
+            backend, workgroup, mesh_litho, element_P)
         FEMTools.precompute_stokes_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n,
             ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels, backend, workgroup)
         FEMTools.precompute_stokes_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP,
@@ -745,4 +837,4 @@ function main(;
     nothing
 end
 
-main(; nsteps = 200)
+main(; nsteps = 20)
