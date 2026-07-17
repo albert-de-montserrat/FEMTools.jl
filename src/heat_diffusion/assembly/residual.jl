@@ -59,8 +59,9 @@ end
 
 Gather element-local nodal values and integrate the multi-phase heat-diffusion residual.
 
-`phases` is the nodal phase-index array. `phase_loc` is gathered element-locally
-as an `SVector{N, Int}` and forwarded to `integrate_residual`. Returns
+`phases` is the nodal phase-index array. For multiple materials, `phase_loc` is
+gathered element-locally as an `SVector{N, Int}` and forwarded to
+`integrate_residual`; single-material tuples skip that gather. Returns
 `(local_nodes, Re)` ready for global scatter.
 """
 @inline function element_residual(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, iel, ::Val{N}) where N
@@ -70,9 +71,15 @@ as an `SVector{N, Int}` and forwarded to `integrate_residual`. Returns
     T0loc     = SVector{N}(ntuple(i -> T0[local_nodes[i]],        Val(N)))
     sloc      = SVector{N}(ntuple(i -> source[local_nodes[i]],    Val(N)))
     Ploc      = SVector{N}(ntuple(i -> P[local_nodes[i]],         Val(N)))
-    phase_loc = SVector{N}(ntuple(i -> Int(phases[local_nodes[i]]), Val(N)))
+    phase_loc = local_phase_indices(phases, local_nodes, k, Val(N))
     Re = integrate_residual(Tloc, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc, Δt, Tref, Nq, Val(N))
     return local_nodes, Re
+end
+
+@inline local_phase_indices(::Any, ::Any, ::NTuple{1}, ::Val{N}) where N = nothing
+
+@inline function local_phase_indices(phases, local_nodes, k, ::Val{N}) where N
+    return SVector{N}(ntuple(i -> Int(phases[local_nodes[i]]), Val(N)))
 end
 
 """
@@ -88,7 +95,7 @@ via ForwardDiff. Returns `(local_nodes, rowsums, diags)`.
     T0loc     = SVector{N}(ntuple(i -> T0[local_nodes[i]],          Val(N)))
     sloc      = SVector{N}(ntuple(i -> source[local_nodes[i]],      Val(N)))
     Ploc      = SVector{N}(ntuple(i -> P[local_nodes[i]],           Val(N)))
-    phase_loc = SVector{N}(ntuple(i -> Int(phases[local_nodes[i]]), Val(N)))
+    phase_loc = local_phase_indices(phases, local_nodes, k, Val(N))
     ∂Re∂Te = ForwardDiff.jacobian(
         Tloc -> integrate_residual(Tloc, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc, Δt, Tref, Nq, Val(N)),
         Tloc,
@@ -104,9 +111,10 @@ end
 
 Integrate the element residual for a transient multi-phase heat-diffusion equation.
 
-`phase_loc` is an `SVector{N, Int}` of per-node phase indices. At each quadrature
-point, material properties are interpolated from the nodal phase assignments using
-the shape functions, then combined through the linearised EOS:
+For multiple materials, `phase_loc` is an `SVector{N, Int}` of per-node phase
+indices and properties are interpolated using the shape functions. A
+single-material tuple bypasses the phase data. The properties are combined
+through the linearised EOS:
 
     ρ_q = ρ0_q * (1 - α_q*(T_q - Tref) + P_q/K_q)
 """
@@ -117,19 +125,36 @@ the shape functions, then combined through the linearised EOS:
         Nv  = Nq[q]
         Tq  = dot(Nv, Tloc)
         Pq  = dot(Nv, Ploc)
-        tmp = ∂N∂x' * Tloc
-        kq  = interp2ip_phase(Nv,  k, phase_loc)
-        αq  = interp2ip_phase(Nv,  α, phase_loc)
-        Kq  = interp2ip_phase(Nv,  K, phase_loc)
-        ρ0q = interp2ip_phase(Nv, ρ0, phase_loc)
-        Cpq = interp2ip_phase(Nv, Cp, phase_loc)
+        ∇T  = ∂N∂x' * Tloc
+        kq, Cpq, ρ0q, αq, Kq = heat_properties(Nv, phase_loc, k, Cp, ρ0, α, K)
         ρq  = ρ0q * (1 - αq * (Tq - Tref) + Pq / Kq)
-        KTloc = kq * (∂N∂x * tmp)
+        source_scale    = Δt / (ρq * Cpq)
+        diffusion_scale = source_scale * kq
         Re   += SVector{N}(ntuple(
-            i -> (-Tloc[i] + T0loc[i] + Δt / (ρq * Cpq) * sloc[i]) * Nv[i] * dΩ -
-                 Δt / (ρq * Cpq) * KTloc[i] * dΩ,
+            i -> ((-Tloc[i] + T0loc[i] + source_scale * sloc[i]) * Nv[i] -
+                  diffusion_scale * gradient_projection(∂N∂x, ∇T, i)) * dΩ,
             Val(N),
         ))
     end
     return Re
+end
+
+
+@inline function gradient_projection(∂N∂x::StaticMatrix{N, D}, ∇T, i) where {N, D}
+    return dot(SVector{D}(ntuple(d -> ∂N∂x[i, d], Val(D))), ∇T)
+end
+
+
+@inline function heat_properties(Nv, phase_loc, k::NTuple{1}, Cp::NTuple{1}, ρ0::NTuple{1}, α::NTuple{1}, K::NTuple{1})
+    return k[1], Cp[1], ρ0[1], α[1], K[1]
+end
+
+@inline function heat_properties(Nv, phase_loc, k, Cp, ρ0, α, K)
+    return (
+        interp2ip_phase(Nv, k, phase_loc),
+        interp2ip_phase(Nv, Cp, phase_loc),
+        interp2ip_phase(Nv, ρ0, phase_loc),
+        interp2ip_phase(Nv, α, phase_loc),
+        interp2ip_phase(Nv, K, phase_loc),
+    )
 end
