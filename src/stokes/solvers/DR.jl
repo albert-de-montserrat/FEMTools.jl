@@ -181,7 +181,7 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_matrices_atomix!(
             dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_P, dr.α, dr.ηb, Δt,
@@ -202,10 +202,10 @@ function solve_stokes_dyrel!(
         err_P = _mass_weighted_rms(dr.RP, M_P, total_mass_P)
         err_v = velocity_residual_norm()
         if itPH == 1
-            err_P0 = err_P + eps(err_P)
-            err_v0 = err_v + eps(err_v)
+            err_P0 = max(err_P, ϵ) + eps(err_P)
+            err_v0 = max(err_v, ϵ) + eps(err_v)
         elseif itPH == 2
-            err_P0 = err_P + eps(err_P)
+            err_P0 = max(err_P, ϵ) + eps(err_P)
         end
         err_v_rel = err_v / err_v0
         err_P_rel = err_P / err_P0
@@ -244,7 +244,7 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
-                dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
                 phases_P, dr.α, dr.ηb, Δt,
@@ -282,7 +282,7 @@ function solve_stokes_dyrel!(
                 copyto!(dr.Rv_y0, dr.Rv_y)
                 assemble_pressure_residual_matrices_atomix!(
                     dr.RP,
-                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
                     phases_P, dr.α, dr.ηb, Δt,
@@ -305,7 +305,10 @@ function solve_stokes_dyrel!(
                 err_v_inner > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
                 collect_history && push!(history, (;
-                    iter, itPH, itPT, err_v = err_v_inner, err_P, target_v,
+                    iter, itPH, itPT, err_v = err_v_inner, err_P,
+                    err_v_rel = err_v_inner / err_v0,
+                    err_P_rel = err_P / err_P0,
+                    target_v,
                 ))
 
                 verbose_inner && @printf(
@@ -343,7 +346,7 @@ function solve_stokes_dyrel!(
         # Reassemble it at the accepted velocity before the PH pressure step.
         assemble_pressure_residual_matrices_atomix!(
             dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_P, dr.α, dr.ηb, Δt,
@@ -359,7 +362,7 @@ function solve_stokes_dyrel!(
     # iteration limits immediately after a pressure update.
     assemble_pressure_residual_matrices_atomix!(
         dr.RP,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
         element_v, element_P,
         phases_P, dr.α, dr.ηb, Δt,

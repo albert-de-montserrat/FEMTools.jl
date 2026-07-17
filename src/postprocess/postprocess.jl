@@ -237,6 +237,24 @@ function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
 end
 
 """
+    element_triangle_areas(coords_v, el2nP) -> Vector
+
+Straight-sided areas `∫dΩ` of the P1 corner triangles, one per element, from the
+three-row corner connectivity `el2nP` and vertex coordinates `coords_v`. Raw
+material sensitivities are un-normalized element integrals
+`sᵉ = λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(density)`; dividing by these areas recovers the
+mesh-independent sensitivity density.
+"""
+function element_triangle_areas(coords_v, el2nP)
+    return [
+        let a = coords_v[el2nP[1, i]], b = coords_v[el2nP[2, i]], c = coords_v[el2nP[3, i]]
+            abs((b[1] - a[1]) * (c[2] - a[2]) - (c[1] - a[1]) * (b[2] - a[2])) / 2
+        end
+        for i in axes(el2nP, 2)
+    ]
+end
+
+"""
     write_vtk(path, mesh; point_data=(;), cell_data=(;), title="FEMTools")
 
 Write a legacy ASCII VTK unstructured-grid file for `Mesh` or `MixedMesh`.

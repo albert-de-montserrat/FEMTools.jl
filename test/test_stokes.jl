@@ -55,6 +55,7 @@ end
         @test eltype(dr.P)  == FP
         @test length(dr.vx) == 10
         @test length(dr.P)  == 12
+        @test length(dr.Q)  == 12
         @test length(dr.M_P) == 12
         @test length(dr.M_V) == 10
         @test length(dr.Pnum) == 12
@@ -75,6 +76,7 @@ end
         @test all(iszero, Array(dr.M_P))
         @test all(iszero, Array(dr.M_V))
         @test all(iszero, Array(dr.Pnum))
+        @test all(iszero, Array(dr.Q))
 
         vx, vy = FEMTools.velocity(dr)
         τxx, τyy, τxy = FEMTools.stress(dr)
@@ -86,6 +88,28 @@ end
         @test FEMTools.pressure(dr) === dr.P
         @test FEMTools.temperature(dr) === dr.T
     end
+end
+
+@testset "pressure residual volumetric source" begin
+    Nv = SA[1 / 3, 1 / 3, 1 / 3]
+    dNdx = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
+    geo = ((dNdx, 0.5),)
+    zero3 = SA[0.0, 0.0, 0.0]
+    Q = SA[2.0, 2.0, 2.0]
+    args = ((zero3, zero3), zero3, zero3, zero3, zero3)
+
+    R0 = FEMTools.integrate_PH_pressure_residual(
+        args..., geo, geo, SA[1, 1, 1], (0.0,), (Inf,), 1.0, (Nv,),
+    )
+    RQ = FEMTools.integrate_PH_pressure_residual(
+        args..., Q, geo, geo, SA[1, 1, 1], (0.0,), (Inf,), 1.0, (Nv,),
+    )
+
+    @test R0 == zero3
+    @test RQ ≈ SA[1 / 3, 1 / 3, 1 / 3]
+    @test FEMTools.integrate_PH_pressure_residual(
+        args..., -Q, geo, geo, SA[1, 1, 1], (0.0,), (Inf,), 1.0, (Nv,),
+    ) ≈ -RQ
 end
 
 @testset "StokesDR constructor — integration-point stress storage" begin

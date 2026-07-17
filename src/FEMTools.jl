@@ -134,6 +134,7 @@ export LithostaticPressureDR
 export StokesDR, DruckerPrager,
     assemble_velocity_mass!,
     assemble_viscosity_weighted_pressure_scaling!,
+    assemble_viscosity_weighted_pressure_scaling,
     velocity_mass,
     pressure_mass,
     rotate_stress!,
@@ -171,9 +172,25 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_adjoint_blocks,
     apply_pressure_adjoint_blocks!,
     assemble_experimental_adjoint_spectral_diagnostics!
-public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
+public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!, precompute_geometry
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public velocity, stress, pressure, temperature
+
+# Visualization helpers for plotting FE fields and material sensitivities. Method
+# implementations live in the Makie extension (ext/FEMToolsMakieExt.jl) and
+# become callable as `FEMTools.plot_summary(...)` once a Makie backend is loaded.
+function plotting_triangles end
+function draw_geometry_boxes! end
+function plot_fields end
+function plot_summary end
+public plotting_triangles, draw_geometry_boxes!, plot_fields, plot_summary
+public element_triangle_areas
+
+# WriteVTK-backed `.vtu` output. Implemented in the WriteVTK extension
+# (ext/FEMToolsWriteVTKExt.jl); callable as `FEMTools.write_vtu(...)` once WriteVTK
+# is loaded. The dependency-free `write_vtk` always writes legacy ASCII instead.
+function write_vtu end
+public write_vtu
 
 end # module FEMTools

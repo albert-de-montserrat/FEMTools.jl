@@ -76,6 +76,19 @@ function solve_stokes_adjoint_dyrel!(
     collect_history = false,
 )
     M_P = dr.M_P
+    M_V = dr.M_V
+    assemble_velocity_mass!(M_V, mesh_stokes, geo_v, element_v, backend, workgroup)
+    total_mass_V = sum(M_V)
+    free_mass_vx = total_mass_V - sum(M_V[vx_nodes])
+    free_mass_vy = total_mass_V - sum(M_V[vy_nodes])
+    total_mass_P = sum(M_P)
+
+    adjoint_velocity_residual_norm() = max(
+        _mass_weighted_rms(ResλVx, M_V, free_mass_vx),
+        _mass_weighted_rms(ResλVy, M_V, free_mass_vy),
+    ) / 2
+    adjoint_pressure_residual_norm() =
+        _mass_weighted_rms(ResλP, M_P, total_mass_P)
 
     # Scratch: adjoint residuals, DYREL rates, and the reverse-pass seeds/pullbacks.
     ResλVx = zero(dr.Rv_x)
@@ -236,14 +249,18 @@ function solve_stokes_adjoint_dyrel!(
         itPH_done = itPH
         assemble_adjoint_residual!()
 
-        err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
-        err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
+        err_v = adjoint_velocity_residual_norm()
+        err_P = adjoint_pressure_residual_norm()
         if itPH == 1
-            err_v0 = err_v + eps(err_v)
-            err_P0 = err_P + eps(err_P)
+            err_v0 = max(err_v, adjoint_tol) + eps(err_v)
+            err_P0 = max(err_P, adjoint_tol) + eps(err_P)
         end
         err = max(min(err_v, err_v / err_v0), min(err_P, err_P / err_P0))
-        collect_history && push!(history, (; iter, itPH, err, err_v, err_P))
+        collect_history && push!(history, (;
+            iter, itPH, err, err_v, err_P,
+            err_v_rel = err_v / err_v0,
+            err_P_rel = err_P / err_P0,
+        ))
         verbose && @printf("adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
             itPH, iter, err, err_v, err_P)
 
@@ -277,7 +294,7 @@ function solve_stokes_adjoint_dyrel!(
             assemble_adjoint_residual!()
 
             if iszero(iter % ncheck)
-                err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
+                err_v = adjoint_velocity_residual_norm()
 
                 # Re-estimate λmin and refresh the Chebyshev step. Δτ and λmax stay
                 # fixed (the Jacobian depends only on the frozen forward state).
@@ -299,8 +316,8 @@ function solve_stokes_adjoint_dyrel!(
     end
 
     assemble_adjoint_residual!()
-    err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
-    err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
+    err_v = adjoint_velocity_residual_norm()
+    err_P = adjoint_pressure_residual_norm()
     err = max(min(err_v, err_v / err_v0), min(err_P, err_P / err_P0))
 
     return (;

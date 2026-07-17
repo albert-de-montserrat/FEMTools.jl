@@ -44,6 +44,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `∂P∂τ`    | Pseudo-transient rate for pressure         |
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
+| `Q`        | Volumetric source/sink rate [s⁻¹] (positive = expansion) |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
 | `M_P`      | Lumped pressure mass (`∫ N_i dΩ`)         |
@@ -68,7 +69,9 @@ temperature for the linearised EOS, default 0).
              stress_size=nothing)
     StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
 
-All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
+All nodal float arrays, including `Q`, are zero-initialised; phase arrays are
+initialised to 1. Set `Q` on pressure DoFs to prescribe a volumetric source or
+sink: positive values produce expansion and negative values contraction.
 Stress arrays default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
 integration points. `T` and `T0` should be filled via `copyto!` before calling
@@ -106,6 +109,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     ∂P∂τ::_T
     T::_T
     T0::_T
+    Q::_T
     # pressure-node residual and DR work arrays
     RP::_T
     RP0::_T
@@ -159,6 +163,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
             τxx, newτ(), newτ(),                      # τxx, τyy, τxy
             newτ(), newτ(), newτ(),                   # τxx_old, τyy_old, τxy_old
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
+            newP(),                                    # Q
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _g, _Tref,

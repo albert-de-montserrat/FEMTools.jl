@@ -541,3 +541,32 @@ iterations.
         (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
     end
 end
+
+"""
+    precompute_geometry(backend, workgroup, mesh, element) -> geo
+
+Allocate and fill a per-element geometry array for a 2-D `mesh` discretized with
+`element`, returning the device array `geo` where `geo[iel]` holds, for every
+quadrature point, the tuple `(∂N∂x_q, dΩ_q)` of physical-space shape-function
+gradients and `|det J|`-scaled quadrature weight.
+
+The quadrature rule, reference-shape-function jacobians, and node count are taken
+from `element`, so the result is reusable across nonlinear or pseudo-transient
+iterations on a fixed mesh.
+"""
+function precompute_geometry(
+    backend, workgroup, mesh, element::ReferenceElement{<:AbstractElement{2, N, FP}},
+) where {N, FP}
+    ip = element.integration_points
+    NQ = length(ip.ω)
+    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
+    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
+    Geo = NTuple{NQ, Tuple{SMatrix{N, 2, FP, 2N}, FP}}
+    geo = KA.allocate(backend, Geo, mesh.nels)
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo, mesh.coords, mesh.el2n, ∂N∂ξq, ip.ω, Val(N);
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return geo
+end

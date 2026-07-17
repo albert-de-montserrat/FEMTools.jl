@@ -26,9 +26,16 @@ are stabilizing heuristics rather than a proof of convergence. This routine is
 intentionally experimental and leaves the production solver unchanged.
 
 `objective_vx`, `objective_vy`, and optional `objective_P` are the components
-of `-∂J/∂u`. Set `pressure_gauge=:auto` (the default) to remove the mass-weighted
-mean of `λP` only when every bulk viscosity is infinite. Other accepted values
-are `:none` and `:mean_zero`.
+of `-∂J/∂u`. An identically zero objective gradient is an error. Set
+`pressure_gauge=:auto` (the default) to remove the mass-weighted mean of `λP`
+only when every bulk viscosity is infinite. Other accepted values are `:none`
+and `:mean_zero`.
+
+Convergence is checked every `ncheck` iterations and declared when either the
+largest blockwise RMS residual (absolute) or the largest ratio of a block's
+RMS residual to its own running peak (relative) drops below `adjoint_tol`.
+The per-block peak normalization keeps the relative criterion dimensionless,
+so it remains meaningful for problems posed in physical units.
 """
 function solve_stokes_adjoint_coupled_experimental!(
     dr,
@@ -224,15 +231,26 @@ function solve_stokes_adjoint_coupled_experimental!(
     nfree_vx = length(λvx) - length(vx_nodes)
     nfree_vy = length(λvy) - length(vy_nodes)
     rms(r, n) = iszero(n) ? zero(eltype(r)) : norm(r) / sqrt(n)
-    err_vx0 = rms(ResλVx, nfree_vx) + eps(eltype(ResλVx))
-    err_vy0 = rms(ResλVy, nfree_vy) + eps(eltype(ResλVy))
-    err_P0 = rms(ResλP, length(λP)) + eps(eltype(ResλP))
-    history = NamedTuple[]
-    converged = false
-    err = Inf
     err_vx = rms(ResλVx, nfree_vx)
     err_vy = rms(ResλVy, nfree_vy)
     err_P = rms(ResλP, length(λP))
+    iszero(max(err_vx, err_vy, err_P)) && error(
+        "the adjoint residual vanishes at the initial guess: \
+        the objective gradient is identically zero"
+    )
+    # Each block's relative error is measured against the largest RMS residual
+    # that block has reached so far. Blocks the objective does not touch start
+    # at exactly zero and only acquire residual through coupling, so their
+    # initial value cannot serve as a scale; the running peak keeps every
+    # ratio dimensionless, which matters for dimensional (unscaled) problems
+    # where the raw residual magnitudes carry physical units.
+    err_vx0 = err_vx
+    err_vy0 = err_vy
+    err_P0 = err_P
+    relerr(e, e0) = iszero(e0) ? zero(e) : e / e0
+    history = NamedTuple[]
+    converged = false
+    err = Inf
 
     if verbose
         @info "Starting experimental coupled adjoint DR" λmax_vx λmax_vy λmax_P Δτ_vx Δτ_vy Δτ_P remove_mean
@@ -273,8 +291,14 @@ function solve_stokes_adjoint_coupled_experimental!(
             err_vx = rms(ResλVx, nfree_vx)
             err_vy = rms(ResλVy, nfree_vy)
             err_P = rms(ResλP, length(λP))
+            err_vx0 = max(err_vx0, err_vx)
+            err_vy0 = max(err_vy0, err_vy)
+            err_P0 = max(err_P0, err_P)
             err_abs = max(err_vx, err_vy, err_P)
-            err_rel = max(err_vx / err_vx0, err_vy / err_vy0, err_P / err_P0)
+            err_rel = max(
+                relerr(err_vx, err_vx0), relerr(err_vy, err_vy0),
+                relerr(err_P, err_P0),
+            )
             err = min(err_abs, err_rel)
 
             all(isfinite, (err, err_vx, err_vy, err_P)) ||
@@ -315,7 +339,10 @@ function solve_stokes_adjoint_coupled_experimental!(
 
     return (;
         iter = iterMax, err, err_abs = max(err_vx, err_vy, err_P),
-        err_rel = max(err_vx / err_vx0, err_vy / err_vy0, err_P / err_P0),
+        err_rel = max(
+            relerr(err_vx, err_vx0), relerr(err_vy, err_vy0),
+            relerr(err_P, err_P0),
+        ),
         err_vx, err_vy, err_P, converged,
         λmin = (vx = λmin_vx, vy = λmin_vy, P = λmin_P),
         λmax = (vx = λmax_vx, vy = λmax_vy, P = λmax_P),

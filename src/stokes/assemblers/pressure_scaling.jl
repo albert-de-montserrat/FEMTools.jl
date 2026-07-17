@@ -35,6 +35,39 @@ function assemble_viscosity_weighted_pressure_scaling!(
 end
 
 """
+    assemble_viscosity_weighted_pressure_scaling(
+        dr, mesh, geo_P, element_v, element_P,
+        γfact, Δt, backend, workgroup;
+        phases_v=dr.phases_v, η=dr.η, K=dr.K,
+    ) -> γP
+
+Allocate the viscosity-weighted pressure scale `γP` on pressure DoFs and return
+it. Convenience wrapper around the in-place
+[`assemble_viscosity_weighted_pressure_scaling!`](@ref).
+"""
+function assemble_viscosity_weighted_pressure_scaling(
+    dr::StokesDR,
+    mesh::MixedMesh{2},
+    geo_P,
+    element_v::ReferenceElement,
+    element_P::ReferenceElement,
+    γfact,
+    Δt,
+    backend, workgroup;
+    phases_v = dr.phases_v,
+    η = dr.η,
+    K = dr.K,
+)
+    γP = KA.zeros(backend, eltype(dr.M_P), mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, geo_P, element_v, element_P,
+        γfact, Δt, backend, workgroup;
+        phases_v, η, K,
+    )
+    return γP
+end
+
+"""
     assemble_viscosity_weighted_pressure_scaling!(
         MP, γP,
         el2n_v, dofs_P, geo_P, nels,
