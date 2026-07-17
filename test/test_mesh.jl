@@ -194,3 +194,41 @@ for FP in (FP32, FP64)
         @test is_valid_coloring(mesh, greedy_colors)
     end
 end
+
+@testset "structured triangle coloring" begin
+    nx, ny = 4, 4
+    colors = color_structured_triangles((nx, ny))
+    node_colors = [Int[] for _ in 1:(nx + 1) * (ny + 1)]
+    stride = nx + 1
+    iel = 1
+    for ey in 1:ny, ex in 1:nx
+        bottom_left = (ey - 1) * stride + ex
+        bottom_right = bottom_left + 1
+        top_left = bottom_left + stride
+        top_right = top_left + 1
+        for node in (bottom_left, bottom_right, top_right)
+            push!(node_colors[node], colors[iel])
+        end
+        for node in (bottom_left, top_right, top_left)
+            push!(node_colors[node], colors[iel + 1])
+        end
+        iel += 2
+    end
+
+    @test length(colors) == 2 * nx * ny
+    @test maximum(colors) == 6
+    @test all(cs -> allunique(cs), node_colors)
+end
+
+@testset "color-major connectivity reordering" begin
+    el2n = reshape(collect(1:24), 3, 8)
+    colors = [2, 1, 2, 1, 3, 2, 3, 1]
+    reordered, ranges, permutation = reorder_connectivity_by_color(el2n, colors)
+
+    @test permutation == [2, 4, 8, 1, 3, 6, 5, 7]
+    @test reordered == el2n[:, permutation]
+    @test ranges == [1:3, 4:6, 7:8]
+    @test all(color -> all(colors[permutation[ranges[color]]] .== color), 1:3)
+    @test_throws DimensionMismatch reorder_connectivity_by_color(el2n, colors[1:7])
+    @test_throws ArgumentError reorder_connectivity_by_color(el2n, [1, 1, 3, 3, 1, 3, 1, 3])
+end

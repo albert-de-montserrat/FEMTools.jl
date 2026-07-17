@@ -16,7 +16,8 @@ Set `verbose = false` to suppress per-check residual output.
 `Tref` is the reference temperature used in the density equation of state.
 
 The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
-the previous time step before calling.
+the previous time step before calling. Returns `(iterations, residuals)`, where
+both vectors contain the convergence checks performed during the solve.
 """
 function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
@@ -36,6 +37,8 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
 
     last_rel = NaN
     λmax = zero(eltype(R))
+    iterations = Int[]
+    residuals = Float64[]
 
     for it in 1:iterMax
         do_∂R∂T = (mod(it, ncheck) == 0) || (it == 1)
@@ -72,8 +75,10 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β    = (2 - c * Δτ) / (2 + c * Δτ)
             last_rel = nr / nr0
+            push!(iterations, it)
+            push!(residuals, last_rel)
             verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
-            last_rel < ϵ && return nothing
+            last_rel < ϵ && return iterations, residuals
         end
     end
     error("Thermal diffusion DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")

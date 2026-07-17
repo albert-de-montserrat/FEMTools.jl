@@ -22,6 +22,8 @@ import FEMTools
         :generate_dofs,
         :generate_sparsity_pattern,
         :color_mesh,
+        :color_structured_triangles,
+        :reorder_connectivity_by_color,
         :generate_element_groups,
         :generate_discontinuous_linear_mesh,
         :eval_shape_function,

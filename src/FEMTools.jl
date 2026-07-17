@@ -69,7 +69,9 @@ include("boundary_conditions/apply.jl")
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
+include("heat_diffusion/assembly/residual_colored.jl")
 include("heat_diffusion/solvers/DR.jl")
+include("heat_diffusion/solvers/DR_colored.jl")
 
 # Lithostatic-pressure solver: types, assembly, and PT solver.
 include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
@@ -114,6 +116,8 @@ export generate_element2node,
     generate_dofs,
     generate_sparsity_pattern,
     color_mesh,
+    color_structured_triangles,
+    reorder_connectivity_by_color,
     generate_element_groups,
     generate_discontinuous_linear_mesh
 
@@ -159,6 +163,7 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_kernel!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!
+public solver_colored!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
