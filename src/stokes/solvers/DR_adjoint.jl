@@ -12,9 +12,12 @@ The adjoint is assembled on the *same* T7/P1-disc spaces, quadrature, and elemen
 operators as the forward problem and transposed exactly, so `λᵀ ∂R/∂m` is the
 exact gradient of the discrete objective. The forward state in `dr` must already
 be converged: the transpose Jacobian and its diagonal preconditioner are frozen
-at that state. The initial λmax bound uses row sums of the transpose (column sums
-of the forward Jacobian), while λmin and the Chebyshev pair are re-estimated
-during the solve.
+at that state, so the transposed element blocks are assembled once (with
+[`assemble_momentum_adjoint_blocks`](@ref) and
+[`assemble_pressure_adjoint_blocks`](@ref)) and every iteration applies them as
+dense element mat-vecs. The initial λmax bound uses row sums of the transpose
+(column sums of the forward Jacobian), while λmin and the Chebyshev pair are
+re-estimated during the solve.
 
 `objective_vx` and `objective_vy` carry the velocity part of `-∂J/∂u`
 (the consistently assembled objective load); the pressure adjoint has no explicit
@@ -36,8 +39,8 @@ All arrays read or written by kernels—including `mesh_stokes` connectivity,
 `geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
 arrays—must reside on `backend`. Construct unstructured meshes with
 `Mesh(backend, coords, el2n)` and geometry with `MixedMeshCache` to maintain
-that invariant. The element-local ForwardDiff transpose assemblers execute on
-the backend inferred from their output buffers.
+that invariant. The one-time ForwardDiff block assembly and the per-iteration
+block applies execute on the backend inferred from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
     dr,
@@ -126,6 +129,22 @@ function solve_stokes_adjoint_dyrel!(
     α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
     verbose && @info "Initial adjoint momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
+    # The whole transpose operator is likewise frozen, so its element Jacobian
+    # blocks are assembled once and every iteration applies them as small
+    # dense mat-vecs. Differentiating inside the iteration would recompute
+    # identical blocks thousands of times at roughly 40x the cost per apply.
+    momentum_blocks = assemble_momentum_adjoint_blocks(
+        dr.vx, dr.vy, dr.P, Pnum, dr.T,
+        mesh_stokes, geo_v, element_v, element_P,
+        phases_v, τ_old, plastic,
+        dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+        workgroup,
+    )
+    pressure_blocks = assemble_pressure_adjoint_blocks(
+        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+        phases_P, Δt, workgroup,
+    )
+
     function assemble_adjoint_residual!()
         fill!(ResλVx, 0)
         fill!(ResλVy, 0)
@@ -155,45 +174,32 @@ function solve_stokes_adjoint_dyrel!(
 
         # Momentum transpose: (∂Rv/∂v)ᵀλv → dvx,dvy, (∂Rv/∂P)ᵀλv → dP,
         # and (∂Rv/∂Pnum)ᵀλv → dPnum.
-        assemble_momentum_residual_matrices_atomix_adj!(
-            Rv_x_buf, seed_Rv_x, Rv_y_buf, seed_Rv_y,
-            dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum, dPnum,
-            mesh_stokes, geo_v, element_v, element_P,
-            phases_v, τ_old, plastic,
-            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-            workgroup,
+        apply_momentum_adjoint_blocks!(
+            dvx, dvy, dP, dPnum, seed_Rv_x, seed_Rv_y,
+            momentum_blocks, mesh_stokes, element_v, element_P, workgroup,
         )
 
         # (∂Rv/∂P)ᵀλv is the adjoint pressure-constraint residual. Capture it before
-        # the pressure pullbacks reuse dP.
+        # the pressure pullback reuses dP.
         copyto!(ResλP, dP)
 
-        # Powell-Hestenes augmented coupling. The forward momentum uses
-        # Pnum(v, P) = γP·RP(v, P)/M_P, so the chain through Pnum closes as
-        # (∂RP/∂u)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P): the velocity part (∂RP/∂v)ᵀ feeds the
-        # velocity adjoint, and the pressure part (∂RP/∂P)ᵀ feeds ResλP. The
-        # latter is nonzero only for finite `ηb`, where RP depends on P.
-        @. seed_RP = γP * dPnum / M_P
+        # Pressure-residual transpose, applied to the sum of two seeds (it is
+        # linear in the seed):
+        #   * Powell-Hestenes augmented coupling. The forward momentum uses
+        #     Pnum(v, P) = γP·RP(v, P)/M_P, so the chain through Pnum closes as
+        #     (∂RP/∂u)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P).
+        #   * Saddle-point coupling to the pressure adjoint λP: (∂RP/∂u)ᵀλP.
+        # For both, the velocity part (∂RP/∂v)ᵀ feeds the velocity adjoint and
+        # the pressure part (∂RP/∂P)ᵀ feeds ResλP. The pressure part is nonzero
+        # only for finite bulk modulus (`ηb`): RP stores pressure elastically
+        # through the `-(P-P0)/(ηb·Δt)` term, so omitting it makes the adjoint
+        # (and any gradient built from it) wrong by O(1/(ηb·Δt)) — exact only
+        # in the incompressible limit.
+        @. seed_RP = γP * dPnum / M_P + λP
         fill!(dP_scratch, 0)
-        assemble_pressure_residual_matrices_atomix_adj!(
-            dr, seed_RP, dvx, dvy, dP_scratch,
-            mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_P, Δt, workgroup,
-        )
-        @. ResλP += dP_scratch
-
-        # Saddle-point coupling to the pressure adjoint λP: (∂RP/∂v)ᵀλP into the
-        # velocity adjoint, and the elastic pressure self-coupling (∂RP/∂P)ᵀλP
-        # into ResλP. The latter is nonzero only for finite bulk modulus
-        # (`ηb`): RP stores pressure elastically through the `-(P-P0)/(ηb·Δt)`
-        # term, so omitting it makes the adjoint (and any gradient built from it)
-        # wrong by O(1/(ηb·Δt)) — exact only in the incompressible limit.
-        copyto!(seed_RP, λP)
-        fill!(dP_scratch, 0)
-        assemble_pressure_residual_matrices_atomix_adj!(
-            dr, seed_RP, dvx, dvy, dP_scratch,
-            mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_P, Δt, workgroup,
+        apply_pressure_adjoint_blocks!(
+            dvx, dvy, dP_scratch, seed_RP,
+            pressure_blocks, mesh_stokes, element_v, element_P, workgroup,
         )
         @. ResλP += dP_scratch
 

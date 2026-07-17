@@ -166,6 +166,10 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_kernel!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!,
+    assemble_momentum_adjoint_blocks,
+    apply_momentum_adjoint_blocks!,
+    assemble_pressure_adjoint_blocks,
+    apply_pressure_adjoint_blocks!,
     assemble_experimental_adjoint_spectral_diagnostics!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
