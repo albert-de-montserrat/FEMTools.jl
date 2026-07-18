@@ -610,6 +610,23 @@ function assemble_momentum_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
+                                       el2n_v, el2nP, geo_v, nels, phases,
+                                       τ_old, plastic, τ_store,
+                                       η, G, α, ρ0, K, g, Tref, Δt,
+                                       Nq, NqP, Val(NV), Val(NP), workgroup)
+
+Zero `Rv_x`/`Rv_y`, launch the atomic momentum-residual kernel over `nels`
+elements, and synchronize.
+
+Low-level entry point beneath `assemble_momentum_residual_matrices_atomix!`:
+the shape-function tables `Nq`, `NqP` and the local node counts `Val(NV)`,
+`Val(NP)` are passed explicitly instead of `ReferenceElement`s, which makes
+the call differentiable with Enzyme (see
+`assemble_momentum_residual_matrices_atomix_adj!`). The backend is inferred
+from `Rv_x`.
+"""
 function assemble_momentum_residual_kernel!(
     Rv_x, Rv_y,
     vx, vy, P, T, Pnum,

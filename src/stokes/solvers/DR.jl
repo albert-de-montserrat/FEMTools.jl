@@ -27,15 +27,39 @@ end
 """
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
                         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup; kwargs...)
+                        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+                        kwargs...) -> NamedTuple
+    solve_stokes_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+                        ...)
 
 Run the Powell-Hestenes / DYREL-style velocity-pressure iteration for a Stokes
-state with Dirichlet velocity boundary conditions on `Γnodes`. Use `vx_nodes`
-and `vy_nodes` when the two velocity components are constrained on different
-boundaries.
-`dr.M_P` must be filled before calling.
-Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
-inner dynamic-relaxation trace.
+state with Dirichlet velocity boundary conditions on `Γnodes`. `dr.M_P` must be
+filled before calling. The two forms differ only in how the precomputed element
+geometry is supplied: as a `MixedMeshCache` or as the raw `geo_v`, `geo_P`
+arrays.
+
+# Keyword arguments
+- `ncheck = 50`: recompute spectral estimates and convergence every `ncheck`
+  inner iterations.
+- `ϵ_tol = 1e-6`: outer convergence tolerance on the combined residual.
+- `iterMax = 50_000`: maximum inner (dynamic-relaxation) iterations per
+  Powell-Hestenes step.
+- `total_iterMax = 50_000`: maximum cumulative inner iterations across all
+  Powell-Hestenes steps.
+- `max_ph_iterations = 1000`: maximum outer Powell-Hestenes iterations.
+- `rel_drop0 = 1e-2`: initial relative residual drop demanded of each inner
+  solve; tightened automatically as the outer iteration proceeds.
+- `vx_nodes = Γnodes`, `vy_nodes = Γnodes`: per-component Dirichlet node sets,
+  for when the two velocity components are constrained on different boundaries.
+- `verbose = true`: outer Powell-Hestenes progress; `verbose_inner = false`:
+  inner dynamic-relaxation trace.
+- `collect_history = false`: record `(iter, err_v, err_P)` at every check.
+
+# Return value
+A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
+iterations), `err`, `err_abs`, `err_rel`, `err_v`, `err_P`,
+`converged::Bool`, `reached_total_iter::Bool`, and `history` (empty unless
+`collect_history`).
 """
 function solve_stokes_dyrel!(
     dr,

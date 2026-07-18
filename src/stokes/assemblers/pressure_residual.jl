@@ -9,11 +9,11 @@ gradients at the point. The result is the scalar `∑ⱼ ∂Nᵢ/∂xⱼ · vⱼ
 over all nodes `i` and spatial dimensions `j`. Implemented as a `@generated`
 function to unroll all loops at compile time.
 """
-@generated function compute_velocity_divergence(v::Tuple{Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
+@generated function compute_velocity_divergence(v::Tuple{SVector{M}, Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
     quote
         @inline
         ∇V = zero(∂N∂x_v[1, 1] * v[1][1])
-        Base.@nexprs $N j-> begin
+        Base.@nexprs $(N + 1) j-> begin
             v_j = v[j]
             Base.@nexprs $M i-> begin
                 ∇V += ∂N∂x_v[i,j] * v_j[i]
@@ -119,6 +119,22 @@ function assemble_pressure_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
+                                       el2n_v, el2nP, geo_v, geo_P, nels,
+                                       phases, α, ηb, Δt, NqP,
+                                       Val(NV), Val(NP), workgroup)
+
+Zero `RP`, launch the atomic pressure-residual kernel over `nels` elements,
+and synchronize.
+
+Low-level entry point beneath `assemble_pressure_residual_matrices_atomix!`:
+the pressure shape-function table `NqP` (evaluated at the velocity quadrature
+points) and the local node counts `Val(NV)`, `Val(NP)` are passed explicitly,
+which makes the call differentiable with Enzyme (see
+`assemble_pressure_residual_matrices_atomix_adj!`). The backend is inferred
+from `RP`.
+"""
 function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0,
     el2n_v, el2nP, geo_v, geo_P, nels,

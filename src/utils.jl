@@ -6,6 +6,14 @@ weights `N`.
 
 Both `N` and `v` are `SVector`s with the same length. The result has the same
 scalar type as the entries of `N`.
+
+# Examples
+```jldoctest
+julia> using StaticArrays
+
+julia> FEMTools.interp2ip(SVector(0.25, 0.25, 0.5), SVector(1.0, 2.0, 4.0))
+2.75
+```
 """
 @generated function interp2ip(N::SVector{M, T}, v::SVector{M, T}) where {M, T}
     quote

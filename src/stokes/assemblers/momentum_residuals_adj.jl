@@ -1,3 +1,20 @@
+"""
+    assemble_momentum_residual_matrices_atomix_adj!(
+        Rv_x, dRv_x, Rv_y, dRv_y,
+        vx, dvx, vy, dvy, P, dP, T, Pnum, dPnum,
+        mesh_stokes, geo_v, element_v, element_P,
+        phases, τ_old, plastic,
+        η, G, α, ρ0, K, g, Tref, Δt,
+        workgroup)
+
+Reverse-mode (Enzyme) transpose of `assemble_momentum_residual_kernel!`.
+
+Given adjoint seeds `dRv_x`, `dRv_y` on the momentum residuals, accumulate the
+transpose-Jacobian products into the input adjoints `dvx`, `dvy`, `dP`, and
+`dPnum`. The primal residuals `Rv_x`, `Rv_y` are recomputed (overwritten) in
+the process. All arrays must reside on the same backend; the kernel executes
+on the backend of the output buffers.
+"""
 function assemble_momentum_residual_matrices_atomix_adj!(
     Rv_x, dRv_x, Rv_y, dRv_y,
     vx, dvx, vy, dvy, P, dP, T, Pnum, dPnum,

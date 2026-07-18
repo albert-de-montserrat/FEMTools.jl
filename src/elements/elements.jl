@@ -152,6 +152,13 @@ QuadraticElement{2, 9}
     1--5--2 --> ξ
 
 
+QuadraticElement{3, 10} / QuadraticElement{3, 11}
+
+    Nodes 1–4 are the tetrahedron vertices and nodes 5–10 are the edge
+    midpoints (12, 23, 13, 14, 24, 34).  For the 11-node element, node 11
+    is the tetrahedron centroid.
+
+
 QuadraticElement{3, 27}
 
     ζ = -1 layer

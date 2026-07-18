@@ -328,6 +328,15 @@ Build node-to-element adjacency from an element-to-node connectivity matrix.
 
 The result is a vector where entry `i` contains the element ids incident to
 node `i`.
+
+# Examples
+```jldoctest
+julia> generate_node2element([1 2; 2 3])
+3-element Vector{Vector{Int32}}:
+ [1]
+ [1, 2]
+ [2]
+```
 """
 function generate_node2element(el2n, n_nodes=maximum(el2n))
     n2el = [Int32[] for _ in 1:n_nodes]

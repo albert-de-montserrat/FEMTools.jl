@@ -3,6 +3,7 @@
 [![CI](https://github.com/albert-de-montserrat/FEMTools.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/albert-de-montserrat/FEMTools.jl/actions/workflows/CI.yml)
 [![codecov](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl)
 [![docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://albert-de-montserrat.github.io/FEMTools.jl/dev/)
+[![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 Finite-element utilities for structured and unstructured meshes: reference
 elements, shape functions, integration points, sparsity construction, mesh
@@ -27,8 +28,8 @@ number of local nodes. Supported elements:
 
 | Type | Instances |
 |:-----|:----------|
-| `LinearElement{nDim, nVert}` | line (1×2), triangle (2×3), quad (2×4), hex (3×8) |
-| `QuadraticElement{nDim, nVert}` | line (1×3), triangle (2×6), quad (2×9), hex (3×27) |
+| `LinearElement{nDim, nVert}` | line (1×2), triangle (2×3), quad (2×4), tetrahedron (3×4), hex (3×8) |
+| `QuadraticElement{nDim, nVert}` | line (1×3), triangle (2×6/7), quad (2×9), tetrahedron (3×10/11), hex (3×27) |
 
 ```julia
 using FEMTools

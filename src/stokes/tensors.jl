@@ -97,8 +97,9 @@ Base.getindex(A::SymmetricTensor3D, q::Int, iel::Int) = SA[
     rotate_stress!(dr, mesh_stokes, cache, element_v, Δt)
     rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 
-Advance the deviatoric-stress history by rotating the current stress `dr.τ` with
-the local vorticity over the time step `Δt`, writing the result into `dr.τ_old`.
+Advance the deviatoric-stress history by rotating the current stress
+(`dr.τxx`, `dr.τyy`, `dr.τxy`) with the local vorticity over the time step
+`Δt`, writing the result into the corresponding `dr.τ*_old` fields.
 Unpacks the solver state, connectivity (`mesh_stokes.el2n`), and element
 geometry (`cache.geo_v`) for the low-level `_rotate_stress!` worker.
 `element_v` supplies the velocity-node count `NV`.

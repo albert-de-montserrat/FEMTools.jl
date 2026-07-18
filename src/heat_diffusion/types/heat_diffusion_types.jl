@@ -73,14 +73,14 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP}
 
     function ThermalDiffusionDR(
         backend, nnodes,
-        k::NTuple{nphases, FP}, Cp::NTuple{nphases, FP},
-        ρ0::NTuple{nphases, FP}, α::NTuple{nphases, FP},
-        K::NTuple{nphases, FP};
+        k::Tuple{FP, Vararg{FP, N}}, Cp::Tuple{FP, Vararg{FP, N}},
+        ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
+        K::Tuple{FP, Vararg{FP, N}};
         CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
-    ) where {nphases, FP}
+    ) where {N, FP}
         newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
         newivec() = KernelAbstractions.ones(backend,  Int, nnodes)
-        new{nphases, typeof(newvec()), typeof(newivec()), FP}(
+        new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂T, PC
             newvec(), newvec(), newvec(),            # T, T0, ∂T∂τ
             newvec(), newvec(),                      # P, source
