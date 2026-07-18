@@ -6,6 +6,22 @@ share the same color.
 
 Returns a vector `colors` where `colors[iel]` is the color assigned to element
 `iel`.
+
+# Examples
+All four elements of a 2×2 quadrilateral mesh share the central node, so each
+gets its own color:
+```jldoctest
+julia> using DomainSets: (..), (×)
+
+julia> mesh = Mesh((0.0..1.0) × (0.0..1.0), ReferenceElement(LinearElement{2, 4}), (2, 2));
+
+julia> FEMTools.color_mesh_greedy(mesh)
+4-element Vector{Int64}:
+ 1
+ 2
+ 3
+ 4
+```
 """
 function color_mesh_greedy(mesh)
     colors = zeros(Int, mesh.nels)

@@ -16,14 +16,16 @@ element-to-node connectivity, boundary nodes, and stores the node and element
 counts. For tensor-product domains, `nels` is a tuple such as `(nx, ny)` or
 `(nx, ny, nz)`.
 
-    Mesh(coords, el2n)
-    Mesh(backend, coords, el2n)
+    Mesh(coords, el2n; order=1)
+    Mesh(backend, coords, el2n; order=1)
 
 Construct an unstructured mesh from pre-built arrays.
 
 `coords` is an `AbstractVector` of `SVector{nDim, T}` node coordinates and
 `el2n` is an `N × nels` `AbstractMatrix{<:Integer}` of element-to-node
-connectivity (one column per element). Boundary nodes are detected automatically
+connectivity (one column per element). The keyword `order` declares the
+polynomial order of the connectivity, stored in the mesh type parameter
+(e.g. `order = 2` for T6 triangles). Boundary nodes are detected automatically
 as nodes on mesh edges shared by exactly one element. `Ω` and `Γ` are set to
 `nothing`.
 """

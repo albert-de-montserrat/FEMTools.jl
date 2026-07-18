@@ -44,13 +44,24 @@ using the substitution
 
 where `s,t ∈ [0,1]`.  Because the Duffy Jacobian `(1−s)` costs one polynomial
 degree in the `s`-direction, the rule is exact for bivariate polynomials of
-total degree ≤ **2n−2**.  Use `n = ceil((d+4)/2)` to integrate degree `d`
+total degree ≤ **2n−2**.  Use `n = ceil((d+2)/2)` to integrate degree `d`
 exactly.  For straight-sided T6/T7 elements (affine Jacobian, degree-4
 integrands) `n=3` (9 points) suffices.
 
 The GL abscissas are computed via the Golub–Welsch algorithm (eigendecomposition
 of the symmetric tridiagonal Jacobi matrix); weights are exact to machine
 precision for any `n`.
+
+# Examples
+```jldoctest
+julia> ip = gauss_legendre_triangle(2);
+
+julia> length(ip.ω)
+4
+
+julia> sum(ip.ω) ≈ 0.5
+true
+```
 """
 gauss_legendre_triangle(n::Int) = gauss_legendre_triangle(Float64, n)
 
@@ -238,6 +249,41 @@ function IntegrationPoints(::LinearElement{3, 4, T}) where T
     ζ = SVector(T(1/4))
     ω = SVector(T(1/6))
     return IntegrationPoints{3, 1, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{3, 10})
+
+Return the symmetric four-point degree-two rule on the reference tetrahedron.
+"""
+function IntegrationPoints(::QuadraticElement{3, 10, T}) where T
+    a, b = T((5 + 3sqrt(5)) / 20), T((5 - sqrt(5)) / 20)
+    ξ = SVector(a, b, b, b)
+    η = SVector(b, a, b, b)
+    ζ = SVector(b, b, a, b)
+    ω = SVector{4, T}(ntuple(_ -> T(1/24), Val(4)))
+    return IntegrationPoints{3, 4, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{3, 11})
+
+Return the symmetric fifteen-point degree-five rule for the T11 element.
+"""
+function IntegrationPoints(::QuadraticElement{3, 11, T}) where T
+    points = NTuple{4, T}[(T(1/4), T(1/4), T(1/4), T(1/4))]
+    append!(points, [ntuple(j -> j == i ? zero(T) : T(1/3), 4) for i in 1:4])
+    append!(points, [ntuple(j -> j == i ? T(8/11) : T(1/11), 4) for i in 1:4])
+    for i in 1:3, j in (i + 1):4
+        push!(points, ntuple(k -> (k == i || k == j) ? T(0.4334498464263357) : T(0.0665501535736643), 4))
+    end
+    weights = (T(0.030283678097089), ntuple(_ -> T(0.006026785714286), 4)...,
+               ntuple(_ -> T(0.011645249086029), 4)...,
+               ntuple(_ -> T(0.010949141561386), 6)...)
+    ξ = SVector{15, T}(p[2] for p in points)
+    η = SVector{15, T}(p[3] for p in points)
+    ζ = SVector{15, T}(p[4] for p in points)
+    return IntegrationPoints{3, 15, T}(ξ, η, ζ, SVector{15, T}(weights))
 end
 
 """

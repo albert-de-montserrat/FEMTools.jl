@@ -270,6 +270,70 @@ function ShapeFunctions(::LinearElement{3, 4, T}) where T
 end
 
 """
+    ShapeFunctions(::QuadraticElement{3, 10})
+
+Return the ten quadratic Lagrange shape functions and gradients on the
+reference tetrahedron. Nodes 1–4 are the vertices; nodes 5–10 are the edge
+midpoints (12, 23, 13, 14, 24, 34).
+"""
+function ShapeFunctions(::QuadraticElement{3, 10, T}) where T
+    gradients = ((-one(T), -one(T), -one(T)), (one(T), zero(T), zero(T)),
+                 (zero(T), one(T), zero(T)), (zero(T), zero(T), one(T)))
+    barycentric = ((ξ, η, ζ) -> 1 - ξ - η - ζ, (ξ, η, ζ) -> ξ,
+                   (ξ, η, ζ) -> η, (ξ, η, ζ) -> ζ)
+    edges = ((1, 2), (2, 3), (1, 3), (1, 4), (2, 4), (3, 4))
+
+    N = (
+        ntuple(i -> (ξ, η, ζ) -> begin
+            L = barycentric[i](ξ, η, ζ)
+            L * (2L - 1)
+        end, Val(4))...,
+        ntuple(i -> (ξ, η, ζ) -> begin
+            a, b = edges[i]
+            4 * barycentric[a](ξ, η, ζ) * barycentric[b](ξ, η, ζ)
+        end, Val(6))...,
+    )
+    ∇N = (
+        ntuple(i -> (ξ, η, ζ) -> begin
+            L = barycentric[i](ξ, η, ζ)
+            ntuple(j -> (4L - 1) * gradients[i][j], Val(3))
+        end, Val(4))...,
+        ntuple(i -> (ξ, η, ζ) -> begin
+            a, b = edges[i]
+            La, Lb = barycentric[a](ξ, η, ζ), barycentric[b](ξ, η, ζ)
+            ntuple(j -> 4 * (gradients[a][j] * Lb + La * gradients[b][j]), Val(3))
+        end, Val(6))...,
+    )
+    return ShapeFunctions(N, ∇N)
+end
+
+"""
+    ShapeFunctions(::QuadraticElement{3, 11})
+
+Return the T10 basis enriched by a centroid bubble. The tetrahedral bubble is
+the quartic polynomial `256L₁L₂L₃L₄`; the T10 functions are corrected
+so all eleven functions retain the Kronecker-delta and partition-of-unity
+properties.
+"""
+function ShapeFunctions(::QuadraticElement{3, 11, T}) where T
+    t10 = ShapeFunctions(QuadraticElement{3, 10, T}())
+    bubble(ξ, η, ζ) = T(256) * (1 - ξ - η - ζ) * ξ * η * ζ
+    ∇bubble(ξ, η, ζ) = (
+        T(256) * η * ζ * (1 - 2ξ - η - ζ),
+        T(256) * ξ * ζ * (1 - ξ - 2η - ζ),
+        T(256) * ξ * η * (1 - ξ - η - 2ζ),
+    )
+    coefficients = (ntuple(_ -> T(1/8), Val(4))..., ntuple(_ -> -T(1/4), Val(6))...)
+    N = (ntuple(i -> (ξ, η, ζ) -> t10.N[i](ξ, η, ζ) + coefficients[i] * bubble(ξ, η, ζ), Val(10))...,
+         bubble)
+    ∇N = (ntuple(i -> (ξ, η, ζ) -> begin
+              g, gb = t10.∇N[i](ξ, η, ζ), ∇bubble(ξ, η, ζ)
+              ntuple(j -> g[j] + coefficients[i] * gb[j], Val(3))
+          end, Val(10))..., ∇bubble)
+    return ShapeFunctions(N, ∇N)
+end
+
+"""
     ShapeFunctions(::LinearElement{3, 8})
 
 Return the eight trilinear shape functions and gradients on the reference
@@ -372,8 +436,20 @@ Evaluate all shape functions of a `ReferenceElement` at reference coordinates
 `coords` is an `NTuple`, for example `(ξ,)` on a line or `(ξ, η)` on a
 two-dimensional reference element. The return value is an `SVector` ordered by
 local node number.
+
+# Examples
+```jldoctest
+julia> using StaticArrays
+
+julia> el = ReferenceElement(LinearElement{1, 2});
+
+julia> eval_shape_function(el, (0.0,))
+2-element SVector{2, Float64} with indices SOneTo(2):
+ 0.5
+ 0.5
+```
 """
-@inline function eval_shape_function(element, coords::NTuple{M, T}) where {M, T}
+@inline function eval_shape_function(element, coords::Tuple{T, Vararg{T}}) where {T}
     return _eval_shape_function(element.shape_functions.N, coords)
 end
 
@@ -385,7 +461,7 @@ end
 Evaluate the stored reference-coordinate gradients of all shape functions of a
 `ReferenceElement` at `coords`.
 """
-@inline function eval_shape_function_gradient(element, coords::NTuple{M, T}) where {M, T}
+@inline function eval_shape_function_gradient(element, coords::Tuple{T, Vararg{T}}) where {T}
     return _eval_shape_function(element.shape_functions.∇N, coords)
 end
 
@@ -398,8 +474,8 @@ coordinates at `coords`.
 For one-dimensional elements this returns the stored analytical gradients. For
 higher-dimensional elements the Jacobian is computed with `ForwardDiff`.
 """
-@inline function eval_shape_function_jacobian(element, coords::NTuple{M, T}) where {M, T}
-    return eval_shape_function_jacobian(element, SVector{M, T}(coords...))
+@inline function eval_shape_function_jacobian(element, coords::Tuple{T, Vararg{T}}) where {T}
+    return eval_shape_function_jacobian(element, SVector(coords))
 end
 
 @inline function eval_shape_function_jacobian(element, coords::SVector{M, T}) where {M, T}
@@ -416,8 +492,13 @@ end
 
 """
     shape_function_values(element)
+    shape_function_values(element, ip)
 
-Return shape-function values evaluated at every quadrature point of `element`.
+Return shape-function values of `element` evaluated at every quadrature point.
+
+With one argument, the points are `element.integration_points`. Pass an
+`IntegrationPoints` object `ip` to evaluate at a different quadrature rule
+(e.g. a pressure element's shape functions at the velocity element's points).
 
 The result is an `NTuple` of length `Nq` (number of quadrature points). Each
 entry is an `SVector` of length `N` (number of local nodes) holding `Nᵢ(ξ_q)`
