@@ -222,7 +222,7 @@ function main(;
         mesh_stokes.nnodesP,
         η, ηb, ξ, α;
         ρ0,
-        K, ξ,
+        K,
         g,
         Tref,
         CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9,

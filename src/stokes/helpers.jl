@@ -1,10 +1,10 @@
+# `backend::KA.Backend` keeps this disjoint from the deprecated leading-backend
+# shim below: without it, a 9-argument call matches both methods ambiguously.
 """
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup)
 
 Launch the Stokes geometry precompute kernel and synchronize the backend.
 """
-# `backend::KA.Backend` keeps this disjoint from the deprecated leading-backend
-# shim below: without it, a 9-argument call matches both methods ambiguously.
 function precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend::KA.Backend, workgroup) where N
     precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);

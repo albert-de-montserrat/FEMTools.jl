@@ -108,7 +108,7 @@ function main(;
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, ξ, α;
+        η, ηb, α;
         ρ0,
         K,
         g,

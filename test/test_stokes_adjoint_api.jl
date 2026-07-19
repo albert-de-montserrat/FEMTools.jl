@@ -63,7 +63,7 @@ end
 
     # Converge the forward Stokes problem for a given phase-2 density.
     function solve_forward(ρ2)
-        dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, ηb, ξ, α;
+        dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, ηb, α;
             ρ0 = (1.0, ρ2), K, g, Tref,
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
         γP = zeros(Float64, mesh.nnodesP)

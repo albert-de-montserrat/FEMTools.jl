@@ -9,11 +9,11 @@ gradients at the point. The result is the scalar `∑ⱼ ∂Nᵢ/∂xⱼ · vⱼ
 over all nodes `i` and spatial dimensions `j`. Implemented as a `@generated`
 function to unroll all loops at compile time.
 """
-@generated function compute_velocity_divergence(v::Tuple{Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
+@generated function compute_velocity_divergence(v::Tuple{SVector{M}, Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
     quote
         @inline
         ∇V = zero(∂N∂x_v[1, 1] * v[1][1])
-        Base.@nexprs $N j-> begin
+        Base.@nexprs $(N + 1) j-> begin
             v_j = v[j]
             Base.@nexprs $M i-> begin
                 ∇V += ∂N∂x_v[i,j] * v_j[i]
@@ -25,7 +25,7 @@ end
 
 """
     integrate_PH_pressure_residual(v, P_loc, P0loc, Tloc, T0loc,
-                                   geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, ξ, Δt, Nq) -> RP_e
+                                   geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, Nq) -> RP_e
 
 Integrate the element pressure residual for a P–H (pressure–heat) coupled Stokes formulation.
 
@@ -44,7 +44,7 @@ where `geo_v_el` provides velocity shape-function gradients and `geo_P_el`
 provides pressure quadrature weights. Note: velocity gradients are currently
 evaluated at velocity integration points rather than pressure points.
 """
-@inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, ξ, Δt, Nq) where N
+@inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, Nq) where N
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
@@ -52,7 +52,7 @@ evaluated at velocity integration points rather than pressure points.
         Nv      = Nq[q]
 
         # project parameters to integration point
-        ηbq = interp2ip_phase(Nv, ηb, ξ, phase_loc)
+        ηbq = interp2ip_phase(Nv, ηb, phase_loc)
         ξq  = interp2ip_phase(Nv, ξ, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
         # project ∂P∂t to integration points
@@ -120,6 +120,22 @@ function assemble_pressure_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
+                                       el2n_v, el2nP, geo_v, geo_P, nels,
+                                       phases, α, ηb, Δt, NqP,
+                                       Val(NV), Val(NP), workgroup)
+
+Zero `RP`, launch the atomic pressure-residual kernel over `nels` elements,
+and synchronize.
+
+Low-level entry point beneath `assemble_pressure_residual_matrices_atomix!`:
+the pressure shape-function table `NqP` (evaluated at the velocity quadrature
+points) and the local node counts `Val(NV)`, `Val(NP)` are passed explicitly,
+which makes the call differentiable with Enzyme (see
+`assemble_pressure_residual_matrices_atomix_adj!`). The backend is inferred
+from `RP`.
+"""
 function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0,
     el2n_v, el2nP, geo_v, geo_P, nels,
@@ -149,21 +165,21 @@ end
     α, ηb, ξ, Δt, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, ξ, ξ, Δt, NqP, iel, Val(NV), Val(NP))
+    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, ξ, Δt, NqP, iel, Val(NV), Val(NP))
     # P is discontinuous here, so element pressure DoFs are not shared.
     _add_local!(RP, local_nodes_P, Re, Val(false))
 end
 
 """
     pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
-                               geo_v, geo_P, phases, α, ηb, ξ, ξ, Δt, NqP, iel, Val(NV), Val(NP))
+                               geo_v, geo_P, phases, α, ηb, ξ, Δt, NqP, iel, Val(NV), Val(NP))
 
 Gather element-local nodal values and integrate the Stokes pressure residual for element `iel`.
 
 Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
 """
 @inline function pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, ξ, ξ, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
+        geo_v, geo_P, phases, α, ηb, ξ, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
@@ -177,7 +193,7 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
     phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))
     Re = integrate_PH_pressure_residual(
         (vxloc, vyloc), P_loc, P0loc, Tloc, T0loc,
-        geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, ξ, Δt, NqP,
+        geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, NqP,
     )
     return local_nodes_P, Re
 end

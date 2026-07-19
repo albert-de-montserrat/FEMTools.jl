@@ -335,7 +335,7 @@ computed directly from the local pressure residual:
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     Nq,
     NqP,
@@ -359,7 +359,7 @@ end
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     τ_old,
     Nq,
@@ -384,7 +384,7 @@ end
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     τ_old,
     plastic,
@@ -504,7 +504,7 @@ correction `Pnum = γ_eff * RP(v) / M_P` computed internally.
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     Nq,
     NqP,
@@ -528,7 +528,7 @@ end
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     τ_old,
     Nq,
@@ -553,7 +553,7 @@ end
     η, G, α, ρ0, K,
     g,
     Tref::Real,
-    ηb, Δt, γ_eff,
+    ηb, ξ, Δt, γ_eff,
     MP_loc::SVector{NP},
     τ_old,
     plastic,
@@ -610,6 +610,23 @@ function assemble_momentum_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
+                                       el2n_v, el2nP, geo_v, nels, phases,
+                                       τ_old, plastic, τ_store,
+                                       η, G, α, ρ0, K, g, Tref, Δt,
+                                       Nq, NqP, Val(NV), Val(NP), workgroup)
+
+Zero `Rv_x`/`Rv_y`, launch the atomic momentum-residual kernel over `nels`
+elements, and synchronize.
+
+Low-level entry point beneath `assemble_momentum_residual_matrices_atomix!`:
+the shape-function tables `Nq`, `NqP` and the local node counts `Val(NV)`,
+`Val(NP)` are passed explicitly instead of `ReferenceElement`s, which makes
+the call differentiable with Enzyme (see
+`assemble_momentum_residual_matrices_atomix_adj!`). The backend is inferred
+from `Rv_x`.
+"""
 function assemble_momentum_residual_kernel!(
     Rv_x, Rv_y,
     vx, vy, P, T, Pnum,
@@ -935,7 +952,7 @@ end
                                           el2n_v, el2nP, geo_v, geo_P,
                                           phases_v, phases_P,
                                           η, G, α, ρ0, K, g, Tref,
-                                          ηb, Δt, γ_eff, MP, Nq, NqP,
+                                          ηb, ξ, Δt, γ_eff, MP, Nq, NqP,
                                           iel, Val(NV), Val(NP))
 
 Compute per-element Jacobian diagnostics for the augmented Stokes momentum
@@ -1075,7 +1092,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     phases_v, phases_P,
     η, G, α, ρ0, K,
     g, Tref,
-    ηb, Δt, γ_eff, MP,
+    ηb, ξ, Δt, γ_eff, MP,
     backend, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     return assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -1101,7 +1118,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     τ_old,
     η, G, α, ρ0, K,
     g, Tref,
-    ηb, Δt, γ_eff, MP,
+    ηb, ξ, Δt, γ_eff, MP,
     backend, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     return assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -1128,7 +1145,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     plastic,
     η, G, α, ρ0, K,
     g, Tref,
-    ηb, Δt, γ_eff, MP,
+    ηb, ξ, Δt, γ_eff, MP,
     backend, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq  = shape_function_values(element_v)

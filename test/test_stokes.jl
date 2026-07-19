@@ -42,7 +42,7 @@ end
         η  = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
         α  = NTuple{2, FP}((0.0,  0.0))
-        dr = StokesDR(CPU(), 10, 12, η, ηb, ξ, α)
+        dr = StokesDR(CPU(), 10, 12, η, ηb, α)
 
         @test dr.ρ0   == NTuple{2, FP}((1.0, 1.0))
         @test dr.K    == NTuple{2, FP}((Inf, Inf))
@@ -50,6 +50,7 @@ end
         @test dr.Tref == FP(0)
         @test dr.η    == η
         @test dr.ηb   == ηb
+        @test dr.ξ    == NTuple{2, FP}((Inf, Inf))
         @test dr.α    == α
         @test eltype(dr.vx) == FP
         @test eltype(dr.P)  == FP
@@ -91,7 +92,7 @@ end
         η  = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
         α  = NTuple{2, FP}((0.0,  0.0))
-        dr = StokesDR(CPU(), 10, 12, η, ηb, ξ, α; stress_size = (3, 4))
+        dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
 
         @test size(dr.τxx) == (3, 4)
         @test size(dr.τyy) == (3, 4)
@@ -113,7 +114,7 @@ end
         K    = NTuple{2, FP}((1e10,   2e10))
         g    = (FP(0), FP(-9.81))
         Tref = FP(1600)
-        dr   = StokesDR(CPU(), 10, 12, η, ηb, ξ, α; ρ0, K, g, Tref)
+        dr   = StokesDR(CPU(), 10, 12, η, ηb, α; ρ0, K, g, Tref)
 
         @test dr.ρ0   == ρ0
         @test dr.K    == K
@@ -333,6 +334,7 @@ let
         ρ0      = (3.0,)
         K       = (Inf,)
         ηb      = (4.0,)
+        ξ       = (10.0,)
         g       = (1.0, -2.0)
         Tref    = 0.0
         Δt      = 0.25

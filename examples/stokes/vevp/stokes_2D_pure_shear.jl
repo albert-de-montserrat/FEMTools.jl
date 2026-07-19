@@ -120,7 +120,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, ξ, α;
+        η, ηb, α;
         ρ0,
         K,
         g,

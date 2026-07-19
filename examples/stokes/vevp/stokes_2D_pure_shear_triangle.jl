@@ -212,7 +212,7 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, ξ, α;
+        η, ηb, α;
         ρ0,
         K,
         g,
