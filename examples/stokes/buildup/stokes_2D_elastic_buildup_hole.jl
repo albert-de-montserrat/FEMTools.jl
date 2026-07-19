@@ -243,22 +243,22 @@ function main(;
     for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
-    geo_litho = precompute_geometry(mesh_litho.coords, mesh_litho.el2n, mesh_litho.nels, element_P)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
     top_nodes_litho = Int32[
         corner_id[Int32(n)] for n in outer_nodes
         if haskey(corner_id, Int32(n)) && abs(coords[n][2] - ly) ≤ tol_x
     ]
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
+    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     T_stokes = Array(dr.T)
     copyto!(lp_dr.T, Float64[T_stokes[Int(n)] for n in corner_nodes])
     P0_litho = Float64[ρ0_mat * g0 * (ly - coords_litho[i][2]) for i in eachindex(coords_litho)]
     copyto!(lp_dr.P, P0_litho)
-    Γ_P_dofs = TDev(top_nodes_litho)
-    Γ_P_zero_vals = TDev(zeros(Float64, length(top_nodes_litho)))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals,
-        backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
+    bc_litho = DirichletBoundaryCondition(
+        nothing, TDev(top_nodes_litho), TDev(zeros(Float64, length(top_nodes_litho))),
+    )
+    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho_l = Array(lp_dr.P)
     P_litho_P = zeros(Float64, mesh_stokes.nnodesP)

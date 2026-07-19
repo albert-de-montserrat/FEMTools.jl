@@ -1,14 +1,12 @@
 """
-    solver!(dr::LithostaticPressureDR, mesh, bc;
-            workgroup=256, ncheck=100, iterMax=10_000, verbose=true,
-            Tref=273, g=SVector(0, -9.81))
+    solver!(dr::LithostaticPressureDR, mesh, geo, element,
+            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 
-`dr.T` must be set to the current temperature field before calling. The
-reference element, geometry, and backend are taken from `mesh`; constrained
-pressure DoFs and values are taken from `bc`.
+`dr.T` must be set to the current temperature field before calling. Geometry,
+element, boundary arrays, backend, and workgroup size are supplied explicitly.
 `Tref` and `g` control the density equation of state and body-force vector.
 `g` is the gravitational acceleration vector; either an `SVector` or a plain
 `Tuple` of matching length (e.g. `SVector(0, -9.81)` or `(0.0, -9.81)` for
@@ -20,8 +18,6 @@ Set `verbose = false` to suppress per-iteration residual output.
 
 Modifies `dr.P` in-place. Returns `nothing` on convergence.
 
-The expanded positional method remains available as a low-level compatibility
-API.
 """
 function solver!(dr::LithostaticPressureDR, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
@@ -86,7 +82,8 @@ end
     solver!(dr, mesh, bc; workgroup=256, kwargs...)
 
 Solve for lithostatic pressure using the element and geometry stored in `mesh`
-and the prescribed values in `bc`.
+and the prescribed values in `bc`. The backend is inferred from `mesh.coords`;
+remaining keywords are forwarded to the low-level solver.
 """
 function solver!(
     dr::LithostaticPressureDR,

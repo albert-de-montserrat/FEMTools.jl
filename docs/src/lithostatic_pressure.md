@@ -44,13 +44,39 @@ dr = LithostaticPressureDR(CUDABackend(), nnodes, material)
 ```
 
 Fill `dr.T` with the current temperature field via `copyto!(dr.T, ...)` before
-calling the solver. The pressure field is advanced by
-[`solver!`](@ref) (documented on the [Heat Diffusion](heat_diffusion.md) page),
-which dispatches on the solver-state type.
+calling the solver.
+
+### Solve
+
+An element-aware mesh owns the reference element and precomputed geometry. A
+Dirichlet boundary-condition object owns the constrained pressure DoFs and
+values, leaving the call site compact:
+
+```julia
+element = ReferenceElement(LinearElement{2, 3, Float64})
+mesh = Mesh(backend, coords, el2n, element)
+bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
+
+dr = LithostaticPressureDR(backend, mesh.nnodes, material)
+copyto!(dr.T, temperature)
+solver!(dr, mesh, bc; Tref=273.0, g=(0.0, -9.81))
+```
 
 ## Assembly
 
+Shared element integration lives in `assembly/residual.jl`; atomic and colored
+routing live in `residual_atomics.jl` and `residual_colored.jl`.
+
+| Function | Role |
+|:-------- |:---- |
+| `assemble_lithostatic_pressure_matrices_atomix!` | Global assembly using atomic scatter |
+| `assemble_lithostatic_pressure_matrices_colored!` | Global assembly using conflict-free element groups |
+| `lp_integrate_residual` | Integrates one element residual |
+| `lp_element_residual` | Gathers element fields and calls the integrator |
+| `lp_element_jacobian` | Computes ForwardDiff row sums and diagonal |
+
 ```@docs
+solver!(::LithostaticPressureDR, ::Mesh, ::DirichletBoundaryCondition)
 FEMTools.assemble_lithostatic_pressure_matrices_atomix!
 FEMTools.assemble_lithostatic_pressure_matrices_colored!
 FEMTools.lp_element_residual

@@ -394,30 +394,19 @@ function main(;
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
-    ip_litho = element_P.integration_points
-    NQ_litho = length(ip_litho.ω)
-    ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
-    ∂N∂ξq_litho = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_litho[q]), NQ_litho)
-    GeoLitho = NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}
-    geo_litho = KernelAbstractions.allocate(backend, GeoLitho, mesh_litho.nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo_litho, mesh_litho.coords, mesh_litho.el2n,
-        ∂N∂ξq_litho, ip_litho.ω, Val(NP);
-        ndrange = mesh_litho.nels,
-    )
-    KernelAbstractions.synchronize(backend)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
+    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
-    top_nodes_dev = TDev(top_nodes_litho)
-    top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
-        backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
+    bc_litho = DirichletBoundaryCondition(
+        nothing, TDev(top_nodes_litho), KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho)),
+    )
+    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)

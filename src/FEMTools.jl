@@ -76,6 +76,8 @@ include("heat_diffusion/solvers/DR.jl")
 # Lithostatic-pressure solver: types, assembly, and PT solver.
 include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
 include("lithostatic_pressure/assembly/residual.jl")
+include("lithostatic_pressure/assembly/residual_atomics.jl")
+include("lithostatic_pressure/assembly/residual_colored.jl")
 include("lithostatic_pressure/solvers/DR.jl")
 
 # Stokes solver: types and assembly.

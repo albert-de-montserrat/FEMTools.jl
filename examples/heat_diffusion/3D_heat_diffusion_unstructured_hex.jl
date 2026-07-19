@@ -28,22 +28,6 @@ const backend   = CPU()
 const workgroup = 128
 
 # ---------------------------------------------------------------------------
-# Geometry precomputation  (∂N∂x, dΩ per element per quadrature point)
-# ---------------------------------------------------------------------------
-
-function precompute_geometry(coords, el2n, nels,
-                              element::ReferenceElement{T}) where T <: AbstractElement{3, N} where N
-    ip    = element.integration_points
-    NQ    = length(ip.ω)
-    ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q], ip.ζ[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = KernelAbstractions.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 3, Float64, 3N}, Float64}}, nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(N); ndrange = nels)
-    KernelAbstractions.synchronize(backend)
-    return geo
-end
-
-# ---------------------------------------------------------------------------
 # Mesh generation with Gmsh
 # ---------------------------------------------------------------------------
 
@@ -140,7 +124,8 @@ function main(; mesh_size = 3e3)
     to = TimerOutput()
     @timeit to "mesh" coords_cpu, el2n_cpu, top_nodes, bottom_nodes, cyl_nodes_per_cyl =
         build_mesh(; Lx, Ly, Lz, cylinders, mesh_size)
-    mesh = Mesh(backend, coords_cpu, el2n_cpu)
+    element = ReferenceElement(LinearElement{3, 4, Float64})
+    @timeit to "geo" mesh = Mesh(backend, coords_cpu, el2n_cpu, element; workgroup)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
@@ -156,17 +141,13 @@ function main(; mesh_size = 3e3)
         fill(T_bottom, length(bottom_nodes)),
         hole_dof_vecs...,
     ))
-    Γ_zero = zero(Γ_vals)
+    bc_T = DirichletBoundaryCondition(nothing, Γ_dofs, Γ_vals)
 
     @printf("Dirichlet: %d top, %d bottom", length(top_nodes), length(bottom_nodes))
     for (h, hn) in enumerate(cyl_nodes_per_cyl)
         @printf(", %d cyl-%d (T=%.0f K)", length(hn), h, T_holes[h])
     end
     @printf("\n")
-
-    # Element and geometry ------------------------------------------------
-    element = ReferenceElement(LinearElement{3, 4, Float64})
-    @timeit to "geo" geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # Material properties (single homogeneous phase) ----------------------
     material = ThermalMaterial(; k = (3.0,), Cp = (1200.0,), ρ0 = (3300.0,), α = (3e-5,), K = (1e11,))
@@ -188,11 +169,9 @@ function main(; mesh_size = 3e3)
     copyto!(lp_dr.T, dr.T)
     P0_litho = Float64[material.ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
-    Γ_P_dofs      = TDev(top_nodes)
-    Γ_P_zero_vals = zero(dr.P[top_nodes])
+    bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
-    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals,
-                                       backend, workgroup; ncheck = 50, Tref = Tref, g = g)
+    @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 50, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK time-series setup -----------------------------------------------
@@ -212,8 +191,7 @@ function main(; mesh_size = 3e3)
         @printf("─── time step %2d / %d ───\n", step, nsteps)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
-        @timeit to "solver" solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals,
-                                     backend, workgroup; ncheck = 100, Tref = Tref)
+        @timeit to "solver" solver!(dr, Δt, mesh, bc_T; workgroup, ncheck = 100, Tref = Tref)
         t_phys += Δt
 
         @timeit to "vtk" vtk_grid(joinpath(out_dir, "heat_diffusion_3d_tet_$step"), vtk_pts, cells) do vtk
