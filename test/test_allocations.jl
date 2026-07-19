@@ -38,12 +38,16 @@ if Base.JLOptions().code_coverage == 0
     @testset "allocations" begin
         for FP in (FP32, FP64)
             element_cases = (
-                (LinearElement{1, 2, FP}, (0.25,)),
-                (QuadraticElement{1, 3, FP}, (-0.2,)),
-                (LinearElement{2, 3, FP}, (0.2, 0.3)),
-                (QuadraticElement{2, 6, FP}, (0.2, 0.3)),
-                (LinearElement{2, 4, FP}, (0.2, -0.4)),
-                (QuadraticElement{2, 9, FP}, (0.2, -0.4)),
+                (LinearElement{1, 2, FP}, FP.((0.25,))),
+                (QuadraticElement{1, 3, FP}, FP.((-0.2,))),
+                (LinearElement{2, 3, FP}, FP.((0.2, 0.3))),
+                (QuadraticElement{2, 6, FP}, FP.((0.2, 0.3))),
+                (QuadraticElement{2, 7, FP}, FP.((0.2, 0.3))),
+                (LinearElement{2, 4, FP}, FP.((0.2, -0.4))),
+                (QuadraticElement{2, 9, FP}, FP.((0.2, -0.4))),
+                (LinearElement{3, 4, FP}, FP.((0.1, 0.2, 0.3))),
+                (QuadraticElement{3, 10, FP}, FP.((0.1, 0.2, 0.3))),
+                (LinearElement{3, 8, FP}, FP.((0.1, 0.2, -0.3))),
             )
 
             for (Element, coords) in element_cases

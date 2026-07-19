@@ -102,14 +102,15 @@ for FP in (FP32, FP64)
         ρ0 = ntuple(_ -> FP(3300.0), nphases)
         α  = ntuple(_ -> FP(3e-5),   nphases)
         K  = ntuple(_ -> FP(1.3e11), nphases)
+        material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
 
-        @testset "default constructor (CPU, $FP)" begin
-            dr = LithostaticPressureDR(CPU(), nnodes, ρ0, α, K)
+        @testset "material constructor (CPU, $FP)" begin
+            dr = LithostaticPressureDR(CPU(), nnodes, material)
             @test dr isa LithostaticPressureDR{nphases}
         end
 
-        @testset "convenience constructor (no backend, $FP)" begin
-            dr = LithostaticPressureDR(nnodes, ρ0, α, K)
+        @testset "material constructor (no backend, $FP)" begin
+            dr = LithostaticPressureDR(nnodes, material)
             @test dr isa LithostaticPressureDR{nphases}
         end
 

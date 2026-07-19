@@ -239,10 +239,14 @@ for FP in (FP32, FP64)
         line = ReferenceElement(LinearElement{1, 2, FP})
         ξ = FP(0.25)
         @test eval_shape_function(line, SVector(ξ)) == eval_shape_function(line, (ξ,))
+        @test eval_shape_function_gradient(line, SVector(ξ)) ==
+            eval_shape_function_gradient(line, (ξ,))
 
         quad4 = ReferenceElement(LinearElement{2, 4, FP})
         ξ, η = FP(0.3), FP(-0.2)
         @test eval_shape_function(quad4, SVector(ξ, η)) == eval_shape_function(quad4, (ξ, η))
+        @test eval_shape_function_gradient(quad4, SVector(ξ, η)) ==
+            eval_shape_function_gradient(quad4, (ξ, η))
     end
 
     @testset "shape_function_values – $FP" begin

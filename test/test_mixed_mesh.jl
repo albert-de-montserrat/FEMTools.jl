@@ -140,6 +140,8 @@ for FP in (FP32, FP64)
         @test length(cache.geo_P[1]) == length(velocity_element.integration_points.ω)
         @test cache.geo_v[1][1][2] isa FP
         @test cache.geo_P[1][1][2] isa FP
+        @test cache.element_v === velocity_element
+        @test cache.element_P === pressure_element
         @test length(mesh.normals) == mesh.nnodes
         @test eltype(mesh.normals) == SVector{2, FP}
     end

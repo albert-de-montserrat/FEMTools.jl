@@ -25,6 +25,40 @@ function _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_D
 end
 
 """
+    solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP;
+                        plastic=nothing, workgroup=256, kwargs...)
+
+Solve the Stokes system using geometry and elements from `cache`, material and
+stress history from `dr`, and one Dirichlet boundary-condition object per
+velocity component. Phase layouts and stress history may be overridden with
+the `phases_v`, `phases_P`, and `τ_old` keywords.
+"""
+function solve_stokes_dyrel!(
+    dr::StokesDR,
+    mesh::MixedMesh,
+    cache::MixedMeshCache,
+    bc_vx::DirichletBoundaryCondition,
+    bc_vy::DirichletBoundaryCondition,
+    Δt,
+    γP;
+    plastic = nothing,
+    phases_v = dr.phases_v,
+    phases_P = dr.phases_P,
+    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    workgroup = 256,
+    kwargs...,
+)
+    isnothing(cache.element_v) && throw(ArgumentError("cache has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"))
+    backend = KA.get_backend(mesh.coords)
+    return solve_stokes_dyrel!(
+        dr, mesh, cache, cache.element_v, cache.element_P,
+        phases_v, phases_P, τ_old, plastic, dr.G, Δt, γP,
+        bc_vx.DoFs, bc_vx.vals, bc_vy.vals, backend, workgroup;
+        vx_nodes = bc_vx.DoFs, vy_nodes = bc_vy.DoFs, kwargs...,
+    )
+end
+
+"""
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
                         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
                         Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
@@ -318,6 +352,31 @@ function solve_stokes_dyrel!(
         converged = err < ϵ,
         reached_total_iter = iter > total_iterMax,
         history,
+    )
+end
+
+"""
+    update_stokes_current_stress!(dr, mesh, cache, τ, Δt;
+                                  plastic=nothing, workgroup=256)
+
+Refresh integration-point stresses using cache-owned elements, solver-owned
+material and stress history, and optional phase-layout overrides.
+"""
+function update_stokes_current_stress!(
+    dr::StokesDR,
+    mesh::MixedMesh,
+    cache::MixedMeshCache,
+    τ,
+    Δt;
+    plastic = nothing,
+    phases_v = dr.phases_v,
+    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    workgroup = 256,
+)
+    backend = KA.get_backend(mesh.coords)
+    return update_stokes_current_stress!(
+        dr, mesh, cache, cache.element_v, cache.element_P,
+        phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup,
     )
 end
 

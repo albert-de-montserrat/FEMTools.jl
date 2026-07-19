@@ -244,29 +244,16 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
@@ -305,6 +292,8 @@ function main(;
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
@@ -376,8 +365,8 @@ function main(;
             c = coords_v[n]
             bc_vy_vals[i] = -ε̇_bg * (c[2] - ymid)
         end
-        apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-        apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+        apply_bc!(dr.vx, bc_vx)
+        apply_bc!(dr.vy, bc_vy)
         dt_step = Δt
         if advect_mesh
             vmax = corner_max_speed(Array(dr.vx), Array(dr.vy), el2n_v_cpu)
@@ -388,15 +377,13 @@ function main(;
         dt_history[istep] = dt_step
         time_history[istep] = t
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, geo_P, element_v, element_P,
-            γfact, dt_step, backend, workgroup; phases_v = phases_v_cpu,
+            γP, dr, mesh_stokes, cache, γfact, dt_step; workgroup, phases_v = phases_v_cpu,
         )
         @info "Physical time step" istep nsteps t Δt=dt_step Δt_max=Δt
 
         solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, G_stokes, dt_step, γP,
-            Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+            dr, mesh_stokes, cache, bc_vx, bc_vy, dt_step, γP;
+            phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
             ncheck,
             ϵ_tol,
             iterMax,
@@ -404,13 +391,11 @@ function main(;
             rel_drop0,
             verbose = verbose_PH,
             verbose_inner = verbose_DR,
-            vx_nodes = vx_nodes,
-            vy_nodes = vy_nodes,
         )
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, geo_v, element_v, element_P,
-            phases_v_cpu, τ_old, plastic, τ, G_stokes, dt_step, backend, workgroup,
+            dr, mesh_stokes, cache, τ, dt_step;
+            phases_v = phases_v_cpu, τ_old, plastic, workgroup,
         )
 
         P_cpu  = Array(dr.P)

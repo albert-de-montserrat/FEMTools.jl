@@ -32,17 +32,19 @@ Integrate the element pressure residual for a P–H (pressure–heat) coupled St
 `v` is an `NTuple{2}` of element velocity vectors `(vxloc, vyloc)`. `P_loc`
 and `P0loc` are the current and previous pressure values at the `N` pressure
 nodes. `Tloc` and `T0loc` are the corresponding temperatures. `α` and `ηb`
-are per-phase thermal expansion and bulk viscosity `NTuple`s; `Δt` is the time
-step. `Nq` contains pressure shape-function values at pressure quadrature
-points.
+are per-phase thermal expansion and bulk viscosity `NTuple`s; `ξ` is the
+per-phase compaction viscosity. `Δt` is the time step. `Nq` contains pressure
+shape-function values at pressure quadrature points.
 
 Weak form per pressure node `i`:
 
-    RPᵢ = ∫ Nᵢ (−∇·v − ∂P/∂t/ηb − α ∂T/∂t) dΩ
+    RPᵢ = ∫ Nᵢ (−∇·v − ∂P/∂t/ηb − P/ξ + α ∂T/∂t) dΩ
 
 where `geo_v_el` provides velocity shape-function gradients and `geo_P_el`
 provides pressure quadrature weights. Note: velocity gradients are currently
-evaluated at velocity integration points rather than pressure points.
+evaluated at velocity integration points rather than pressure points. Pressure
+and temperature rates are interpolated from their nodal increments before the
+material factors are applied.
 """
 @inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, Nq) where N
     RP_e = zero(P_loc)
@@ -55,18 +57,8 @@ evaluated at velocity integration points rather than pressure points.
         ηbq = interp2ip_phase(Nv, ηb, phase_loc)
         ξq  = interp2ip_phase(Nv, ξ, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
-        # project ∂P∂t to integration points
-        ∂P∂t = interp2ip(
-            Nv,
-            (P, P0) ->  (P - P0) / (ηbq * Δt) + P / ξq,
-            (P_loc, P0loc)
-        )
-        # project ∂T∂t to integration point
-        ∂T∂t = interp2ip(
-            Nv,
-            (T, T0) ->  αq * (T - T0) / Δt,
-            (Tloc, T0loc)
-        )
+        ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt) + dot(Nv, P_loc) / ξq
+        ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
         # project divergence to integration point
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
         # compute pressure residual
@@ -90,8 +82,8 @@ Assemble the Stokes pressure residual `RP` using Atomix-backed atomic scatter.
 `vx`, `vy` are indexed over velocity DoFs (`el2n_v`). `P`, `P0`, `T`, `T0`
 are current and previous pressure and temperature fields on pressure nodes.
 `phases` is a nodal integer array (pressure-node indexed) selecting the phase
-for material interpolation. `α` and `ηb` are per-phase thermal expansion and
-bulk viscosity `NTuple`s.
+for material interpolation. `α`, `ηb`, and `ξ` are per-phase thermal expansion,
+bulk viscosity, and compaction viscosity `NTuple`s.
 """
 function assemble_pressure_residual_matrices_atomix!(
     RP,
@@ -123,7 +115,7 @@ end
 """
     assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
                                        el2n_v, el2nP, geo_v, geo_P, nels,
-                                       phases, α, ηb, Δt, NqP,
+                                       phases, α, ηb, ξ, Δt, NqP,
                                        Val(NV), Val(NP), workgroup)
 
 Zero `RP`, launch the atomic pressure-residual kernel over `nels` elements,

@@ -183,10 +183,12 @@ function _lithostatic_dr_case(::Type{FP}) where FP
 end
 
 function _stokes_dr_case(::Type{FP}) where FP
+    material = StokesMaterial(;
+        η = (FP(1),), ηb = (FP(Inf),), G = (FP(Inf),), α = (FP(0),),
+        ρ0 = (FP(1),), K = (FP(Inf),), g = (FP(0), -FP(1)), Tref = FP(0),
+    )
     return StokesDR(
-        CPU(), 6, 3,
-        (FP(1),), (FP(Inf),), (FP(0),);
-        ρ0 = (FP(1),), K = (FP(Inf),), g = (FP(0), -FP(1)),
+        CPU(), 6, 3, material;
         stress_size = (1, 1),
     )
 end

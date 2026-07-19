@@ -351,15 +351,9 @@ function main(;
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    stokes_material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, stokes_material;
         CFL_v, CFL_P = 0.9, c_fact,
         stress_size = (NQ_v, mesh_stokes.nels),
     )
@@ -394,30 +388,19 @@ function main(;
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
-    ip_litho = element_P.integration_points
-    NQ_litho = length(ip_litho.ω)
-    ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
-    ∂N∂ξq_litho = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_litho[q]), NQ_litho)
-    GeoLitho = NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}
-    geo_litho = KernelAbstractions.allocate(backend, GeoLitho, mesh_litho.nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo_litho, mesh_litho.coords, mesh_litho.el2n,
-        ∂N∂ξq_litho, ip_litho.ω, Val(NP);
-        ndrange = mesh_litho.nels,
-    )
-    KernelAbstractions.synchronize(backend)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
+    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
-    top_nodes_dev = TDev(top_nodes_litho)
-    top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
-        backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
+    bc_litho = DirichletBoundaryCondition(
+        nothing, TDev(top_nodes_litho), KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho)),
+    )
+    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)
@@ -445,9 +428,11 @@ function main(;
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
@@ -468,8 +453,7 @@ function main(;
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup;
+        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -488,9 +472,8 @@ function main(;
     # ---------------------------------------------------------------------------
 
     solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,
         iterMax,
@@ -498,8 +481,6 @@ function main(;
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,
-        vx_nodes,
-        vy_nodes,
         collect_history = true,
     )
     solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
