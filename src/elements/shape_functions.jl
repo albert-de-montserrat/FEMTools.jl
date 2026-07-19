@@ -169,7 +169,7 @@ _quadratic_line_∇N3(ξ::T) where T = ξ + T(1/2)
 # basis. The `side` or `node` argument is the reference coordinate of the local
 # node in that coordinate direction.
 _linear_line_N(ξ::T, side) where T = side == -1 ? (1 - ξ) * T(1/2) : (1 + ξ) * T(1/2)
-_linear_line_∇N(side::T) where T= side == -1 ? -T(1/2) : +T(1/2)
+_linear_line_∇N(side::T) where T = side == -1 ? -T(1 / 2) : +T(1 / 2)
 
 function _quadratic_line_N(ξ, node)
     node == -1 && return _quadratic_line_N1(ξ)
@@ -409,13 +409,11 @@ function ShapeFunctions(::QuadraticElement{3, 27, T}) where T
     )
 
 
-    N = ntuple(Val(27)) do i 
-        @inline
+    N = ntuple(Val(27)) do i
         node = nodes[i]
         (ξ, η, ζ) -> _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3])
     end
-    ∇N = ntuple(Val(27)) do i 
-        @inline
+    ∇N = ntuple(Val(27)) do i
         node = nodes[i]
         (ξ, η, ζ) -> (
             _quadratic_line_∇N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3]),
@@ -465,14 +463,17 @@ Evaluate the stored reference-coordinate gradients of all shape functions of a
     return _eval_shape_function(element.shape_functions.∇N, coords)
 end
 
+@inline eval_shape_function_gradient(element, coords::SVector) =
+    eval_shape_function_gradient(element, tuple(coords...))
+
 """
     eval_shape_function_jacobian(element, coords)
 
 Compute the Jacobian of the shape-function vector with respect to reference
 coordinates at `coords`.
 
-For one-dimensional elements this returns the stored analytical gradients. For
-higher-dimensional elements the Jacobian is computed with `ForwardDiff`.
+The implementation uses the stored analytical gradients for element families
+where that is faster, and `ForwardDiff` otherwise.
 """
 @inline function eval_shape_function_jacobian(element, coords::Tuple{T, Vararg{T}}) where {T}
     return eval_shape_function_jacobian(element, SVector(coords))
@@ -487,6 +488,26 @@ end
 
 @inline function eval_shape_function_jacobian(element, coords::SVector{1, T}) where {T}
     return _eval_shape_function(element.shape_functions.∇N, coords)
+end
+
+for (Element, Dim) in (
+    (QuadraticElement{2, 7}, 2),
+    (QuadraticElement{2, 9}, 2),
+    (QuadraticElement{3, 11}, 3),
+    (LinearElement{3, 8}, 3),
+)
+    @eval @inline function eval_shape_function_jacobian(
+        element::ReferenceElement{<:$Element},
+        coords::SVector{$Dim},
+    )
+        return _gradient_matrix(eval_shape_function_gradient(element, coords))
+    end
+end
+
+@generated function _gradient_matrix(gradients::SVector{N, G}) where {N, G<:Tuple}
+    M = fieldcount(G)
+    entries = [:(gradients[$i][$j]) for j in 1:M for i in 1:N]
+    return :(SMatrix{$N, $M}($(entries...)))
 end
 
 

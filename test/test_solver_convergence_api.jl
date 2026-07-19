@@ -115,6 +115,27 @@ end
     @test occursin("Lithostatic pressure DR solver did not converge", sprint(showerror, litho_err))
 end
 
+@testset "DR solvers accept mesh-owned geometry and BC objects" begin
+    element = ReferenceElement(LinearElement{2, 3, Float64})
+    coords = SVector{2, Float64}[
+        SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0), SVector(2.0, 2.0),
+    ]
+    mesh = Mesh(CPU(), coords, reshape(Int32[1, 2, 3], 3, 1), element; workgroup = 1)
+    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal_err = _caught_error() do
+        solver!(thermal, 1.0, mesh, bc; workgroup = 1, verbose = false)
+    end
+    @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
+
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho_err = _caught_error() do
+        solver!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
+    end
+    @test occursin("lithostatic pressure preconditioner produced invalid λmax", sprint(showerror, litho_err))
+end
+
 @testset "DR solvers reject zero preconditioners" begin
     (; mesh, geo, element) = _orphan_triangle_mesh()
     empty_i = Int32[]

@@ -1,13 +1,14 @@
 """
-    solver!(dr::LithostaticPressureDR, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck=100, iterMax=10_000, verbose=true, Tref=273, g=SVector(0, -9.81))
+    solver!(dr::LithostaticPressureDR, mesh, bc;
+            workgroup=256, ncheck=100, iterMax=10_000, verbose=true,
+            Tref=273, g=SVector(0, -9.81))
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 
-`dr.T` must be set to the current temperature field before calling.
-`Γ_dofs`, `Γ_zero`, `Γ_vals` enforce Dirichlet boundary conditions on `P`.
+`dr.T` must be set to the current temperature field before calling. The
+reference element, geometry, and backend are taken from `mesh`; constrained
+pressure DoFs and values are taken from `bc`.
 `Tref` and `g` control the density equation of state and body-force vector.
 `g` is the gravitational acceleration vector; either an `SVector` or a plain
 `Tuple` of matching length (e.g. `SVector(0, -9.81)` or `(0.0, -9.81)` for
@@ -18,6 +19,9 @@ non-convergence error.
 Set `verbose = false` to suppress per-iteration residual output.
 
 Modifies `dr.P` in-place. Returns `nothing` on convergence.
+
+The expanded positional method remains available as a low-level compatibility
+API.
 """
 function solver!(dr::LithostaticPressureDR, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
@@ -76,4 +80,25 @@ function solver!(dr::LithostaticPressureDR, mesh, geo, element,
         end
     end
     error("Lithostatic pressure DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
+end
+
+"""
+    solver!(dr, mesh, bc; workgroup=256, kwargs...)
+
+Solve for lithostatic pressure using the element and geometry stored in `mesh`
+and the prescribed values in `bc`.
+"""
+function solver!(
+    dr::LithostaticPressureDR,
+    mesh::Mesh,
+    bc::DirichletBoundaryCondition;
+    workgroup = 256,
+    kwargs...,
+)
+    isnothing(mesh.geometry) && throw(ArgumentError("mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
+    return solver!(
+        dr, mesh, mesh.geometry, mesh.element,
+        bc.DoFs, bc.zero_vals, bc.vals, KA.get_backend(mesh.coords), workgroup;
+        kwargs...,
+    )
 end

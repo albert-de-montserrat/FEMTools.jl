@@ -122,6 +122,9 @@ primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 | Lithostatic pressure | `LithostaticPressureDR` | `solver!` |
 | Incompressible visco-elasto-plastic Stokes flow | `StokesDR` | `solve_stokes_dyrel!` |
 
+Thermal and lithostatic solvers share a typed `ThermalMaterial` containing
+per-phase `k`, `Cp`, `ρ0`, `α`, and `K` tuples.
+
 Runnable scripts live under [`examples/`](examples/); see the
 [documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the
 physical models, solver-state fields, and worked examples.

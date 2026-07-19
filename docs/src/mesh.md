@@ -18,10 +18,15 @@ Backend-aware constructors move every kernel-consumed mesh array to the target
 device:
 
 ```julia
-mesh_v = Mesh(backend, coords_cpu, el2n_cpu; order = 2)
+mesh_v = Mesh(backend, coords_cpu, el2n_cpu, velocity_element)
 mesh   = MixedMesh(mesh_v, pressure_element)
 cache  = MixedMeshCache(backend, workgroup, mesh, velocity_element, pressure_element)
 ```
+
+An element-aware `Mesh` stores its reference element and precomputed geometry;
+single-field thermal and lithostatic solvers therefore need only the mesh and a
+boundary-condition object. `Mesh(backend, coords, el2n; order)` remains
+available when geometry is not needed.
 
 `MixedMesh(mesh_v, pressure_element)` constructs discontinuous pressure
 connectivity and nodal normals on the CPU, then returns them on the same array
@@ -59,6 +64,7 @@ generate_element_groups
 ## Geometry Precomputation
 
 ```@docs
+precompute_geometry
 FEMTools.precompute_geometry_kernel!
 ```
 

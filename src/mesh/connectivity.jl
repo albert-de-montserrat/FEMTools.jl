@@ -377,6 +377,10 @@ dimension.
     return SMatrix{N, D, T, D * N}(data)
 end
 
+@inline function element_coordinate_matrix(coords::AbstractArray{T}, local_nodes::SVector{N, Int}) where {T <: Number, N}
+    return SMatrix{N, 1, T, N}(ntuple(i -> coords[local_nodes[i]], Val(N)))
+end
+
 """
     local_nodes_of(el2n, iel, Val(N)) -> SVector{N, Int}
 

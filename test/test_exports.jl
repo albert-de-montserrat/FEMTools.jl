@@ -29,6 +29,7 @@ import FEMTools
         :eval_shape_function_jacobian,
         :shape_function_values,
         :order,
+        :ThermalMaterial,
         :ThermalDiffusionDR,
         :solver!,
         :solve_stokes_dyrel!,

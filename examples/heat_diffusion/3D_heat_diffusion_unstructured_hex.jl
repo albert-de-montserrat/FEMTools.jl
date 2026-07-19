@@ -169,17 +169,13 @@ function main(; mesh_size = 3e3)
     @timeit to "geo" geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # Material properties (single homogeneous phase) ----------------------
-    k    = (3.0,)
-    Cp   = (1200.0,)
-    ρ0   = (3300.0,)
-    α    = (3e-5,)
-    K    = (1e11,)
+    material = ThermalMaterial(; k = (3.0,), Cp = (1200.0,), ρ0 = (3300.0,), α = (3e-5,), K = (1e11,))
     Tref = 273.0
     g    = SA[0.0, -9.81, 0.0]
     Δt   = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
+    dr = ThermalDiffusionDR(backend, mesh.nnodes, material;
                             CFL = 0.9, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
@@ -188,9 +184,9 @@ function main(; mesh_size = 3e3)
     copyto!(dr.T0, dr.T)
 
     # Lithostatic pressure: solve ∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ on the initial T.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
-    P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = Float64[material.ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs      = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])

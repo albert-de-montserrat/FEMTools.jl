@@ -20,9 +20,9 @@ where the density follows the linearised equation of state
 ```
 
 Temperature `T` enters only as a known coefficient, so the state object holds no
-time-step arrays. Per-phase properties (`ρ0`, `α`, `K`) are stored as
-`NTuple{nphases, FP}` scalars encoded in the type parameters. The reference
-temperature `Tref` and body-force vector `g` are passed to `solver!`.
+time-step arrays. The solver takes `ρ0`, `α`, and `K` from the same
+[`ThermalMaterial`](@ref) used by the heat solver. The reference temperature
+`Tref` and body-force vector `g` are passed to `solver!`.
 
 ## Solver state
 
@@ -33,12 +33,14 @@ LithostaticPressureDR
 ### Constructor
 
 ```julia
+material = ThermalMaterial(; k, Cp, ρ0, α, K)
+
 # CPU (default)
-dr = LithostaticPressureDR(nnodes, ρ0, α, K)
+dr = LithostaticPressureDR(nnodes, material)
 
 # Explicit backend (e.g. GPU)
 using CUDA
-dr = LithostaticPressureDR(CUDABackend(), nnodes, ρ0, α, K)
+dr = LithostaticPressureDR(CUDABackend(), nnodes, material)
 ```
 
 Fill `dr.T` with the current temperature field via `copyto!(dr.T, ...)` before

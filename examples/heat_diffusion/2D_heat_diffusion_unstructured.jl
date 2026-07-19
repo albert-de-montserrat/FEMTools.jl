@@ -151,17 +151,13 @@ function main(; max_area=1e5)
     geo     = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # Material properties (single homogeneous phase) ----------------------
-    k   = (3.0,)
-    Cp  = (1200.0,)
-    ρ0  = (3300.0,)
-    α   = (3e-5,)
-    K   = (1e11,)
+    material = ThermalMaterial(; k = (3.0,), Cp = (1200.0,), ρ0 = (3300.0,), α = (3e-5,), K = (1e11,))
     Tref = 273.0
     g    = SA[0.0, -9.81]
     Δt  = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
+    dr = ThermalDiffusionDR(backend, mesh.nnodes, material;
                             CFL = 0.9, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
@@ -173,9 +169,9 @@ function main(; max_area=1e5)
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
-    P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = Float64[material.ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
     Γ_P_dofs = TDev(top_nodes)
     Γ_P_zero_vals = zero(dr.P[top_nodes])  # P = 0 at free surface
@@ -204,7 +200,7 @@ function main(; max_area=1e5)
     P_obs  = Observable(Array(lp_dr.P))
     t_obs  = Observable(0.0)
 
-    P_max = ρ0[1] * (-g[2]) * Ly   # analytical pressure at max depth
+    P_max = material.ρ0[1] * (-g[2]) * Ly   # analytical pressure at max depth
 
     fig = Figure(size = (1300, 640))
     θ_c = range(0, 2π; length = 300)
