@@ -139,13 +139,13 @@ function main(;
 
     # Material (2 phases: matrix + inclusion)
     γfact = 50.0
-    η     = (1.0,     1e-1)   # shear viscosity
-    α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
-    ρ0    = (1.0,     1.0)   # reference density
-    K     = (1e1,     1e1)   # bulk modulus   (Inf → incompressible)
-    ξ     = (1e0,     1e0)   # bulk viscosity (Inf → incompressible)
-    ηb    = K                # pressure storage modulus; residual uses ηb * Δt
-    G     = (1e3,     1e3)   # Shear modulus (Inf → viscous)
+    η     = (1.0,     1e-1)    # shear viscosity
+    α     = (0.0,     0.0)     # thermal expansivity  (zero → isothermal)
+    ρ0    = (1.0,     1.0)     # reference density
+    K     = (1e10,     1e10)   # bulk modulus   (Inf → incompressible)
+    ξ     = (1e2,     1e2)     # bulk viscosity (Inf → incompressible)
+    ηb    = (1e5,     1e5)     # pressure storage modulus; residual uses ηb * Δt
+    G     = (1e10,     1e10)   # Shear modulus (Inf → viscous)
     G_stokes = G
     # Cohesion chosen so the yield stress C·cosϕ = 1.6 at zero pressure.
     # Background deviatoric stress in pure shear is 2η·ε̇_bg = 2, so the
