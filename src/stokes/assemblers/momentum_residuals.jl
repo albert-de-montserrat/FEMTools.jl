@@ -8,14 +8,14 @@ dot_or_zero(a, b) = dot(a, b)
         out = max(out, var[phase_loc[i]])
     end
     return out
-end
+end 
 @inline _element_max_phase_property(var, phase_loc) = map(_ -> _max_phase_value(var, phase_loc), var)
 @inline function _local_pressure_correction(
-    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, ξ, Δt, γ_eff, MP_loc, NqP,
 )
     RP_loc = integrate_PH_pressure_residual(
         v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+        geo_v_el, geo_P_el, phase_P, α, ηb, ξ, Δt, NqP,
     )
     return pressure_scale(γ_eff, RP_loc, MP_loc)
 end
@@ -296,11 +296,11 @@ end
 
 @inline function _integrate_momentum_x_with_pressure_correction(
     v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+    η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
 )
     Pnum_loc = _local_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+        geo_v_el, geo_P_el, phase_P, α, ηb, ξ, Δt, γ_eff, MP_loc, NqP,
     )
     return integrate_momentum_x_residual(
         v, P_loc, Pnum_loc, T_loc,
@@ -311,7 +311,7 @@ end
 """
     integrate_momentum_x_residual(v, P_loc, P0loc, T_loc, T0loc,
                                   geo_v_el, geo_P_el, phase_v, phase_P,
-                                  η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+                                  η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
                                   MP_loc, Nq, NqP) -> Rv_x
 
 Integrate the x-momentum residual with the DYREL numerical pressure correction
@@ -342,7 +342,7 @@ computed directly from the local pressure residual:
 ) where {N, NP}
     return _integrate_momentum_x_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
     )
 end
 
@@ -367,7 +367,7 @@ end
 ) where {N, NP}
     return _integrate_momentum_x_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
     )
 end
 
@@ -393,7 +393,7 @@ end
 ) where {N, NP}
     return _integrate_momentum_x_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
     )
 end
 
@@ -470,11 +470,11 @@ end
 
 @inline function _integrate_momentum_y_with_pressure_correction(
     v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+    η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
 )
     Pnum_loc = _local_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+        geo_v_el, geo_P_el, phase_P, α, ηb, ξ, Δt, γ_eff, MP_loc, NqP,
     )
     return integrate_momentum_y_residual(
         v, P_loc, Pnum_loc, T_loc,
@@ -485,7 +485,7 @@ end
 """
     integrate_momentum_y_residual(v, P_loc, P0loc, T_loc, T0loc,
                                   geo_v_el, geo_P_el, phase_v, phase_P,
-                                  η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+                                  η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
                                   MP_loc, Nq, NqP) -> Rv_y
 
 Integrate the y-momentum residual with the local DYREL numerical pressure
@@ -511,7 +511,7 @@ correction `Pnum = γ_eff * RP(v) / M_P` computed internally.
 ) where {N, NP}
     return _integrate_momentum_y_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, nothing, nothing, Nq, NqP,
     )
 end
 
@@ -536,7 +536,7 @@ end
 ) where {N, NP}
     return _integrate_momentum_y_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, nothing, Nq, NqP,
     )
 end
 
@@ -562,7 +562,7 @@ end
 ) where {N, NP}
     return _integrate_momentum_y_with_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_v, phase_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, τ_old, plastic, Nq, NqP,
     )
 end
 
@@ -952,31 +952,31 @@ Returns `(local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y)`.
 """
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-    phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+    phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     return element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-        phases_v, phases_P, nothing, nothing, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        phases_v, phases_P, nothing, nothing, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
 end
 
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-    phases_v, phases_P, τ_old, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+    phases_v, phases_P, τ_old, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     return element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-        phases_v, phases_P, τ_old, nothing, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        phases_v, phases_P, τ_old, nothing, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
 end
 
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-    phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+    phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
@@ -1000,7 +1000,7 @@ end
         vx_arg -> integrate_momentum_x_residual(
             (vx_arg, vyloc), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )
@@ -1008,7 +1008,7 @@ end
         vy_arg -> integrate_momentum_x_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
@@ -1022,7 +1022,7 @@ end
         vy_arg -> integrate_momentum_y_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vyloc,
     )
@@ -1030,7 +1030,7 @@ end
         vx_arg -> integrate_momentum_y_residual(
             (vx_arg, vyloc), P_loc, P0loc, T_loc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
-            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
+            η_pc, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff_loc, MP_loc, τ_old_loc, plastic, Nq, NqP,
         ),
         vxloc,
     )
@@ -1048,7 +1048,7 @@ end
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
         element_v, element_P, phases_v, phases_P,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP,
         backend, workgroup)
 
 Assemble the augmented Stokes momentum Jacobian diagnostics using
@@ -1082,7 +1082,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
         element_v, element_P, phases_v, phases_P, nothing, nothing,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP,
         backend, workgroup,
     )
 end
@@ -1108,7 +1108,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
         element_v, element_P, phases_v, phases_P, τ_old, nothing,
-        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP,
+        η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP,
         backend, workgroup,
     )
 end
@@ -1141,7 +1141,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     augmented_momentum_jacobian_atomic_kernel!(backend, workgroup)(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases_v, phases_P,
-        τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP, Nq, NqP, Val(NV), Val(NP);
+        τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP, Nq, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -1158,14 +1158,14 @@ end
     @Const(phases_v), @Const(phases_P),
     τ_old,
     plastic,
-    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+    η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
     @Const(MP),
     Nq, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
     for (i, inod) in enumerate(local_nodes_v)

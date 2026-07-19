@@ -51,7 +51,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 
 # Per-phase scalar tuples (`NTuple{nphases, FP}`)
 `η` (dynamic shear viscosity), `ηb` (bulk viscosity), `α` (thermal expansivity),
-`ρ0` (reference density, default 1), `K` (bulk modulus for EOS, default Inf).
+`ρ0` (reference density, default 1), `K` (bulk modulus for EOS, default Inf), `K` (bulk viscosity for EOS, default Inf).
 
 # Global scalar fields
 `g::NTuple{2,FP}` (gravity vector, default `(0,0)`), `Tref::FP` (reference
@@ -61,11 +61,11 @@ temperature for the linearised EOS, default 0).
 `CFL_v`, `CFL_P`, `c_fact`, `ϵ` (convergence tolerance).
 
 # Constructor
-    StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
-             ρ0=nothing, K=nothing, g=nothing, Tref=nothing,
+    StokesDR(backend, nnodes_v, nnodes_P, η, ηb, ξ, α;
+             ρ0=nothing, K=nothing, ξ=nothing, g=nothing, Tref=nothing,
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
              stress_size=nothing)
-    StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
+    StokesDR(nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...)  # defaults to CPU()
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Stress arrays default to nodal storage of length `nnodes_v`; pass
@@ -117,6 +117,8 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     α::NTuple{nphases, FP}     # thermal expansivity     [K⁻¹]
     ρ0::NTuple{nphases, FP}    # reference density       [kg m⁻³]
     K::NTuple{nphases, FP}     # bulk modulus (EOS)      [Pa]
+    ξ::NTuple{nphases, FP}     # bulk viscosity (EOS)    [Pa.s]
+
     # global scalar parameters
     g::NTuple{2, FP}           # gravitational acceleration [m s⁻²]
     Tref::FP                   # reference temperature for EOS [K]
@@ -128,9 +130,10 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
 
     function StokesDR(
         backend, nnodes_v, nnodes_P,
-        η::NTuple{nphases, FP}, ηb::NTuple{nphases, FP}, α::NTuple{nphases, FP};
+        η::NTuple{nphases, FP}, ηb, ξ::NTuple{nphases, FP}, α::NTuple{nphases, FP};
         ρ0   = nothing,
         K    = nothing,
+        ξ    = nothing,
         g    = nothing,
         Tref = nothing,
         CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
@@ -138,6 +141,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     ) where {nphases, FP}
         _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
         _K   = K   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
+        _ξ   = ξ   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(ξ)
         _g   = g   === nothing ? (FP(0), FP(0))   : (FP(g[1]), FP(g[2]))
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
         stress_dims = stress_size === nothing ? (nnodes_v,) :
@@ -158,7 +162,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
-            η, ηb, α, _ρ0, _K, _g, _Tref,
+            η, ηb, ξ, α, _ρ0, _K, _ξ, _g, _Tref,
             FP(CFL_v), FP(CFL_P), FP(c_fact), FP(ϵ),
         )
     end
@@ -169,8 +173,8 @@ stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
 pressure(dr::StokesDR) = dr.P
 temperature(dr::StokesDR) = dr.T
 
-StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
-    StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
+StokesDR(nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...) =
+    StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...)
 
 """
     DruckerPrager{nphases, FP}

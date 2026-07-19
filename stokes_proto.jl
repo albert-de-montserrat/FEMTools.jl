@@ -228,7 +228,7 @@ end
     end
 end
 
-@inline function integrate_PH_pressure_residual(v::NTuple, Ploc::SVector{N},  P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
+@inline function integrate_PH_pressure_residual(v::NTuple, Ploc::SVector{N},  P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, Nq) where N
     RP_e = zero(Ploc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
@@ -236,7 +236,7 @@ end
         Nv      = Nq[q]
 
         # project parameters to integration point
-        ηbq = FEMTools.interp2ip_phase(Nv, ηb, phase_loc)
+        ηbq = FEMTools.interp2ip_phase(Nv, ηb, ξ, phase_loc)
         αq  = FEMTools.interp2ip_phase(Nv, α, phase_loc)
         # project ∂P∂t to integration points
         ∂P∂t = FEMTools.interp2ip(
@@ -445,7 +445,7 @@ phase_loc = [1, 2, 1]
 α  = rand(), rand()
 Δt = rand()
 
-integrate_PH_pressure_residual((vxloc, vyloc), Ploc,  P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NP)
+integrate_PH_pressure_residual((vxloc, vyloc), Ploc,  P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, ξ, Δt, NP)
 
 # velocity residuals
 ∂N∂x, dΩ = geo_v_el[q] # velocity

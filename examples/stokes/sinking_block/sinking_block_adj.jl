@@ -355,7 +355,7 @@ function main(;
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, α;
+        η, ηb, ξ, α;
         ρ0,
         K,
         g,

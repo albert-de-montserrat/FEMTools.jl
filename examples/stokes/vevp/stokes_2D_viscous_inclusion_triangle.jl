@@ -142,7 +142,8 @@ function main(;
     η     = (1.0,     1e-1)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     1.0)   # reference density
-    K     = (1e2,     1e2)   # bulk modulus  (Inf → incompressible)
+    K     = (1e2,     1e2)   # bulk modulus   (Inf → incompressible)
+    ξ     = (1e10,   1e10)   # bulk viscosity (Inf → incompressible)
     ηb    = K                # pressure storage modulus; residual uses ηb * Δt
     G     = (1e3,     1e3)   # Shear modulus (Inf → viscous)
     G_stokes = G
@@ -219,9 +220,9 @@ function main(;
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, α;
+        η, ηb, ξ, α;
         ρ0,
-        K,
+        K, ξ,
         g,
         Tref,
         CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9,

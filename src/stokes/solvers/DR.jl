@@ -152,7 +152,7 @@ function solve_stokes_dyrel!(
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_P, dr.α, dr.ηb, Δt,
+            phases_P, dr.α, dr.ηb, dr.ξ, Δt,
             backend, workgroup,
         )
 
@@ -210,7 +210,7 @@ function solve_stokes_dyrel!(
                 dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
-                phases_P, dr.α, dr.ηb, Δt,
+                phases_P, dr.α, dr.ηb, dr.ξ, Δt,
                 backend, workgroup,
             )
 

@@ -101,7 +101,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         backend,
         mesh_stokes.nnodes,
         mesh_stokes.nnodesP,
-        η, ηb, α;
+        η, ηb, ξ, α;
         ρ0,
         K,
         g,
