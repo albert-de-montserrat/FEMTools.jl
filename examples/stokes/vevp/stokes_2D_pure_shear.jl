@@ -116,15 +116,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,

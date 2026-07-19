@@ -351,15 +351,9 @@ function main(;
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    stokes_material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, stokes_material;
         CFL_v, CFL_P = 0.9, c_fact,
         stress_size = (NQ_v, mesh_stokes.nels),
     )
@@ -434,9 +428,11 @@ function main(;
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
@@ -457,8 +453,7 @@ function main(;
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup;
+        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -477,9 +472,8 @@ function main(;
     # ---------------------------------------------------------------------------
 
     solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,
         iterMax,
@@ -487,8 +481,6 @@ function main(;
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,
-        vx_nodes,
-        vy_nodes,
         collect_history = true,
     )
     solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats

@@ -163,15 +163,9 @@ function main(;
     NV = length(element_v)
     NP = length(element_P)
 
+    stokes_material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, stokes_material;
         CFL_v = 1 / sqrt(2.1),
         CFL_P = 1 / sqrt(2.1),
         c_fact = 0.9,

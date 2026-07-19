@@ -124,6 +124,8 @@ primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 
 Thermal and lithostatic solvers share a typed `ThermalMaterial` containing
 per-phase `k`, `Cp`, `ρ0`, `α`, and `K` tuples.
+The Stokes solver similarly accepts a typed `StokesMaterial` containing its
+per-phase rheology, elastic, density, and equation-of-state properties.
 
 Runnable scripts live under [`examples/`](examples/); see the
 [documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the

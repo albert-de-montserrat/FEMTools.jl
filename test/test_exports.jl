@@ -31,6 +31,7 @@ import FEMTools
         :order,
         :ThermalMaterial,
         :ThermalDiffusionDR,
+        :StokesMaterial,
         :solver!,
         :solve_stokes_dyrel!,
         :solve_stokes_adjoint_dyrel!,

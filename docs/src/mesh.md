@@ -31,9 +31,9 @@ available when geometry is not needed.
 `MixedMesh(mesh_v, pressure_element)` constructs discontinuous pressure
 connectivity and nodal normals on the CPU, then returns them on the same array
 backend as `mesh_v`. `MixedMeshCache` allocates both geometry arrays on
-`backend`; its `geo_v` and `geo_P` must be passed together with that mesh and
-backend to the Stokes assemblers. Avoid mixing host connectivity with device
-solution arrays.
+`backend` and retains both reference elements, allowing high-level Stokes calls
+to infer geometry, elements, and backend. Avoid mixing host connectivity with
+device solution arrays.
 
 ## Coordinates and Degrees of Freedom
 

@@ -194,11 +194,16 @@ arrays; mixing host and device inputs in an assembly kernel is unsupported.
 Fields:
 - `geo_v`: primary-field shape-function gradients and weighted volumes.
 - `geo_P`: secondary-field shape-function gradients and weighted volumes.
+- `element_v`, `element_P`: reference elements used to build the cache.
 """
-struct MixedMeshCache{GV, GP}
+struct MixedMeshCache{GV, GP, EV, EP}
     geo_v::GV
     geo_P::GP
+    element_v::EV
+    element_P::EP
 end
+
+MixedMeshCache(geo_v, geo_P) = MixedMeshCache(geo_v, geo_P, nothing, nothing)
 
 function MixedMeshCache(
     backend,
@@ -234,7 +239,7 @@ function MixedMeshCache(
     )
     KA.synchronize(backend)
 
-    return MixedMeshCache(geo_v, geo_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end
 
 # ---------------------------------------------------------------------------

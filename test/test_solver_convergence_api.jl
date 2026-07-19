@@ -60,14 +60,14 @@ function _orphan_stokes_case()
     mesh = MixedMesh(mesh_v, element_P)
     cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
     nq = length(element_v.integration_points.ω)
+    material = StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,), α = (0.0,))
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
+        backend, mesh.nnodes, mesh.nnodesP, material;
         stress_size = (nq, mesh.nels),
     )
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache.geo_P, element_v, element_P,
-        1.0, 1.0, backend, workgroup,
+        γP, dr, mesh, cache, 1.0, 1.0; workgroup,
     )
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     return (; dr, mesh, cache, element_v, element_P, τ_old, γP, backend, workgroup)

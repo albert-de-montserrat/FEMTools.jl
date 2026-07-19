@@ -83,29 +83,16 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    stokes_material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, stokes_material;
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
@@ -172,9 +159,11 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
 
     bc_vx_vals = zeros(Float64, length(vx_nodes))
     bc_vy_vals = zeros(Float64, length(vy_nodes))
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
@@ -195,8 +184,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup;
+        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -213,9 +201,8 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     mkpath(out_dir)
 
     solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,
         iterMax,
@@ -223,13 +210,11 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,
-        vx_nodes = vx_nodes,
-        vy_nodes = vy_nodes,
     )
 
     update_stokes_current_stress!(
-        dr, mesh_stokes, geo_v, element_v, element_P,
-        phases_solve, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
+        dr, mesh_stokes, cache, τ, Δt;
+        phases_v = phases_solve, τ_old, plastic, workgroup,
     )
 
     P_cpu  = Array(dr.P)
