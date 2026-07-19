@@ -54,18 +54,8 @@ evaluated at velocity integration points rather than pressure points.
         # project parameters to integration point
         ηbq = interp2ip_phase(Nv, ηb, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
-        # project ∂P∂t to integration points
-        ∂P∂t = interp2ip(
-            Nv,
-            (P, P0) ->  (P - P0) / (ηbq * Δt),
-            (P_loc, P0loc)
-        )
-        # project ∂T∂t to integration point
-        ∂T∂t = interp2ip(
-            Nv,
-            (T, T0) ->  αq * (T - T0) / Δt,
-            (Tloc, T0loc)
-        )
+        ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt)
+        ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
         # project divergence to integration point
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
         # compute pressure residual
