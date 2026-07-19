@@ -234,6 +234,24 @@ let
     P0_loc    = SA[0.0, 0.0, 0.0]
     phase_loc = SA[1, 1, 1]             # single homogeneous phase
 
+    @testset "pressure rates interpolate nodal increments" begin
+        for FP in (Float32, Float64)
+            Nv = SVector{3, FP}(0.2, 0.3, 0.5)
+            P, P0 = SVector{3, FP}(3, 5, 8), SVector{3, FP}(1, 2, 3)
+            T, T0 = SVector{3, FP}(7, 4, 2), SVector{3, FP}(2, 1, 1)
+            Δt, ηb, α, dΩ = FP(2), (FP(4),), (FP(0.25),), FP(0.5)
+            residual = FEMTools.integrate_PH_pressure_residual(
+                (zero(P), zero(P)), P, P0, T, T0,
+                ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
+                ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
+                SA[1, 1, 1], α, ηb, Δt, (Nv,),
+            )
+            rate = -sum(Nv .* (P - P0)) / (ηb[1] * Δt) +
+                   α[1] * sum(Nv .* (T - T0)) / Δt
+            @test residual ≈ Nv * rate * dΩ
+        end
+    end
+
     @testset "integrate_momentum_residual — zero gravity vanishes" begin
         T_loc = SA[0.0, 0.0, 0.0]
         Rv_x, Rv_y = FEMTools.integrate_momentum_residual(

@@ -13,7 +13,8 @@ continuity balances
 
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t} = 0,
+\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+- \alpha\frac{\partial T}{\partial t} = 0,
 ```
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
@@ -66,6 +67,8 @@ solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; workgroup)
 `MixedMeshCache` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
+The pressure kernel interpolates nodal pressure and temperature increments
+directly, avoiding temporary per-node rate calculations.
 
 ## Example
 

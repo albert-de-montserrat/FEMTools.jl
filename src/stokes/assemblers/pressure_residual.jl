@@ -38,11 +38,13 @@ points.
 
 Weak form per pressure node `i`:
 
-    RPᵢ = ∫ Nᵢ (−∇·v − ∂P/∂t/ηb − α ∂T/∂t) dΩ
+    RPᵢ = ∫ Nᵢ (−∇·v − ∂P/∂t/ηb + α ∂T/∂t) dΩ
 
 where `geo_v_el` provides velocity shape-function gradients and `geo_P_el`
 provides pressure quadrature weights. Note: velocity gradients are currently
-evaluated at velocity integration points rather than pressure points.
+evaluated at velocity integration points rather than pressure points. Pressure
+and temperature rates are interpolated from their nodal increments before the
+material factors are applied.
 """
 @inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
     RP_e = zero(P_loc)
