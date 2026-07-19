@@ -142,8 +142,8 @@ function main(;
     η     = (1.0,     1e-1)   # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     1.0)   # reference density
-    K     = (1e2,     1e2)   # bulk modulus   (Inf → incompressible)
-    ξ     = (1e10,   1e10)   # bulk viscosity (Inf → incompressible)
+    K     = (1e1,     1e1)   # bulk modulus   (Inf → incompressible)
+    ξ     = (1e0,     1e0)   # bulk viscosity (Inf → incompressible)
     ηb    = K                # pressure storage modulus; residual uses ηb * Δt
     G     = (1e3,     1e3)   # Shear modulus (Inf → viscous)
     G_stokes = G
@@ -305,11 +305,18 @@ function main(;
 
     el_P_anal = zeros(mesh_stokes.nels)
 
+    # # Evaluate analytics
+    # params = (mm = η[1], mc = η[2], rc = 0.1, gr = 0.0, er =1.0)
+    # for iel in 1:mesh_stokes.nels
+    #     barycentre = coords_v_cpu[el2n_v_cpu[7, iel]] .- 0.5
+    #     sol = Stokes2D_Schmid2003(barycentre; params)
+    #     el_P_anal[iel] = sol.p
+    # end
     # Evaluate analytics
-    params = (mm = η[1], mc = η[2], rc = 0.1, gr = 0.0, er =1.0)
+    params = (ηm=η[1], ηi=η[2], ξm=ξ[1], ξi=ξ[2], R=0.1, γ̇=0.0, ε̇=1.0)
     for iel in 1:mesh_stokes.nels
         barycentre = coords_v_cpu[el2n_v_cpu[7, iel]] .- 0.5
-        sol = Stokes2D_Schmid2003(barycentre; params)
+        sol = Stokes2D_Duretz2026(barycentre; params=params)
         el_P_anal[iel] = sol.p
     end
 
