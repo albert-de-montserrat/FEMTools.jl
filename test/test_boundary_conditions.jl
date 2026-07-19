@@ -15,6 +15,7 @@ using SparseArrays
     @test ΓD.Γ == Γ
     @test ΓD.DoFs == DoFs
     @test ΓD.vals == vals
+    @test ΓD.zero_vals == zero(vals)
 
     rhs = zeros(4)
     returned_rhs = apply_bc!(rhs, ΓD)

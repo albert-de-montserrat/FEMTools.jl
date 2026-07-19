@@ -69,11 +69,15 @@ include("boundary_conditions/apply.jl")
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
+include("heat_diffusion/assembly/residual_atomics.jl")
+include("heat_diffusion/assembly/residual_colored.jl")
 include("heat_diffusion/solvers/DR.jl")
 
 # Lithostatic-pressure solver: types, assembly, and PT solver.
 include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
 include("lithostatic_pressure/assembly/residual.jl")
+include("lithostatic_pressure/assembly/residual_atomics.jl")
+include("lithostatic_pressure/assembly/residual_colored.jl")
 include("lithostatic_pressure/solvers/DR.jl")
 
 # Stokes solver: types and assembly.
@@ -112,6 +116,7 @@ export generate_element2node,
     generate_boundary_elements,
     generate_coordinates,
     generate_dofs,
+    precompute_geometry,
     generate_sparsity_pattern,
     color_mesh,
     generate_element_groups,
@@ -125,9 +130,9 @@ export eval_shape_function,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
-export ThermalDiffusionDR, solver!
+export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesDR, DruckerPrager,
+export StokesMaterial, StokesDR, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,

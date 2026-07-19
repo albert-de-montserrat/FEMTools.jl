@@ -7,9 +7,6 @@ on:
     tags:
       - "v*"
   pull_request:
-  schedule:
-    - cron: "0 6 * * 1"  # every Monday at 06:00 UTC, for CompatHelper
-
 concurrency:
   # Cancel in-progress runs on the same branch/PR to save minutes.
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -51,27 +48,6 @@ jobs:
           file: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-
-  compat:
-    name: Compat check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: "1"
-      - name: Check [compat] entries
-        run: julia --project -e 'using Pkg; Pkg.test()'
-        # CompatHelper keeps compat entries up to date via its own workflow;
-        # this job just ensures the package resolves cleanly on the latest
-        # stable release without touching GPU packages.
-
-  CompatHelper:
-    name: CompatHelper
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-    steps:
-      - uses: julia-actions/CompatHelper@v1
 
   docs:
     name: Documentation

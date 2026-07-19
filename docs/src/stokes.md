@@ -13,14 +13,15 @@ continuity balances
 
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t} = 0,
+\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+- \alpha\frac{\partial T}{\partial t} = 0,
 ```
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
-`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `α`, `ρ0`,
-`K`) are stored as `NTuple{nphases, FP}` scalars encoded in the type parameters;
-`g` and `Tref` are stored on the solver state.
+`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `G`, `α`,
+`ρ0`, `K`) and the body-force parameters are grouped in a typed
+`StokesMaterial`.
 
 The saddle-point system is solved with a Powell–Hestenes / DYREL iteration: an
 outer Arrow–Hurwicz pressure update wraps an inner Chebyshev-accelerated
@@ -33,6 +34,7 @@ operators and the same mixed spaces. It therefore computes gradients of the
 ## Solver state
 
 ```@docs
+StokesMaterial
 StokesDR
 DruckerPrager
 pressure_mass
@@ -44,6 +46,29 @@ The velocity and pressure fields live on separate node sets described by a
 pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
+
+### Compact setup
+
+```julia
+material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
+dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
+              stress_size=(nq, mesh.nels))
+
+cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
+bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, vy_vals)
+
+assemble_viscosity_weighted_pressure_scaling!(
+    γP, dr, mesh, cache, γfact, Δt; workgroup,
+)
+solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; workgroup)
+```
+
+`MixedMeshCache` retains the reference elements alongside both geometry arrays,
+so the high-level assembly and solver calls infer elements and backend. The
+expanded positional methods remain available for custom and adjoint workflows.
+The pressure kernel interpolates nodal pressure and temperature increments
+directly, avoiding temporary per-node rate calculations.
 
 ## Example
 

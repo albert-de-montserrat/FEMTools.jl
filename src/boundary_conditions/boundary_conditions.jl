@@ -21,11 +21,17 @@ Fields:
 - `Γ`    : boundary domain or boundary marker (stored for reference).
 - `DoFs` : constrained degree-of-freedom indices.
 - `vals` : prescribed values aligned with `DoFs`.
+- `zero_vals`: homogeneous values used to constrain solver residuals.
 """
 struct DirichletBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     Γ::D
     DoFs::T
     vals::V
+    zero_vals::V
+
+    function DirichletBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
+        return new{D, T, V}(Γ, DoFs, vals, zero(vals))
+    end
 end
 
 """

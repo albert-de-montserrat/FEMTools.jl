@@ -1,0 +1,9 @@
+version: 2
+updates:
+  - package-ecosystem: julia
+    directories:
+      - /
+      - /docs
+      - /examples
+    schedule:
+      interval: weekly

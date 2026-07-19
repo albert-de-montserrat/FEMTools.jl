@@ -28,15 +28,18 @@ temperature and body-force vector without rebuilding the solver state.
 | `T`     | Temperature (input from thermal solver)   |
 | `phases`| Per-node phase index (1-based integer)    |
 
-# Per-phase scalar tuples (`NTuple{nphases, FP}`)
-`ρ0` (reference density), `α` (thermal expansivity), `K` (bulk modulus).
+# Material properties
+`ρ0`, `α`, and `K` are taken from [`ThermalMaterial`](@ref). This allows the
+same material definition to be shared with `ThermalDiffusionDR`.
 
 # Solver parameters
 `CFL`, `c_fact`, `ϵ` (convergence tolerance).
 
 # Constructor
-    LithostaticPressureDR(backend, nnodes, ρ0, α, K; CFL=0.98, c_fact=0.9, ϵ=1e-6)
-    LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...)  # defaults to CPU()
+    LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; CFL=0.98, c_fact=0.9, ϵ=1e-6)
+    LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...)  # CPU
+
+The tuple-based constructors remain available for compatibility.
 
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
 `T` should be filled via `copyto!(dr.T, ...)` before calling `solver!`.
@@ -86,3 +89,8 @@ pressure(dr::LithostaticPressureDR) = dr.P
 
 LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, ρ0, α, K; kwargs...)
+
+LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
+    LithostaticPressureDR(backend, nnodes, material.ρ0, material.α, material.K; kwargs...)
+LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...) =
+    LithostaticPressureDR(CPU(), nnodes, material; kwargs...)
