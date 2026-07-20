@@ -103,7 +103,7 @@ function solve_stokes_adjoint_dyrel!(
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
         element_v, element_P, phases_v, phases_P,
         τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, M_P, backend, workgroup,
+        dr.ηb, dr.ξ, Δt, γP, M_P, backend, workgroup,
     )
 
     λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")

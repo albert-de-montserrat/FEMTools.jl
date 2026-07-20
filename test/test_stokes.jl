@@ -39,13 +39,14 @@ end
 
 @testset "StokesMaterial" begin
     material = StokesMaterial(;
-        η = (1.0, 2.0), ηb = (3.0, 4.0), G = (5.0, 6.0),
+        η = (1.0, 2.0), ηb = (3.0, 4.0), ξ = (9.0, 10.0), G = (5.0, 6.0),
         α = (0.0, 0.0), ρ0 = (7.0, 8.0), K = (Inf, Inf),
         g = (0.0, -9.81), Tref = 273.0,
     )
     dr = StokesDR(CPU(), 3, 2, material)
     @test dr.G === material.G
     @test dr.η === material.η
+    @test dr.ξ === material.ξ
     @test dr.g === material.g
     @test_throws DimensionMismatch StokesMaterial(; η = (1.0, 2.0), ηb = (1.0,))
 end
@@ -64,6 +65,7 @@ end
         @test dr.Tref == FP(0)
         @test dr.η    == η
         @test dr.ηb   == ηb
+        @test dr.ξ    == NTuple{2, FP}((Inf, Inf))
         @test dr.α    == α
         @test eltype(dr.vx) == FP
         @test eltype(dr.P)  == FP
@@ -239,14 +241,15 @@ let
             Nv = SVector{3, FP}(0.2, 0.3, 0.5)
             P, P0 = SVector{3, FP}(3, 5, 8), SVector{3, FP}(1, 2, 3)
             T, T0 = SVector{3, FP}(7, 4, 2), SVector{3, FP}(2, 1, 1)
-            Δt, ηb, α, dΩ = FP(2), (FP(4),), (FP(0.25),), FP(0.5)
+            Δt, ηb, ξ, α, dΩ = FP(2), (FP(4),), (FP(10),), (FP(0.25),), FP(0.5)
             residual = FEMTools.integrate_PH_pressure_residual(
                 (zero(P), zero(P)), P, P0, T, T0,
                 ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
                 ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
-                SA[1, 1, 1], α, ηb, Δt, (Nv,),
+                SA[1, 1, 1], α, ηb, ξ, Δt, (Nv,),
             )
-            rate = -sum(Nv .* (P - P0)) / (ηb[1] * Δt) +
+            rate = -sum(Nv .* (P - P0)) / (ηb[1] * Δt) -
+                   sum(Nv .* P) / ξ[1] +
                    α[1] * sum(Nv .* (T - T0)) / Δt
             @test residual ≈ Nv * rate * dΩ
         end
@@ -365,6 +368,7 @@ let
         ρ0      = (3.0,)
         K       = (Inf,)
         ηb      = (4.0,)
+        ξ       = (10.0,)
         g       = (1.0, -2.0)
         Tref    = 0.0
         Δt      = 0.25
@@ -373,7 +377,7 @@ let
             γ_eff,
             FEMTools.integrate_PH_pressure_residual(
                 (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
-                geo_nz, geo_nz, phase_loc, α, ηb, Δt, NqP_v,
+                geo_nz, geo_nz, phase_loc, α, ηb, ξ, Δt, NqP_v,
             ),
             MP_loc,
         )
@@ -389,7 +393,7 @@ let
         augmented_args = (
             (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
             geo_nz, geo_nz, phase_loc, phase_loc,
-            η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, Nq, NqP_v,
+            η, G, α, ρ0, K, g, Tref, ηb, ξ, Δt, γ_eff, MP_loc, Nq, NqP_v,
         )
         @test FEMTools.integrate_momentum_x_residual(augmented_args...) ≈ explicit_x
         @test FEMTools.integrate_momentum_y_residual(augmented_args...) ≈ explicit_y

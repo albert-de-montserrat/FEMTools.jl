@@ -144,7 +144,7 @@ function _stokes_augmented_component_case()
         (vxloc, vyloc), P_loc, P0loc, T_loc, T0loc,
         TRI_GEO, TRI_GEO, phase_loc, phase_loc,
         (1.0,), (Inf,), (0.0,), (1.0,), (Inf,),
-        (0.0, -1.0), 0.0, (Inf,), 1.0, 0.5, MP_loc, TRI_NQ, TRI_NQ,
+        (0.0, -1.0), 0.0, (Inf,), (Inf,), 1.0, 0.5, MP_loc, TRI_NQ, TRI_NQ,
     )
     return (
         FEMTools.integrate_momentum_x_residual(args...),
@@ -164,7 +164,7 @@ function _pressure_element_residual_case()
     geo = [TRI_GEO]
     return FEMTools.pressure_element_residual(
         vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, phases,
-        (0.0,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
+        (0.0,), (Inf,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
     )
 end
 
@@ -270,7 +270,7 @@ function _pressure_assembly_case()
     geo = [TRI_GEO]
     return FEMTools.assemble_pressure_residual_matrices_atomix!(
         RP, vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, 1,
-        element, element, phases, (0.0,), (Inf,), 1.0, CPU(), 1,
+        element, element, phases, (0.0,), (Inf,), (Inf,), 1.0, CPU(), 1,
     )
 end
 

@@ -14,12 +14,13 @@ continuity balances
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
 \nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
-- \alpha\frac{\partial T}{\partial t} = 0,
+- \alpha\frac{\partial T}{\partial t} + \frac{P}{\xi}
+= 0,
 ```
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
-`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `G`, `α`,
+`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `ξ`, `G`, `α`,
 `ρ0`, `K`) and the body-force parameters are grouped in a typed
 `StokesMaterial`.
 
@@ -50,7 +51,7 @@ first call.
 ### Compact setup
 
 ```julia
-material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
+material = StokesMaterial(; η, ηb, ξ, G, α, ρ0, K, g, Tref)
 dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
               stress_size=(nq, mesh.nels))
 

@@ -1,5 +1,5 @@
 """
-    StokesMaterial(; η=(1.0,), ηb=(1.0,), G=(Inf,), α=(0.0,),
+    StokesMaterial(; η=(1.0,), ηb=(1.0,), ξ=(Inf,), G=(Inf,), α=(0.0,),
                    ρ0=(1.0,), K=(Inf,), g=(0.0, 0.0), Tref=0.0)
 
 Typed per-phase material properties and body-force parameters for `StokesDR`.
@@ -8,6 +8,7 @@ All property tuples must have the same length and floating-point type.
 @kwdef struct StokesMaterial{nphases, FP}
     η::NTuple{nphases, FP} = (1.0,)
     ηb::NTuple{nphases, FP} = (1.0,)
+    ξ::NTuple{nphases, FP} = (Inf,)
     G::NTuple{nphases, FP} = (Inf,)
     α::NTuple{nphases, FP} = (0.0,)
     ρ0::NTuple{nphases, FP} = (1.0,)
@@ -17,14 +18,15 @@ All property tuples must have the same length and floating-point type.
 
     function StokesMaterial(
         η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
+        ξ::Tuple{FP, Vararg{FP}},
         G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
         ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
         g::NTuple{2, FP}, Tref::FP,
     ) where {FP}
         nphases = length(η)
-        length(ηb) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
+        length(ηb) == length(ξ) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
             throw(DimensionMismatch("Stokes material property tuples must have the same length"))
-        return new{nphases, FP}(η, ηb, G, α, ρ0, K, g, Tref)
+        return new{nphases, FP}(η, ηb, ξ, G, α, ρ0, K, g, Tref)
     end
 end
 
@@ -93,11 +95,15 @@ temperature for the linearised EOS, default 0).
     StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial;
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
              stress_size=nothing)
+    StokesDR(backend, nnodes_v, nnodes_P, η, ηb, ξ, α;
+             ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
+             CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
+             stress_size=nothing)
     StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
              ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
              stress_size=nothing)
-    StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
+    StokesDR(nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...)  # defaults to CPU()
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Stress arrays default to nodal storage of length `nnodes_v`; pass
@@ -146,6 +152,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     # physical parameters – one scalar per phase
     η::NTuple{nphases, FP}     # dynamic shear viscosity [Pa s]
     ηb::NTuple{nphases, FP}    # bulk viscosity          [Pa s]
+    ξ::NTuple{nphases, FP}     # compaction viscosity    [Pa s]
     α::NTuple{nphases, FP}     # thermal expansivity     [K⁻¹]
     ρ0::NTuple{nphases, FP}    # reference density       [kg m⁻³]
     K::NTuple{nphases, FP}     # bulk modulus (EOS)      [Pa]
@@ -161,7 +168,8 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
 
     function StokesDR(
         backend, nnodes_v, nnodes_P,
-        η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
+        η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}},
+        ξ::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
         ρ0   = nothing,
         K    = nothing,
         G    = nothing,
@@ -194,7 +202,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
-            η, ηb, α, _ρ0, _K, _G, _g, _Tref,
+            η, ηb, ξ, α, _ρ0, _K, _G, _g, _Tref,
             FP(CFL_v), FP(CFL_P), FP(c_fact), FP(ϵ),
         )
     end
@@ -230,11 +238,20 @@ state.
 """
 temperature(dr::StokesDR) = dr.T
 
+StokesDR(nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...) =
+    StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, ξ, α; kwargs...)
+
+StokesDR(backend, nnodes_v, nnodes_P, η::Tuple{FP, Vararg{FP, N}},
+         ηb, α; kwargs...) where {N, FP} =
+    StokesDR(backend, nnodes_v, nnodes_P, η, ηb,
+             ntuple(_ -> FP(Inf), Val(N + 1)), α; kwargs...)
+
 StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
 
 StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
-    StokesDR(backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
+    StokesDR(backend, nnodes_v, nnodes_P,
+        material.η, material.ηb, material.ξ, material.α;
         ρ0 = material.ρ0, K = material.K, G = material.G,
         g = material.g, Tref = material.Tref, kwargs...)
 StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =

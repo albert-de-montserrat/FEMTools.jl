@@ -174,7 +174,7 @@ function solve_stokes_dyrel!(
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
         element_v, element_P,
         phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, M_P,
+        dr.ηb, dr.ξ, Δt, γP, M_P,
         backend, workgroup,
     )
     λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
@@ -210,7 +210,7 @@ function solve_stokes_dyrel!(
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_P, dr.α, dr.ηb, Δt,
+            phases_P, dr.α, dr.ηb, dr.ξ, Δt,
             backend, workgroup,
         )
 
@@ -268,7 +268,7 @@ function solve_stokes_dyrel!(
                 dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
-                phases_P, dr.α, dr.ηb, Δt,
+                phases_P, dr.α, dr.ηb, dr.ξ, Δt,
                 backend, workgroup,
             )
 
@@ -318,7 +318,7 @@ function solve_stokes_dyrel!(
                     mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
                     phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                    dr.ηb, Δt, γP, M_P,
+                    dr.ηb, dr.ξ, Δt, γP, M_P,
                     backend, workgroup,
                 )
 
