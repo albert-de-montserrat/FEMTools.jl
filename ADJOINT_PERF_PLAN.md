@@ -262,9 +262,24 @@ statements about what the code *is*, not about this plan.
 
 ## 4. Measurement notes
 
-- Use the Julia MCP session with Revise for iteration; use fresh one-shot
-  processes for timing so compilation is not amortized into the numbers.
-- Run headless (`show_plot = false`); do not load GLMakie in benchmark processes.
+- Benchmark from **one warm session**, after a discarded warm-up run. The
+  quantity of interest is steady-state solver throughput, so compilation must be
+  amortized rather than folded into the measurement. Fresh one-shot processes are
+  the right tool for package-load and time-to-first-solve questions, which are
+  not what this work is about.
+- Run with `show_plot = false` and `verbose = false`.
 - Report iteration counts alongside wall time. A change that cuts wall time while
   raising iteration counts (or vice versa) is telling you something, and the plan
   distinguishes the two deliberately.
+- Every convergence measurement is taken across the viscosity-contrast sweep, not
+  at unit contrast alone.
+
+## 5. Harness
+
+- `examples/benchmarks/adjoint_perf.jl` — `run_adjoint_benchmark` sweeps mesh
+  refinement against viscosity contrast and prints one row per case;
+  `compare_adjoint_benchmarks(baseline, candidate)` reports iteration, wall-time,
+  and per-iteration ratios between two sweeps.
+- `examples/stokes/sinking_block/sinking_block_adj.jl` gained `η_incl` (inclusion
+  viscosity against a unit matrix viscosity, hence the contrast), a `verbose`
+  switch for the forward trace, and `t_forward`/`t_adjoint` in its return value.

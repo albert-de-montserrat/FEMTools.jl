@@ -227,7 +227,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; backend=CPU(), max_area=1/64^2, Δt=1, show_plot=true, kwargs...) -> NamedTuple
+    main(; backend=CPU(), max_area=1/64^2, η_incl=1.0, Δt=1, show_plot=true, kwargs...) -> NamedTuple
 
 Solve one unstructured T7/P1-disc sinking-block Stokes problem and its discrete
 adjoint, then assemble the material sensitivities of the observation-box velocity
@@ -246,23 +246,29 @@ geometry caches, phases, boundary arrays, and solver state are placed on that
 backend. Load CUDA before passing `CUDABackend()`; use `show_plot=false` for
 headless runs.
 
-`max_area` sets the Triangle mesh refinement, `Δt` the (visco)elastic time step,
-and `show_plot` toggles the GLMakie forward and summary figures. The remaining
-keyword arguments (`ncheck`, `ϵ_tol`, `iterMax`, `total_iterMax`, and their
-`adjoint_*` counterparts) tune the forward and adjoint solver tolerances and
-iteration budgets.
+`max_area` sets the Triangle mesh refinement and `Δt` the (visco)elastic time
+step. `η_incl` is the inclusion viscosity against a matrix viscosity of one, so
+it is the viscosity contrast of the problem and controls how badly conditioned
+the Stokes operator — and with it the adjoint operator — becomes. `show_plot`
+toggles the GLMakie forward and summary figures and `verbose` the forward
+Powell-Hestenes trace. The remaining keyword arguments (`ncheck`, `ϵ_tol`,
+`iterMax`, `total_iterMax`, and their `adjoint_*` counterparts) tune the forward
+and adjoint solver tolerances and iteration budgets.
 
 Returns a `NamedTuple` with the solver state (`dr`, `mesh_stokes`), forward and
-adjoint statistics (`solve_stats`, `adjoint_stats`), the adjoint fields
-(`λvx`, `λvy`, `λP`), the objective load `objective_vy`, the per-element
+adjoint statistics (`solve_stats`, `adjoint_stats`), the wall-clock time of each
+solve (`t_forward`, `t_adjoint`), the adjoint fields (`λvx`, `λvy`, `λP`), the
+objective load `objective_vy`, the per-element
 `density_sensitivity`/`viscosity_sensitivity`, and the phase-summed
 `density_gradient_by_phase`/`viscosity_gradient_by_phase`.
 """
 function main(;
     backend = default_backend,
     max_area = 1 / 64^2,
+    η_incl = 1.0,
     Δt = 1,
     show_plot = true,
+    verbose = true,
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -286,7 +292,7 @@ function main(;
     Lx, Ly = 1.0, 1.0
 
     # Material (2 phases: matrix + inclusion)
-    η     = (1.0,     1e0)   # shear viscosity
+    η     = (1.0, η_incl)    # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
     K     = (Inf,     Inf)   # bulk modulus  (Inf → incompressible)
@@ -458,7 +464,7 @@ function main(;
     )
 
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor
-    verbose_PH    = true
+    verbose_PH    = verbose
     verbose_DR    = false
 
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
@@ -471,7 +477,7 @@ function main(;
     # Forward solve
     # ---------------------------------------------------------------------------
 
-    solve_stats = solve_stokes_dyrel!(
+    t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
         dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
@@ -619,7 +625,7 @@ function main(;
     λvy = zero(dr.vy)
     λP  = zero(dr.P)
 
-    adjoint_stats = solve_stokes_adjoint_dyrel!(
+    t_adjoint = @elapsed adjoint_stats = solve_stokes_adjoint_dyrel!(
         dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
         phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP,
@@ -672,7 +678,8 @@ function main(;
         density_sensitivity, viscosity_sensitivity, solve_stats.history, adjoint_history)
 
     return (;
-        dr, mesh_stokes, solve_stats, adjoint_stats, λvx, λvy, λP, objective_vy,
+        dr, mesh_stokes, solve_stats, adjoint_stats, t_forward, t_adjoint,
+        λvx, λvy, λP, objective_vy,
         density_sensitivity, viscosity_sensitivity,
         density_gradient_by_phase, viscosity_gradient_by_phase,
     )
