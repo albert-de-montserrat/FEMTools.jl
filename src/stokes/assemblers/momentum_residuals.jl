@@ -965,7 +965,14 @@ velocity-to-pressure-to-velocity coupling introduced by the Arrow-Hurwicz
 scheme. This makes the preconditioner more effective than
 `element_momentum_jacobians` for problems where that coupling is significant.
 
-Returns `(local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y)`.
+Returns `(local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy)`, the four velocity
+blocks of the augmented element Jacobian. Each is `NV`×`NV`. Because `Pnum` is
+formed inline from element-local pressures, the blocks already carry the
+Powell-Hestenes augmentation `Bnum·(γ_eff/MP)·C`; for a discontinuous pressure
+space that coupling is element-local, so the blocks are exact rather than an
+approximation.
+
+`jacobian_rowsums_and_diagonal` reduces them to the preconditioner diagnostics.
 """
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
@@ -1029,12 +1036,6 @@ end
         ),
         vyloc,
     )
-    rowsums_x = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVx∂vy[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
-    diags_x = SVector{NV}(ntuple(i -> abs(∂RVx∂vx[i, i]), Val(NV)))
-
     ∂RVy∂vy = ForwardDiff.jacobian(
         vy_arg -> integrate_momentum_y_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
@@ -1051,13 +1052,26 @@ end
         ),
         vxloc,
     )
-    rowsums_y = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVy∂vx[i, j]) for j in 1:NV),
+    return local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy
+end
+
+"""
+    jacobian_rowsums_and_diagonal(∂R∂same, ∂R∂other) -> (rowsums, diags)
+
+Reduce a pair of element Jacobian blocks to the absolute row sums and the
+absolute diagonal of the block differentiated with respect to its own velocity
+component. The row sums bound the preconditioned spectral radius by Gershgorin;
+the diagonal is the Jacobi preconditioner.
+"""
+@inline function jacobian_rowsums_and_diagonal(
+        ∂R∂same::SMatrix{NV, NV}, ∂R∂other::SMatrix{NV, NV},
+    ) where {NV}
+    rowsums = SVector{NV}(ntuple(
+        i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:NV),
         Val(NV),
     ))
-    diags_y = SVector{NV}(ntuple(i -> abs(∂RVy∂vy[i, i]), Val(NV)))
-
-    return local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y
+    diags = SVector{NV}(ntuple(i -> abs(∂R∂same[i, i]), Val(NV)))
+    return rowsums, diags
 end
 
 """
@@ -1180,11 +1194,13 @@ end
     Nq, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_augmented_momentum_jacobians(
+    local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
+    rowsums_x, diags_x = jacobian_rowsums_and_diagonal(∂RVx∂vx, ∂RVx∂vy)
+    rowsums_y, diags_y = jacobian_rowsums_and_diagonal(∂RVy∂vy, ∂RVy∂vx)
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += rowsums_x[i]
         Atomix.@atomic :monotonic PC_vx[inod]    += diags_x[i]

@@ -21,6 +21,16 @@ objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
 forward solve. Homogeneous Dirichlet conditions are applied to the adjoint
 velocity on `vx_nodes`/`vy_nodes`.
 
+Because the forward state is frozen, the adjoint residual is affine in `λ` with a
+constant operator. With `frozen_operator` (the default) that operator is
+assembled once as per-element blocks and then applied as a dense element product,
+so no rheology is evaluated and no primal residual is recomputed during the
+solve; see [`FrozenAdjointOperator`](@ref) for the blocks and their memory cost.
+Setting `frozen_operator = false` selects the reverse-mode path instead, which
+rebuilds the same products by automatic differentiation on every iteration: far
+slower, but it stores nothing per element and so remains the option when the
+block storage is too large.
+
 Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
 inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
 `err`, `err_v`, `err_P`, `converged`, and (when `collect_history`) `history`.
@@ -64,6 +74,7 @@ function solve_stokes_adjoint_dyrel!(
     verbose = true,
     verbose_inner = false,
     collect_history = false,
+    frozen_operator = true,
 )
     M_P = dr.M_P
 
@@ -113,7 +124,15 @@ function solve_stokes_adjoint_dyrel!(
     α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
     α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
 
-    function assemble_adjoint_residual!()
+    # The operator is constant at the frozen forward state, so assembling it once
+    # replaces the three reverse-mode sweeps every iteration would otherwise run.
+    op = frozen_operator ?
+        assemble_adjoint_operator(
+        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+    ) : nothing
+
+    function assemble_adjoint_residual_enzyme!()
         # Only the Enzyme shadows need zeroing: they are accumulated into by the
         # reverse passes. ResλVx, ResλVy, and ResλP are each fully overwritten below.
         fill!(dvx, 0)
@@ -153,6 +172,18 @@ function solve_stokes_adjoint_dyrel!(
             phases_P, Δt, workgroup,
         )
 
+        return nothing
+    end
+
+    function assemble_adjoint_residual!()
+        if op === nothing
+            assemble_adjoint_residual_enzyme!()
+        else
+            apply_adjoint_operator!(
+                dvx, dvy, ResλP, op, λvx, λvy, λP,
+                mesh_stokes, element_v, element_P, backend, workgroup,
+            )
+        end
         @. ResλVx = objective_vx + dvx
         @. ResλVy = objective_vy + dvy
         apply_dirichlet!(ResλVx, vx_nodes, zero_vx_bc, backend, workgroup)

@@ -323,7 +323,42 @@ Assemble the transpose operator once, then apply it matrix-free.
 **Gate:** new-operator residual matches the Enzyme residual to ~1e-12 on a small
 mesh; FD gradient test unchanged; benchmark shows the per-iteration speedup.
 
-**Result** *(to fill)*
+**Result**
+
+`test/test_adjoint_operator.jl` seeds both paths with the same pseudo-random `λ`
+and compares componentwise: the frozen operator reproduces the Enzyme residual to
+better than 1e-12 relative in all of `ResλVx`, `ResλVy`, and `ResλP`. The seed is
+unrelated to any solve, so agreement cannot come from both paths returning
+something near zero. The FD gradient test is unchanged and the suite is green at
+2227 tests.
+
+| case | adjoint iterations | ms/iteration before | after | speedup |
+|---|---|---|---|---|
+| 1/32², η₂/η₁ = 1 | 850 → 850 | 1.945 | 0.144 | 13.6× |
+| 1/32², η₂/η₁ = 10 | 2350 → 2350 | 1.929 | 0.130 | 14.9× |
+| 1/64², η₂/η₁ = 1 | 1000 → 1000 | 7.505 | 0.516 | 14.5× |
+| 1/64², η₂/η₁ = 10 | 3000 → 3000 | 7.486 | 0.460 | 16.3× |
+
+Iteration counts are identical on every case, so the whole gain is cost per
+iteration. The adjoint solve now costs 2–4% of the forward solve rather than
+66–98% of it. The effect is large enough to read through the machine noise that
+made the Phase 1 timings unusable.
+
+Two departures from the sketch above, both established while implementing it:
+
+- **Three blocks, not four.** `Bnumᵉ` is unnecessary. The augmented assembler
+  forms `Pnum` inline from element-local pressures, so `Aᵉ` already contains
+  `Bnum·(γP/M_P)·C`, and `Aᵉᵀλv` therefore delivers the momentum transpose and the
+  Powell-Hestenes coupling in one product. That is exact only because the pressure
+  space is discontinuous, which keeps the coupling inside one element.
+- `Bᵉ` is differentiated from the residual that takes `Pnum` as an independent
+  argument, not from the augmented one, so it excludes the augmentation already
+  carried by `Aᵉ`. Using the augmented form here would double-count it.
+
+Setup now runs two ForwardDiff passes over the elements: one for the
+preconditioner and λmax, one for the operator blocks. Both are one-time and the
+combined setup is a small fraction of a solve, but the operator kernel could
+produce the row sums and diagonal itself and drop the separate pass.
 
 ### Phase 3 — convergence rate
 
