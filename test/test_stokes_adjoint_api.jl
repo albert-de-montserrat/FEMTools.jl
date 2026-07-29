@@ -100,6 +100,21 @@ end
         verbose = false, verbose_inner = false)
     @test adj.converged
     @test any(!iszero, λvy)          # nontrivial adjoint field
+    @test adj.λmax_iterations > 0
+    @test adj.λmax < adj.λmax_gershgorin
+
+    # Nonzero input fields are a warm start, not reset by the solver.
+    λ_before = (copy(λvx), copy(λvy), copy(λP))
+    warm = solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
+        vx_nodes, vy_nodes, adjoint_tol = 1.0e-9,
+        measure_λmax = false, verbose = false, verbose_inner = false)
+    @test warm.converged
+    @test warm.iter == 0
+    @test warm.λmax_iterations == 0
+    @test (λvx, λvy, λP) == λ_before
 
     # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
     # in the density, so R(ρ₂=1) - R(ρ₂=0) at the frozen forward state is the

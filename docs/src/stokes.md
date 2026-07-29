@@ -102,6 +102,7 @@ headless accelerator runs.
 ```@docs
 solve_stokes_dyrel!
 solve_stokes_adjoint_dyrel!
+FEMTools.FrozenAdjointOperator
 update_stokes_current_stress!
 ```
 
@@ -129,6 +130,55 @@ momentum residual contraction to obtain density and viscosity sensitivities.
 The returned sensitivity arrays contain raw element integrals. Their sums give
 phase gradients; division by element area is used only to visualise a spatial
 sensitivity density.
+
+### Why the discrete transpose matters
+
+The adjoint uses the same velocity and pressure spaces, quadrature points,
+constitutive update, and element residuals as the forward solve. Transposing
+those discrete operators exactly makes the resulting gradient the derivative of
+the objective that the code actually evaluates. Changing the adjoint space,
+quadrature, or rheology independently would instead produce a gradient of a
+different discretisation. When adding an objective or material parameter,
+validate that contract with a central finite difference as demonstrated in
+`test/test_stokes_adjoint_api.jl`.
+
+### Frozen operator and solver controls
+
+The forward state must be converged before the adjoint solve. At that fixed
+state the transpose Jacobian is constant, so the default
+`frozen_operator = true` path assembles three dense blocks per element once and
+reuses them throughout the Powell–Hestenes / DYREL solve. Each subsequent
+operator application is only an element gather, dense products, and scatter;
+it does not reevaluate the rheology or invoke automatic differentiation.
+
+The inner velocity iteration stops after reducing its residual by `rel_drop`;
+the outer pressure iteration continues until `adjoint_tol` or
+`max_ph_iterations`. `iterMax` limits one inner solve and `total_iterMax` limits
+the complete adjoint. With `measure_λmax = true`, power iteration measures the
+largest eigenvalue of the Jacobi-preconditioned velocity block instead of using
+its looser Gershgorin bound. The returned statistics report both values and the
+number of power iterations. Set `measure_λmax = false` to use the Gershgorin
+estimate directly; the Enzyme fallback also uses that estimate because it has no
+cheap frozen operator application for power iteration.
+
+`λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
+for a cold solve; in an optimization loop, leave the previous design's adjoint
+in place to warm-start the next solve.
+
+If the velocity residual stalls, inspect the measured-to-Gershgorin ratio and
+increase the iteration budgets before changing tolerances. If the velocity
+residual drops but the pressure residual does not, the outer PH iteration is
+the bottleneck; lowering `rel_drop` only spends more work on the already-solved
+subproblem.
+
+The cached T7/P1-disc operator stores 280 floating-point values per element,
+about 2.2 kB per element in `Float64`. Set `frozen_operator = false` when that
+memory footprint is unsuitable, notably for larger three-dimensional elements.
+The fallback reconstructs the same transpose products with Enzyme on every
+iteration and is therefore slower but avoids the block storage.
+
+See `examples/stokes/sinking_block/sinking_block_adj.jl` for a complete solve
+and `examples/benchmarks/adjoint_perf.jl` for a headless mesh/contrast sweep.
 
 ## Assembly
 
