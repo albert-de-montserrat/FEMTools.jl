@@ -58,8 +58,12 @@ using DomainSets: ×
         phases, phases, τ_old, nothing, G, Δt, γP,
         Γ, bcx, bcy, backend, wg;
         ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
-        rel_drop0 = 0.1, verbose = false, verbose_inner = false, vx_nodes, vy_nodes)
+        rel_drop0 = 0.1, verbose = false, verbose_inner = false, vx_nodes, vy_nodes,
+        measure_λmax = true)
     @test fwd.converged
+    @test fwd.jacobian_assemblies == 1
+    @test fwd.λmax_iterations > 0
+    @test fwd.λmax < fwd.λmax_gershgorin
 
     # A seed unrelated to any solve, so agreement cannot come from both paths
     # returning something near zero.
@@ -100,6 +104,18 @@ using DomainSets: ×
     op = FEMTools.assemble_adjoint_operator(
         dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    velocity_op = FEMTools.assemble_velocity_operator(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    @test velocity_op.A ≈ op.A
+    λcold, ncold, power_x, power_y = FEMTools.estimate_velocity_λmax(
+        velocity_op, mesh, element_v, dr.PC_vx, dr.PC_vy,
+        vx_nodes, vy_nodes, backend, wg)
+    λwarm, nwarm, _, _ = FEMTools.estimate_velocity_λmax(
+        velocity_op, mesh, element_v, dr.PC_vx, dr.PC_vy,
+        vx_nodes, vy_nodes, backend, wg; x = power_x, y = power_y)
+    @test λwarm ≈ λcold rtol = 1.0e-2
+    @test nwarm < ncold
     rowsum_vx_op = copy(dr.∂Rv_x∂vx)
     rowsum_vy_op = copy(dr.∂Rv_y∂vy)
     PC_vx_op = copy(dr.PC_vx)

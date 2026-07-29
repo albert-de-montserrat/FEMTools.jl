@@ -30,6 +30,126 @@ struct FrozenAdjointOperator{TA, TB, TC}
     C::TC
 end
 
+struct FrozenVelocityOperator{TA}
+    A::TA
+end
+
+@kernel function velocity_operator_assembly_kernel!(
+        Ablocks, ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
+        @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
+        @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(geo_P),
+        @Const(phases_v), @Const(phases_P), τ_old, plastic,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, @Const(MP),
+        Nq, NqP, ::Val{NV}, ::Val{NP},
+    ) where {NV, NP}
+    iel = @index(Global)
+    local_nodes_v, Axx, Axy, Ayx, Ayy = element_augmented_momentum_jacobians(
+        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt,
+        γ_eff, MP, Nq, NqP, iel, Val(NV), Val(NP),
+    )
+    A = vcat(hcat(Axx, Axy), hcat(Ayx, Ayy))
+    Ablocks[iel] = A
+    for (i, inod) in enumerate(local_nodes_v)
+        Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += sum(abs(A[i, j]) for j in 1:2NV)
+        Atomix.@atomic :monotonic PC_vx[inod] += abs(A[i, i])
+        Atomix.@atomic :monotonic ∂Rv_y∂vy[inod] += sum(abs(A[NV + i, j]) for j in 1:2NV)
+        Atomix.@atomic :monotonic PC_vy[inod] += abs(A[NV + i, NV + i])
+    end
+end
+
+function assemble_velocity_operator(
+        dr, mesh_stokes, geo_v, geo_P,
+        element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+    ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    Nq = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    Ablocks = similar(dr.vx, SMatrix{2NV, 2NV, eltype(dr.vx), 4NV * NV}, mesh_stokes.nels)
+    fill!(dr.∂Rv_x∂vx, 0)
+    fill!(dr.PC_vx, 0)
+    fill!(dr.∂Rv_y∂vy, 0)
+    fill!(dr.PC_vy, 0)
+    velocity_operator_assembly_kernel!(backend, workgroup)(
+        Ablocks, dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, phases_v, phases_P,
+        τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
+        Δt, γP, dr.M_P, Nq, NqP, Val(NV), Val(NP);
+        ndrange = mesh_stokes.nels,
+    )
+    KA.synchronize(backend)
+    return FrozenVelocityOperator(Ablocks)
+end
+
+@kernel function velocity_operator_apply_kernel!(
+        yx, yy, @Const(Ablocks), @Const(x), @Const(y), @Const(el2n_v), ::Val{NV},
+    ) where {NV}
+    iel = @index(Global)
+    nodes = local_nodes_of(el2n_v, iel, Val(NV))
+    out = Ablocks[iel] * vcat(
+        _gather_local(x, nodes, Val(NV)), _gather_local(y, nodes, Val(NV)))
+    for (i, inod) in enumerate(nodes)
+        Atomix.@atomic :monotonic yx[inod] += out[i]
+        Atomix.@atomic :monotonic yy[inod] += out[NV + i]
+    end
+end
+
+function apply_velocity_operator!(
+        yx, yy, op::FrozenVelocityOperator, x, y, mesh_stokes,
+        element_v::ReferenceElement{TV}, backend, workgroup,
+    ) where {TV <: AbstractElement{2, NV}} where {NV}
+    fill!(yx, 0)
+    fill!(yy, 0)
+    velocity_operator_apply_kernel!(backend, workgroup)(
+        yx, yy, op.A, x, y, mesh_stokes.el2n, Val(NV);
+        ndrange = mesh_stokes.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+function estimate_velocity_λmax(
+        op::FrozenVelocityOperator, mesh_stokes, element_v,
+        PC_vx, PC_vy, vx_nodes, vy_nodes, backend, workgroup;
+        max_iterations = 12, rtol = 1.0e-2, x = nothing, y = nothing,
+    )
+    if x === nothing
+        x, y = similar(PC_vx), similar(PC_vy)
+        x .= sin.(eachindex(x) .* 0.7)
+        y .= cos.(eachindex(y) .* 1.3)
+    end
+    zx, zy, ax, ay = similar(PC_vx), similar(PC_vy), similar(PC_vx), similar(PC_vy)
+    zero_x = fill!(similar(PC_vx, length(vx_nodes)), 0)
+    zero_y = fill!(similar(PC_vy, length(vy_nodes)), 0)
+    apply_dirichlet!(x, vx_nodes, zero_x, backend, workgroup)
+    apply_dirichlet!(y, vy_nodes, zero_y, backend, workgroup)
+    λ = zero(eltype(PC_vx))
+    for it in 1:max_iterations
+        n = sqrt(dot(x, x) + dot(y, y))
+        n > 0 || throw(ArgumentError("power iteration collapsed to the zero vector"))
+        x ./= n
+        y ./= n
+        @. zx = x / sqrt(PC_vx)
+        @. zy = y / sqrt(PC_vy)
+        apply_velocity_operator!(ax, ay, op, zx, zy, mesh_stokes, element_v, backend, workgroup)
+        @. ax /= sqrt(PC_vx)
+        @. ay /= sqrt(PC_vy)
+        apply_dirichlet!(ax, vx_nodes, zero_x, backend, workgroup)
+        apply_dirichlet!(ay, vy_nodes, zero_y, backend, workgroup)
+        λnew = sqrt(dot(ax, ax) + dot(ay, ay))
+        copyto!(x, ax)
+        copyto!(y, ay)
+        if it > 1 && abs(λnew - λ) ≤ rtol * λnew
+            return λnew, it, x, y
+        end
+        λ = λnew
+    end
+    isfinite(λ) && λ > 0 ||
+        throw(ArgumentError("power iteration produced a non-positive λmax: $λ"))
+    return λ, max_iterations, x, y
+end
+
 """
     element_adjoint_operator_blocks(...) -> (local_nodes_v, local_nodes_P, A, B, C)
 
