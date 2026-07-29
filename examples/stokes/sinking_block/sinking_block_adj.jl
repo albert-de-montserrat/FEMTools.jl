@@ -269,6 +269,10 @@ function main(;
     Δt = 1,
     show_plot = true,
     verbose = true,
+    forward_measure_λmax = false,
+    forward_λmax_power_iterations = 12,
+    forward_λmax_power_rtol = 1.0e-2,
+    forward_λmax_safety = 1.1,
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -488,6 +492,10 @@ function main(;
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,
+        measure_λmax = forward_measure_λmax,
+        λmax_power_iterations = forward_λmax_power_iterations,
+        λmax_power_rtol = forward_λmax_power_rtol,
+        λmax_safety = forward_λmax_safety,
         collect_history = true,
     )
     # The adjoint freezes its transpose Jacobian, preconditioner, and λmax at the

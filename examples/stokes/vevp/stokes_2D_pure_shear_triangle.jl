@@ -123,7 +123,10 @@ The model builds a square domain with a circular inclusion, applies pure-shear
 boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
 VTK file per physical step, and returns the stress-history diagnostics.
 """
-function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(;
+        nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6,
+        show_plot = true, write_output = true, verbose = true,
+        measure_λmax = false, λmax_safety = 1.1)
     # Domain
     Lx, Ly = 1.0, 1.0
 
@@ -290,6 +293,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
     post = nothing
+    solve_stats_history = NamedTuple[]
+    solve_time = 0.0
 
     for istep in 1:nsteps
         t = istep * Δt
@@ -298,17 +303,15 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.T0, dr.T)
         @info "Physical time step" istep nsteps t
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
-            phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
-            ncheck,
-            ϵ_tol,
-            iterMax,
-            total_iterMax,
-            rel_drop0,
-            verbose = verbose_PH,
-            verbose_inner = verbose_DR,
-        )
+        solve_stats = nothing
+        solve_time += @elapsed solve_stats = solve_stokes_dyrel!(
+                dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+                phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
+                ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0,
+                verbose = verbose && verbose_PH,
+                verbose_inner = verbose && verbose_DR,
+                measure_λmax, λmax_safety)
+        push!(solve_stats_history, solve_stats)
 
         update_stokes_current_stress!(
             dr, mesh_stokes, cache, τ, Δt;
@@ -330,9 +333,11 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
 
-        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
-        write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
-        @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+        if write_output
+            vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
+            write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
+            @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+        end
     end  # physical time step loop
 
     P_cpu  = Array(dr.P)
@@ -370,7 +375,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     lines!(ax1, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
     show_plot && display(fig)
-    return (; time = time_history, mean_tauII = mean_tauII_history, post)
+    return (; time = time_history, mean_tauII = mean_tauII_history, post,
+        solve_stats = solve_stats_history, solve_time)
 end
 
-main()
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()

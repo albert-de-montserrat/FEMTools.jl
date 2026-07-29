@@ -70,6 +70,48 @@ expanded positional methods remain available for custom and adjoint workflows.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
+### Forward spectral estimate and frozen Jacobian
+
+The forward velocity sweep uses a diagonal Jacobi preconditioner ``P`` and the
+augmented momentum Jacobian ``A``. By default, `solve_stokes_dyrel!` obtains a
+conservative upper estimate from the assembled absolute row sums. Set
+`measure_λmax = true` to instead apply power iteration to
+
+```math
+\widehat A = P^{-1/2} A P^{-1/2}.
+```
+
+``P^{-1}A`` and ``\widehat A`` are similar and therefore have the same
+eigenvalues, while the symmetric scaling avoids the artificial non-normality
+introduced by left Jacobi scaling when ``A`` is symmetric. The DYREL step is
+
+```math
+\Delta\tau = \frac{2\,\mathrm{CFL}_v}{\sqrt{\lambda_{\max}}},
+```
+
+so an unnecessarily large Gershgorin estimate shortens every pseudo-time step.
+Power iteration is opt-in because it stores one dense augmented velocity block
+per element. Its dominant vector is warm-started across Jacobian refreshes.
+
+For linear viscous and viscoelastic rheologies (`plastic === nothing`), the
+augmented Jacobian is independent of the iterated velocity and pressure.
+`freeze_jacobian` therefore defaults to `true` and the blocks, row sums,
+preconditioner, and ``\lambda_{\max}`` are assembled only once. Convergence
+checks continue updating ``\lambda_{\min}`` and the Chebyshev coefficients.
+Set `freeze_jacobian = false` to force refreshes.
+
+Drucker–Prager plasticity is state-dependent, so its default remains
+`freeze_jacobian = false`. A non-associated plastic tangent is also non-normal:
+the solver consequently applies at least a 1.5 safety factor to the measured
+value, compared with the configurable `λmax_safety = 1.1` on the linear path.
+The power controls are `λmax_power_iterations` and `λmax_power_rtol`.
+
+The returned statistics include the `λmax` actually used, the
+`λmax_gershgorin` reference, cumulative `λmax_iterations`, and
+`jacobian_assemblies`. The inner loop also fuses both velocity-component rate
+and field updates into one kernel and copies residual history only at
+convergence checks.
+
 ## Example
 
 The scripts under `examples/stokes/` set up complete problems, including a
@@ -179,6 +221,9 @@ iteration and is therefore slower but avoids the block storage.
 
 See `examples/stokes/sinking_block/sinking_block_adj.jl` for a complete solve
 and `examples/benchmarks/adjoint_perf.jl` for a headless mesh/contrast sweep.
+Forward comparisons are available in
+`examples/benchmarks/forward_lambda_perf.jl` and
+`examples/benchmarks/forward_lambda_shear_band_perf.jl`.
 
 ## Assembly
 

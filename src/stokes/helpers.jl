@@ -66,6 +66,32 @@ function stokes_update_variable!(backend::KA.Backend, workgroup, u, ∂u∂τ, �
     return stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)
 end
 
+@kernel function update_stokes_velocity_kernel!(
+        rate_x, rate_y, vx, vy,
+        @Const(Rx), @Const(Ry), @Const(PCx), @Const(PCy),
+        βx, βy, αx, αy,
+    )
+    i = @index(Global)
+    new_rate_x = βx * rate_x[i] + Rx[i] / PCx[i]
+    new_rate_y = βy * rate_y[i] + Ry[i] / PCy[i]
+    rate_x[i] = new_rate_x
+    rate_y[i] = new_rate_y
+    vx[i] += αx * new_rate_x
+    vy[i] += αy * new_rate_y
+end
+
+function update_stokes_velocity!(
+        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
+        βx, βy, αx, αy, ndofs, backend, workgroup,
+    )
+    update_stokes_velocity_kernel!(backend, workgroup)(
+        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy, βx, βy, αx, αy;
+        ndrange = ndofs,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
 """
     remove_pressure_mean!(P, M_P) -> p_mean
 

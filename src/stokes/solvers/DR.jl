@@ -88,6 +88,10 @@ arrays.
 - `verbose = true`: outer Powell-Hestenes progress; `verbose_inner = false`:
   inner dynamic-relaxation trace.
 - `collect_history = false`: record `(iter, err_v, err_P)` at every check.
+- `measure_λmax = false`: experimentally replace the Gershgorin bound with
+  power iteration on the symmetrically Jacobi-scaled velocity operator.
+- `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
+  Jacobian instead of differentiating it at every convergence check.
 
 # Return value
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
@@ -155,8 +159,16 @@ function solve_stokes_dyrel!(
     vx_nodes = Γnodes,
     vy_nodes = Γnodes,
     collect_history = false,
+    measure_λmax = false,
+    λmax_power_iterations = 12,
+    λmax_power_rtol = 1.0e-2,
+    λmax_safety = 1.1,
+    freeze_jacobian = plastic === nothing,
 )
     verbose, verbose_inner = _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
+    # Non-associated plastic tangents are non-normal, so the power estimate is
+    # less predictive than for the symmetric viscous operator.
+    spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
 
     M_P = dr.M_P
     nout = ncheck
@@ -168,17 +180,36 @@ function solve_stokes_dyrel!(
     fill!(dr.Rv_x0, 0)
     fill!(dr.Rv_y0, 0)
 
-    assemble_augmented_momentum_jacobian_matrices_atomix!(
-        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-        element_v, element_P,
-        phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, M_P,
-        backend, workgroup,
-    )
-    λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-    λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+    velocity_op = if measure_λmax
+        assemble_velocity_operator(
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+    else
+        assemble_augmented_momentum_jacobian_matrices_atomix!(
+            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P, phases_v, phases_P, τ_old, plastic,
+            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
+            backend, workgroup)
+        nothing
+    end
+    λmax_gershgorin = max(
+        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
+        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+    λmax_iterations = 0
+    jacobian_assemblies = 1
+    power_x = power_y = nothing
+    if measure_λmax
+        λmax_measured, λmax_iterations, power_x, power_y = estimate_velocity_λmax(
+            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
+            vx_nodes, vy_nodes, backend, workgroup;
+            max_iterations = λmax_power_iterations, rtol = λmax_power_rtol)
+        λmax_vx = λmax_vy = min(λmax_gershgorin, spectral_safety * λmax_measured)
+    else
+        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
+        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+    end
     Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
     α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
@@ -259,9 +290,12 @@ function solve_stokes_dyrel!(
         while err > ϵ_vel && itPT ≤ iterMax
             itPT += 1
             iter += 1
+            do_check = iszero(iter % nout)
 
-            copyto!(dr.Rv_x0, dr.Rv_x)
-            copyto!(dr.Rv_y0, dr.Rv_y)
+            if do_check
+                copyto!(dr.Rv_x0, dr.Rv_x)
+                copyto!(dr.Rv_y0, dr.Rv_y)
+            end
 
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
@@ -288,15 +322,16 @@ function solve_stokes_dyrel!(
             apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
             apply_dirichlet!(dr.∂vy∂τ, vy_nodes, zero_vy_bc, backend, workgroup)
 
-            stokes_update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_rate!(dr.∂vy∂τ, dr.Rv_y, dr.PC_vy, β_vy, mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_variable!(dr.vy, dr.∂vy∂τ, -α_vy, mesh_stokes.nnodes, backend, workgroup)
+            update_stokes_velocity!(
+                dr.∂vx∂τ, dr.∂vy∂τ, dr.vx, dr.vy,
+                dr.Rv_x, dr.Rv_y, dr.PC_vx, dr.PC_vy,
+                β_vx, β_vy, -α_vx, -α_vy,
+                mesh_stokes.nnodes, backend, workgroup)
 
             apply_dirichlet!(dr.vx, vx_nodes, bc_vx_vals, backend, workgroup)
             apply_dirichlet!(dr.vy, vy_nodes, bc_vy_vals, backend, workgroup)
 
-            if iszero(iter % nout)
+            if do_check
                 err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
@@ -312,18 +347,41 @@ function solve_stokes_dyrel!(
                 λmin_vx = _stokes_λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
                 λmin_vy = _stokes_λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
 
-                assemble_augmented_momentum_jacobian_matrices_atomix!(
-                    dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-                    dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-                    element_v, element_P,
-                    phases_v, phases_P, τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                    dr.ηb, Δt, γP, M_P,
-                    backend, workgroup,
-                )
+                if !freeze_jacobian
+                    jacobian_assemblies += 1
+                    velocity_op = if measure_λmax
+                        assemble_velocity_operator(
+                            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+                    else
+                        assemble_augmented_momentum_jacobian_matrices_atomix!(
+                            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+                            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+                            element_v, element_P, phases_v, phases_P, τ_old, plastic,
+                            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                            dr.ηb, Δt, γP, M_P, backend, workgroup)
+                        nothing
+                    end
 
-                λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-                λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+                    λmax_gershgorin = max(
+                        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
+                        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+                    if measure_λmax
+                        λmax_measured, power_iterations, power_x, power_y =
+                            estimate_velocity_λmax(
+                            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
+                            vx_nodes, vy_nodes, backend, workgroup;
+                            max_iterations = λmax_power_iterations, rtol = λmax_power_rtol,
+                            x = power_x, y = power_y)
+                        λmax_iterations += power_iterations
+                        λmax_vx = λmax_vy =
+                            min(λmax_gershgorin, spectral_safety * λmax_measured)
+                    else
+                        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
+                        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+                    end
+                end
                 Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
                 Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
 
@@ -351,6 +409,10 @@ function solve_stokes_dyrel!(
         err_P,
         converged = err < ϵ,
         reached_total_iter = iter > total_iterMax,
+        λmax = max(λmax_vx, λmax_vy),
+        λmax_gershgorin,
+        λmax_iterations,
+        jacobian_assemblies,
         history,
     )
 end
