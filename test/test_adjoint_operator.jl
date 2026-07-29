@@ -1,6 +1,7 @@
 using Test
 using FEMTools
 using StaticArrays
+using LinearAlgebra
 using KernelAbstractions: CPU
 using DomainSets
 using DomainSets: ×
@@ -99,6 +100,10 @@ using DomainSets: ×
     op = FEMTools.assemble_adjoint_operator(
         dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    rowsum_vx_op = copy(dr.∂Rv_x∂vx)
+    rowsum_vy_op = copy(dr.∂Rv_y∂vy)
+    PC_vx_op = copy(dr.PC_vx)
+    PC_vy_op = copy(dr.PC_vy)
     ResλVx_op = zeros(mesh.nnodes)
     ResλVy_op = zeros(mesh.nnodes)
     ResλP_op = zeros(mesh.nnodesP)
@@ -112,4 +117,43 @@ using DomainSets: ×
     @test maximum(abs, ResλVx_op .- ResλVx_enzyme) / scale_v < 1.0e-12
     @test maximum(abs, ResλVy_op .- ResλVy_enzyme) / scale_v < 1.0e-12
     @test maximum(abs, ResλP_op .- ResλP_enzyme) / scale_P < 1.0e-12
+
+    # The measured λmax must reproduce the spectral radius of the symmetrically
+    # Jacobi-scaled free-velocity block, not merely be smaller than Gershgorin.
+    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        mesh.el2n, mesh.DoFsP, cache.geo_v, cache.geo_P, mesh.nels,
+        element_v, element_P, phases, phases,
+        τ_old, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+        dr.ηb, Δt, γP, dr.M_P, backend, wg)
+    @test rowsum_vx_op ≈ dr.∂Rv_x∂vx
+    @test rowsum_vy_op ≈ dr.∂Rv_y∂vy
+    @test PC_vx_op ≈ dr.PC_vx
+    @test PC_vy_op ≈ dr.PC_vy
+    λmax, λmax_iterations = FEMTools.estimate_adjoint_λmax(
+        op, mesh, element_v, element_P, dr.PC_vx, dr.PC_vy,
+        vx_nodes, vy_nodes, backend, wg)
+    free_vx = setdiff(eachindex(dr.vx), vx_nodes)
+    free_vy = setdiff(eachindex(dr.vy), vy_nodes)
+    free = vcat(free_vx, length(dr.vx) .+ free_vy)
+    PC = vcat(dr.PC_vx, dr.PC_vy)
+    A = zeros(length(free), length(free))
+    basis_vx = zeros(mesh.nnodes)
+    basis_vy = zeros(mesh.nnodes)
+    out_vx = similar(basis_vx)
+    out_vy = similar(basis_vy)
+    for (j, dof) in enumerate(free)
+        fill!(basis_vx, 0)
+        fill!(basis_vy, 0)
+        dof ≤ mesh.nnodes ? (basis_vx[dof] = inv(sqrt(PC[dof]))) :
+            (basis_vy[dof - mesh.nnodes] = inv(sqrt(PC[dof])))
+        FEMTools.apply_adjoint_operator!(
+            out_vx, out_vy, ResλP_op, op, basis_vx, basis_vy, zero(λP),
+            mesh, element_v, element_P, backend, wg)
+        A[:, j] .= vcat(out_vx, out_vy)[free] ./ sqrt.(PC[free])
+    end
+    λmax_exact = maximum(abs, eigvals(Symmetric(A)))
+    @test λmax ≈ λmax_exact rtol = 5.0e-3
+    @test λmax_iterations < 100
 end

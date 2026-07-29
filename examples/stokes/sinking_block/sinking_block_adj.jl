@@ -280,6 +280,7 @@ function main(;
     adjoint_max_ph_iterations = 100,
     adjoint_verbose = true,
     adjoint_verbose_inner = true,
+    adjoint_measure_λmax = true,
     # Powell-Hestenes augmentation strength and DYREL Chebyshev damping. A
     # stronger augmentation (γfact) and lighter damping (c_fact) than the historical
     # 20/0.9 cut the forward iteration count by ~15% on this problem without
@@ -648,6 +649,7 @@ function main(;
         max_ph_iterations = adjoint_max_ph_iterations,
         verbose = adjoint_verbose,
         verbose_inner = adjoint_verbose_inner,
+        measure_λmax = adjoint_measure_λmax,
         collect_history = true,
     )
     adjoint_history = adjoint_stats.history

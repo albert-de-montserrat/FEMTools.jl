@@ -91,6 +91,7 @@ end
 
 @kernel function adjoint_operator_assembly_kernel!(
         Ablocks, Bblocks, Cblocks,
+        ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy),
         @Const(P), @Const(P0),
         @Const(T), @Const(T0),
@@ -103,7 +104,7 @@ end
         Nq, NqP, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
-    _, _, A, B, C = element_adjoint_operator_blocks(
+    local_nodes_v, _, A, B, C = element_adjoint_operator_blocks(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
@@ -112,6 +113,14 @@ end
     Ablocks[iel] = A
     Bblocks[iel] = B
     Cblocks[iel] = C
+    rowsums_x = SVector{NV}(ntuple(i -> sum(abs(A[i, j]) for j in 1:2NV), Val(NV)))
+    rowsums_y = SVector{NV}(ntuple(i -> sum(abs(A[NV + i, j]) for j in 1:2NV), Val(NV)))
+    for (i, inod) in enumerate(local_nodes_v)
+        Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += rowsums_x[i]
+        Atomix.@atomic :monotonic PC_vx[inod] += abs(A[i, i])
+        Atomix.@atomic :monotonic ∂Rv_y∂vy[inod] += rowsums_y[i]
+        Atomix.@atomic :monotonic PC_vy[inod] += abs(A[NV + i, NV + i])
+    end
 end
 
 """
@@ -141,8 +150,13 @@ function assemble_adjoint_operator(
     Bblocks = similar(dr.vx, SMatrix{2NV, NP, Tv, 2NV * NP}, nels)
     Cblocks = similar(dr.vx, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
 
+    fill!(dr.∂Rv_x∂vx, 0)
+    fill!(dr.PC_vx, 0)
+    fill!(dr.∂Rv_y∂vy, 0)
+    fill!(dr.PC_vy, 0)
     adjoint_operator_assembly_kernel!(backend, workgroup)(
         Ablocks, Bblocks, Cblocks,
+        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic,
@@ -180,6 +194,84 @@ end
     end
     # Pressure degrees of freedom are discontinuous, hence unshared.
     _add_local!(dP, local_nodes_P, resp, Val(false))
+end
+
+"""
+    estimate_adjoint_λmax(op, mesh_stokes, element_v, element_P, PC_vx, PC_vy,
+                          vx_nodes, vy_nodes, backend, workgroup;
+                          max_iterations = 100, rtol = 1.0e-3) -> (λmax, iterations)
+
+Estimate the largest eigenvalue of the Jacobi-preconditioned velocity block by
+power iteration, returning it with the number of iterations taken.
+
+The alternative is a Gershgorin bound, which is correct as a bound but typically
+several times above the true value. Since the dynamic-relaxation step is
+`Δτ = 2/sqrt(λmax)·CFL_v` and the iteration count scales as `sqrt(λmax/λmin)`,
+overestimating λmax by a factor `f` costs about `sqrt(f)` in iterations. Each
+power iteration costs one operator apply, which is negligible beside a solve.
+
+The pressure adjoint is held at zero throughout, so this measures the velocity
+block alone, and the Dirichlet rows are projected out at every step to match the
+subspace the solver actually iterates on.
+"""
+function estimate_adjoint_λmax(
+        op::FrozenAdjointOperator, mesh_stokes,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        PC_vx, PC_vy, vx_nodes, vy_nodes, backend, workgroup;
+        max_iterations = 100, rtol = 1.0e-3,
+    ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    x_vx = similar(PC_vx)
+    x_vy = similar(PC_vy)
+    z_vx = similar(PC_vx)
+    z_vy = similar(PC_vy)
+    y_vx = similar(PC_vx)
+    y_vy = similar(PC_vy)
+    zeroP = fill!(similar(PC_vx, mesh_stokes.nnodesP), 0)
+    scratchP = similar(zeroP)
+    zero_vx_bc = fill!(similar(PC_vx, length(vx_nodes)), 0)
+    zero_vy_bc = fill!(similar(PC_vy, length(vy_nodes)), 0)
+
+    # A deterministic oscillatory start: a constant vector is a poor seed for an
+    # elliptic operator, whose dominant mode is the most oscillatory one.
+    x_vx .= sin.(eachindex(x_vx) .* 0.7)
+    x_vy .= cos.(eachindex(x_vy) .* 1.3)
+    apply_dirichlet!(x_vx, vx_nodes, zero_vx_bc, backend, workgroup)
+    apply_dirichlet!(x_vy, vy_nodes, zero_vy_bc, backend, workgroup)
+
+    λ = zero(eltype(PC_vx))
+    iterations = 0
+    for it in 1:max_iterations
+        iterations = it
+        nx = sqrt(dot(x_vx, x_vx) + dot(x_vy, x_vy))
+        nx > 0 || throw(ArgumentError("power iteration collapsed to the zero vector"))
+        x_vx ./= nx
+        x_vy ./= nx
+
+        # P⁻¹A and P⁻¹/²AP⁻¹/² are similar, hence have the same eigenvalues.
+        # Iterating on the latter preserves symmetry and avoids the non-normal
+        # transients introduced by left Jacobi scaling.
+        @. z_vx = x_vx / sqrt(PC_vx)
+        @. z_vy = x_vy / sqrt(PC_vy)
+        apply_adjoint_operator!(
+            y_vx, y_vy, scratchP, op, z_vx, z_vy, zeroP,
+            mesh_stokes, element_v, element_P, backend, workgroup,
+        )
+        @. y_vx /= sqrt(PC_vx)
+        @. y_vy /= sqrt(PC_vy)
+        apply_dirichlet!(y_vx, vx_nodes, zero_vx_bc, backend, workgroup)
+        apply_dirichlet!(y_vy, vy_nodes, zero_vy_bc, backend, workgroup)
+
+        λ_new = sqrt(dot(y_vx, y_vx) + dot(y_vy, y_vy))
+        copyto!(x_vx, y_vx)
+        copyto!(x_vy, y_vy)
+        converged = it > 1 && abs(λ_new - λ) ≤ rtol * λ_new
+        λ = λ_new
+        converged && break
+    end
+    isfinite(λ) && λ > 0 ||
+        throw(ArgumentError("power iteration produced a non-positive λmax: $λ"))
+    return λ, iterations
 end
 
 """

@@ -21,6 +21,10 @@ objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
 forward solve. Homogeneous Dirichlet conditions are applied to the adjoint
 velocity on `vx_nodes`/`vy_nodes`.
 
+The input values of `λvx`, `λvy`, and `λP` are preserved as the initial iterate.
+Pass zero-filled arrays for a cold solve, or fields from the previous design
+iteration to warm-start an optimization loop.
+
 Because the forward state is frozen, the adjoint residual is affine in `λ` with a
 constant operator. With `frozen_operator` (the default) that operator is
 assembled once as per-element blocks and then applied as a dense element product,
@@ -31,9 +35,16 @@ rebuilds the same products by automatic differentiation on every iteration: far
 slower, but it stores nothing per element and so remains the option when the
 block storage is too large.
 
+With `measure_λmax` (the default, and only available alongside `frozen_operator`)
+the largest eigenvalue of the preconditioned velocity block is measured by power
+iteration rather than bounded by Gershgorin row sums. The bound is correct but
+loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
+
 Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
 inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
-`err`, `err_v`, `err_P`, `converged`, and (when `collect_history`) `history`.
+`err`, `err_v`, `err_P`, `converged`, the `λmax` actually used alongside the
+`λmax_gershgorin` bound and the `λmax_iterations` spent measuring it, and (when
+`collect_history`) `history`.
 
 All arrays read or written by kernels—including `mesh_stokes` connectivity,
 `geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
@@ -75,6 +86,7 @@ function solve_stokes_adjoint_dyrel!(
     verbose_inner = false,
     collect_history = false,
     frozen_operator = true,
+    measure_λmax = true,
 )
     M_P = dr.M_P
 
@@ -105,32 +117,51 @@ function solve_stokes_adjoint_dyrel!(
     zero_vx_bc = fill!(similar(λvx, length(vx_nodes)), 0)
     zero_vy_bc = fill!(similar(λvy, length(vy_nodes)), 0)
 
-    # Freeze the transpose velocity block at the converged forward state: assemble
-    # the augmented momentum Jacobian once to obtain the diagonal preconditioner
-    # and λmax. Both stay constant through the adjoint solve.
-    assemble_augmented_momentum_jacobian_matrices_atomix!(
-        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
-        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-        element_v, element_P, phases_v, phases_P,
-        τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, M_P, backend, workgroup,
-    )
-
-    λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")
-    λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy")
-    Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
-    Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
-    α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
-    α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
-
     # The operator is constant at the frozen forward state, so assembling it once
     # replaces the three reverse-mode sweeps every iteration would otherwise run.
+    # Its assembly also fills the Jacobi diagonal and Gershgorin row sums from the
+    # velocity blocks already in hand.
     op = frozen_operator ?
         assemble_adjoint_operator(
         dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
         phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
     ) : nothing
+    if op === nothing
+        assemble_augmented_momentum_jacobian_matrices_atomix!(
+            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
+            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
+            element_v, element_P, phases_v, phases_P,
+            τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            dr.ηb, Δt, γP, M_P, backend, workgroup,
+        )
+    end
+
+    # The assembled row sums give a Gershgorin bound on the preconditioned
+    # spectral radius. Where an operator apply is available the eigenvalue itself
+    # can be measured, which shortens the pseudo-time step correspondingly.
+    λmax_gershgorin = max(
+        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx"),
+        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy"),
+    )
+    λmax_iterations = 0
+    if measure_λmax && op !== nothing
+        λmax_measured, λmax_iterations = estimate_adjoint_λmax(
+            op, mesh_stokes, element_v, element_P, dr.PC_vx, dr.PC_vy,
+            vx_nodes, vy_nodes, backend, workgroup,
+        )
+        λmax_vx = λmax_vy = λmax_measured
+    else
+        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")
+        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy")
+    end
+    Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
+    Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
+    α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
+    α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
+
+    verbose && measure_λmax && op !== nothing &&
+        @info "Adjoint λmax" λmax_measured=λmax_vx λmax_gershgorin ratio=λmax_gershgorin / λmax_vx λmax_iterations
 
     function assemble_adjoint_residual_enzyme!()
         # Only the Enzyme shadows need zeroing: they are accumulated into by the
@@ -290,6 +321,9 @@ function solve_stokes_adjoint_dyrel!(
         err_v,
         err_P,
         converged = converged || err < adjoint_tol,
+        λmax = λmax_vx,
+        λmax_gershgorin,
+        λmax_iterations,
         history,
     )
 end

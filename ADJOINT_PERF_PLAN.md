@@ -355,10 +355,10 @@ Two departures from the sketch above, both established while implementing it:
   argument, not from the augmented one, so it excludes the augmentation already
   carried by `Aᵉ`. Using the augmented form here would double-count it.
 
-Setup now runs two ForwardDiff passes over the elements: one for the
-preconditioner and λmax, one for the operator blocks. Both are one-time and the
-combined setup is a small fraction of a solve, but the operator kernel could
-produce the row sums and diagonal itself and drop the separate pass.
+The operator kernel now also scatters the absolute row sums and Jacobi diagonal
+from the augmented velocity blocks it already holds, removing the duplicate
+ForwardDiff setup pass. A regression compares all four assembled diagnostic
+vectors against the standalone assembler.
 
 ### Phase 3 — convergence rate
 
@@ -388,15 +388,58 @@ iteration) on the contrast cases.
 **Gate:** FD gradient unchanged; total iteration count down across the mesh *and*
 viscosity-contrast sweep, not only the trivial case.
 
-**Result** *(to fill)*
+**Result (3a)**
+
+Power iteration now measures the largest eigenvalue of the symmetrically
+Jacobi-scaled velocity block `P⁻¹/²AᵀP⁻¹/²`. This matrix has the same eigenvalues
+as the left-preconditioned block used by DYREL, while preserving symmetry and
+avoiding non-normal transients. A small-mesh regression explicitly forms that
+free-velocity matrix and verifies the estimate against its eigenspectrum.
+
+Warm sinking-block measurements:
+
+| max_area | η₂/η₁ | Gershgorin λmax | measured λmax | power iter | adj iter before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| 1/32² | 1 | 13.380 | 3.418 | 35 | 850 | 450 |
+| 1/32² | 10 | 21.799 | 4.018 | 32 | 2 350 | 850 |
+| 1/64² | 1 | 13.865 | 3.410 | 32 | 1 000 | 550 |
+| 1/64² | 10 | 21.648 | 4.006 | 31 | 3 000 | 1 250 |
+
+All four cases converged at `adjoint_tol = 1e-6`; the finite-difference gradient
+gate remains green. Iterations fall under both refinement and contrast, closing
+the Phase 3 gate. The setup cost of 31–35 cheap operator applies is already
+included in the measured adjoint time.
+
+**Result (3b/3c experiment)**
+
+Jacobi-PCG was tested as the inner velocity solver, with a symmetry probe before
+entry and a positive `pᵀAp` check on every step. It is not retained: solving the
+velocity block more accurately exposes slow Uzawa convergence in the outer PH
+iteration, so fewer inner iterations do not translate into less total work.
+
+On the 1/32², η₂/η₁ = 10 case:
+
+| inner solver / settings | PH iterations | total inner iterations | converged |
+|---|---:|---:|---|
+| measured-λmax DYREL, `rel_drop=0.1` | 6 | 850 | yes |
+| PCG, `rel_drop=0.1` | 100 | 1 335 | no |
+| PCG, `rel_drop=0.01` | 39 | 877 | yes |
+
+Independently scaling the adjoint augmentation did not rescue the split:
+`γ×2` required 971 iterations over 77 PH steps, while `γ×4` failed the
+100-step budget. The smallest successful PCG result (877) is still worse than
+DYREL (850), so landing the extra solver path would add complexity without an
+improvement. A future Krylov attempt should target the complete saddle-point
+operator (for example MINRES with a block preconditioner), not the velocity
+subproblem inside the current Uzawa iteration.
 
 ### Phase 4 — opportunistic
 
 Pursue only if Phases 1–3 leave something material on the table.
 
-- **Warm start.** `λ` starts from zero. In an optimization loop the previous
-  design's `λ` is an excellent initial guess — no benefit to a single solve, large
-  benefit to the workflow the adjoint exists to serve.
+- **Warm start.** In an optimization loop the previous design's `λ` is an
+  excellent initial guess — no benefit to a single solve, large benefit to the
+  workflow the adjoint exists to serve.
 - **Direct 2D CPU path.** The operator is frozen and linear and
   `generate_sparsity_pattern` already exists, so the full transposed saddle-point
   matrix can be assembled and factorized once, giving the exact adjoint in one
@@ -405,7 +448,15 @@ Pursue only if Phases 1–3 leave something material on the table.
 - **Feed the frozen-operator machinery back into the forward Newton steps** if the
   profile justifies it.
 
-**Result** *(to fill)*
+**Result**
+
+Warm starts required no implementation: the in-place solver already uses the
+input `λ` fields as its initial iterate. This behavior is now documented and a
+regression verifies that a converged adjoint returns with zero inner iterations
+and unchanged fields. The direct solver and forward reuse were not pursued.
+After Phases 2 and 3a the adjoint costs only 2–4% of the forward solve on the
+measured cases, so another solver path cannot repay its complexity in the
+current workload.
 
 ### Phase 5 — documentation
 
@@ -427,7 +478,12 @@ says nothing about how the system is actually solved or how to drive it. Add:
 Update the docstring of `solve_stokes_adjoint_dyrel!` in step, and keep both
 statements about what the code *is*, not about this plan.
 
-**Result** *(to fill)*
+**Result**
+
+`docs/src/stokes.md` now documents discrete consistency, the frozen element
+operator, the PH/DYREL controls and stall diagnostics, cached-block memory and
+the Enzyme fallback, and points to both the worked sinking-block driver and the
+finite-difference validation test.
 
 ---
 
