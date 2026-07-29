@@ -146,7 +146,90 @@ Nothing else lands until this is in place.
 
 **Gate:** baseline recorded, full test suite green.
 
-**Result** *(to fill)*
+**Result**
+
+Measured on Apple aarch64, Julia 1.12.6, single warm session, warm-up discarded,
+`show_plot = false`, `verbose = false`. Sinking block, `Δt = 1`, `γfact = 40`,
+`CFL_v = 0.9`, `c_fact = 0.7`, `adjoint_tol = 1e-6`, `rel_drop = 0.1`, budgets
+`iterMax = total_iterMax = 50_000` for both solves.
+
+| max_area | η₂/η₁ | nels | fwd iter | fwd s | adj PH | adj iter | adj s | ms/iter | adj/fwd | |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1/32² | 1 | 1642 | 7 000 | 1.68 | 6 | 850 | 1.65 | 1.95 | 0.98 | valid |
+| 1/32² | 10 | 1642 | 21 550 | 5.24 | 6 | 2 350 | 4.53 | 1.93 | 0.87 | valid |
+| 1/32² | 10² | 1642 | 50 001 | 13.83 | 7 | 10 850 | 20.90 | 1.93 | 1.51 | forward capped |
+| 1/32² | 10³ | 1642 | 50 001 | 12.45 | 3 | 50 000 | 99.73 | 1.99 | 8.01 | forward capped |
+| 1/64² | 1 | 6538 | 13 950 | 11.31 | 4 | 1 000 | 7.51 | 7.51 | 0.66 | valid |
+| 1/64² | 10 | 6538 | 36 600 | 30.73 | 15 | 3 000 | 22.46 | 7.49 | 0.73 | valid |
+| 1/64² | 10² | 6538 | 50 001 | 41.88 | 27 | 12 700 | 97.89 | 7.71 | 2.34 | forward capped |
+| 1/64² | 10³ | 6538 | — | — | — | — | — | — | — | abandoned |
+
+Only the four `η₂/η₁ ∈ {1, 10}` rows are valid measurements — see the
+precondition finding below. The 1/128² refinement is not in the baseline: a
+single 1/64² case already costs minutes, and the four valid rows suffice to
+establish per-iteration cost and its scaling.
+
+Readings that hold across the valid rows:
+
+- **Per-iteration cost is independent of viscosity contrast** (1.93–1.99 ms at
+  1642 elements, 7.49–7.51 ms at 6538) and scales 3.87× for a 3.98× increase in
+  element count. Cost per iteration is therefore purely the three element sweeps,
+  and it is cleanly separable from conditioning. This is the quantity Phases 1
+  and 2 move, and it can be measured on any row, valid or not.
+- **Iteration count grows sharply with contrast**: 850 → 2 350 at 1/32², 1 000 →
+  3 000 at 1/64², for one decade of contrast. This is the quantity Phase 3 moves.
+- **The outer PH loop degrades under refinement**, not just the inner loop: at
+  η₂/η₁ = 10 the outer count rises 6 → 15 from 1/32² to 1/64². Relevant to
+  Phase 3c.
+- `test/test_stokes_adjoint_api.jl` passes on the current code, so the
+  finite-difference gradient gate is established for every later phase.
+
+**Profile** of one adjoint solve (1/32², η₂/η₁ = 1, sampled at 1 ms, shares
+inclusive so they do not sum to 100%):
+
+| region | % of adjoint solve |
+|---|---|
+| Enzyme autodiff (all three sweeps) | 98.5 |
+| momentum transpose | 77.1 |
+| pressure transpose | 21.4 |
+| DYREL rate update | 0.7 |
+| DYREL variable update | 0.2 |
+| Dirichlet projection | 0.2 |
+| KA synchronize | 0.0 |
+| norm / convergence | 0.0 |
+
+The adjoint solve is 16.9% of the whole run at this case, the forward solve
+being the rest.
+
+Two consequences. Automatic differentiation is essentially the entire adjoint
+cost, so Phase 2 addresses ~98% of it rather than a slice. And the DYREL vector
+kernels plus synchronization together are ~1%, which settles the
+synchronization-granularity question on CPU: fusing kernel launches cannot repay
+the complexity there. Sampling shares are ratios within a single run, so unlike
+wall-clock timings they remain meaningful under competing load.
+
+**Finding: the adjoint runs against a forward state that violates its own
+documented precondition.** `solve_stokes_adjoint_dyrel!` requires a converged
+forward state — the transpose Jacobian, its preconditioner, and λmax are all
+frozen at it — but the driver only warns:
+
+```julia
+solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
+```
+
+and proceeds. At η₂/η₁ ≥ 10² the forward solve exhausts its budget, so the four
+`10²`/`10³` rows report an adjoint iterating against an operator frozen at a
+non-converged state. Those numbers are not slow-convergence data and must not be
+read as a Phase 3 target. The 1/64², 10³ case was abandoned after 29 min — more
+than the rest of the sweep combined — for this reason.
+
+Two consequences, both actionable before Phase 3:
+
+1. Warn-and-continue here is a silent-failure path and is replaced by an explicit
+   error, so an unconverged forward state cannot be differentiated by accident.
+2. A meaningful high-contrast convergence case needs a forward solve that
+   actually converges at that contrast. Establishing one is a prerequisite for
+   Phase 3, not part of it.
 
 ### Phase 1 — cost reductions with no change to the iterates
 
@@ -167,22 +250,75 @@ counts must not move.
 **Gate:** FD gradient test unchanged; iteration counts bit-comparable to
 baseline; measured per-iteration time down.
 
-**Result** *(to fill)*
+**Result**
+
+Items 1, 3, and 4 landed. Item 2 (kernel-launch fusion) is dropped for the CPU
+path on the evidence of the Phase 0 profile: `synchronize` accounts for 0.0% of
+the adjoint solve and every DYREL vector kernel together for ~1.1%, so fusing the
+eight launches cannot repay its complexity here. It becomes relevant only where
+launch latency dominates assembly — on an accelerator, or after Phase 2 has
+removed the AD cost.
+
+The iterates are unchanged, on every valid case:
+
+| case | baseline PH / inner | Phase 1 PH / inner |
+|---|---|---|
+| 1/32², η₂/η₁ = 1 | 6 / 850 | 6 / 850 |
+| 1/32², η₂/η₁ = 10 | 6 / 2350 | 6 / 2350 |
+| 1/64², η₂/η₁ = 1 | 4 / 1000 | 4 / 1000 |
+| 1/64², η₂/η₁ = 10 | 15 / 3000 | 15 / 3000 |
+
+`test/test_stokes_adjoint_api.jl` still passes, and the phase-summed gradients
+reproduce across independent runs to ~13 significant digits, which is the drift
+reference for later phases.
+
+**The saving is ~18%, below the 20–30% this phase predicted.** The Phase 0
+profile puts one pressure sweep at 21.4% of the adjoint solve against 77.1% for
+the momentum sweep, so restoring the second pressure sweep would cost
+21.4/(77.1 + 2·21.4 + 1.1) ≈ 17.7%. The prediction assumed the three sweeps cost
+about the same; the pressure sweep is in fact roughly a quarter of the momentum
+sweep, the momentum kernel carrying the rheology and stress update.
+
+Wall-clock measurement is not the basis for that figure. Three timings of the
+identical case gave 1.945, 1.390, and 1.865 ms/iteration, and one sweep taken
+under competing load reported a *forward* solve — code this phase does not
+touch — at 548 s against a baseline of 11.3 s. At that dispersion an end-to-end
+A/B cannot resolve an 18% effect, whereas the profile's shares are ratios within
+one run. The reproducible gate is the iteration counts above.
+
+**The forward iteration count is not reproducible run to run** (7 000 vs 7 100 for
+an identical configuration). Nothing in the forward path changed, so this is
+inherent: the Atomix scatter accumulates in nondeterministic order and
+floating-point addition is not associative. Iteration counts are therefore
+comparable only to within one `ncheck` interval, and "bit-comparable" is a claim
+about the adjoint's iterate sequence for a fixed forward state, not about the
+forward solve.
 
 ### Phase 2 — freeze the operator (main performance work)
 
 Assemble the transpose operator once, then apply it matrix-free.
 
-- Cache per element: `Kᵉ` (2NV×2NV = 14×14 for T7), `Bᵉ` (14×3), `Bnumᵉ` (14×3),
-  `Cᵉ` (3×14), stored as `SMatrix`.
-- `element_augmented_momentum_jacobians` already builds the ForwardDiff blocks
-  and then reduces them to row sums and diagonals; extend that path to retain the
-  full blocks rather than adding a second assembly route.
+- Cache per element, as `SMatrix`: the augmented velocity block `Aᵉ`
+  (2NV×2NV = 14×14 for T7), `Bᵉ = ∂Rv/∂P` (14×3), and `Cᵉ = ∂RP/∂v` (3×14).
+- `element_augmented_momentum_jacobians` already builds the four ForwardDiff
+  velocity blocks and then reduces them to row sums and diagonals; extend that
+  path to retain them rather than adding a second assembly route. `Bᵉ` needs one
+  further ForwardDiff jacobian with respect to the local pressures.
+- **No separate `Bnumᵉ` is required.** That assembler evaluates
+  `Pnum = γ_eff·RP(v)/M_P` inline inside the differentiated residual, from
+  element-local gathers, so the velocity block it produces already carries the
+  Powell-Hestenes augmentation. This is exact rather than approximate because the
+  pressure space is P1-disc: `RP` is element-local, so the `v → Pnum → momentum`
+  coupling never crosses an element boundary. A continuous pressure space would
+  break that property and require the separate block.
+- The apply is then `ResλV = objective_v + Aᵉᵀλv + Cᵉᵀλ P` and `ResλP = Bᵉᵀλv`,
+  which is the affine form of §2.1 with the augmentation folded into `Aᵉ`.
 - New apply kernel: gather element `λ`, dense GEMV, scatter with the existing
   Atomix pattern. No rheology, no AD, no primal recompute.
-- Memory: ≈322 Float64 ≈ 2.6 kB per element in 2D T7/P1, so ≈26 MB at 10⁴
-  elements. 3D elements make this materially heavier, so the Enzyme path stays
-  selectable as a fallback rather than being deleted.
+- Memory: 196 + 42 + 42 = 280 Float64 ≈ 2.24 kB per element in 2D T7/P1-disc, so
+  ≈22 MB at 10⁴ elements and ≈15 MB at the 1/64² benchmark mesh. 3D elements make
+  this materially heavier, so the Enzyme path stays selectable as a fallback
+  rather than being deleted.
 
 **Gate:** new-operator residual matches the Enzyme residual to ~1e-12 on a small
 mesh; FD gradient test unchanged; benchmark shows the per-iteration speedup.

@@ -114,9 +114,8 @@ function solve_stokes_adjoint_dyrel!(
     α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
 
     function assemble_adjoint_residual!()
-        fill!(ResλVx, 0)
-        fill!(ResλVy, 0)
-        fill!(ResλP, 0)
+        # Only the Enzyme shadows need zeroing: they are accumulated into by the
+        # reverse passes. ResλVx, ResλVy, and ResλP are each fully overwritten below.
         fill!(dvx, 0)
         fill!(dvy, 0)
         fill!(dP, 0)
@@ -140,19 +139,13 @@ function solve_stokes_adjoint_dyrel!(
         # the pressure pullbacks reuse dP.
         copyto!(ResλP, dP)
 
-        # Powell-Hestenes augmented grad-div self-coupling of the velocity adjoint.
-        # The forward momentum uses Pnum(v) = γP·RP(v)/M_P, so the chain through Pnum
-        # closes as (∂RP/∂v)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P).
-        @. seed_RP = γP * dPnum / M_P
-        fill!(dP_scratch, 0)
-        assemble_pressure_residual_matrices_atomix_adj!(
-            dr, seed_RP, dvx, dvy, dP_scratch,
-            mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_P, Δt, workgroup,
-        )
-
-        # Saddle-point coupling to the pressure adjoint λP: (∂RP/∂v)ᵀλP.
-        copyto!(seed_RP, λP)
+        # Both couplings to the velocity adjoint run through the same transpose
+        # (∂RP/∂v)ᵀ, which is linear in its seed, so one pass carries both:
+        # the Powell-Hestenes augmented grad-div self-coupling — the forward
+        # momentum uses Pnum(v) = γP·RP(v)/M_P, closing the chain through Pnum as
+        # (∂RP/∂v)ᵀ(γP·(∂Rv/∂Pnum)ᵀλv/M_P) — and the saddle-point coupling
+        # (∂RP/∂v)ᵀλP.
+        @. seed_RP = λP + γP * dPnum / M_P
         fill!(dP_scratch, 0)
         assemble_pressure_residual_matrices_atomix_adj!(
             dr, seed_RP, dvx, dvy, dP_scratch,
@@ -228,8 +221,12 @@ function solve_stokes_adjoint_dyrel!(
 
                 # Re-estimate λmin and refresh the Chebyshev step. Δτ and λmax stay
                 # fixed (the Jacobian depends only on the frozen forward state).
-                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx .- ResλVx0, dr.PC_vx)
-                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy .- ResλVy0, dr.PC_vy)
+                # The differences overwrite ResλVx0/ResλVy0, which the next
+                # iteration refills from ResλVx/ResλVy before reading them again.
+                @. ResλVx0 = ResλVx - ResλVx0
+                @. ResλVy0 = ResλVy - ResλVy0
+                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx0, dr.PC_vx)
+                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy0, dr.PC_vy)
                 α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
 
@@ -245,10 +242,15 @@ function solve_stokes_adjoint_dyrel!(
         iter >= total_iterMax && break
     end
 
-    assemble_adjoint_residual!()
-    err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
-    err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
-    err = max(min(err_v, err_v / err_v0), min(err_P, err_P / err_P0))
+    # Breaking on the convergence test leaves the matching residual and errors in
+    # hand; every other exit needs a fresh residual, since λP moved after the last
+    # assembly.
+    if !converged
+        assemble_adjoint_residual!()
+        err_v = max(norm(ResλVx), norm(ResλVy)) / sqrt(mesh_stokes.nnodes)
+        err_P = norm(ResλP) / sqrt(mesh_stokes.nnodesP)
+        err = max(min(err_v, err_v / err_v0), min(err_P, err_P / err_P0))
+    end
 
     return (;
         itPH = itPH_done,

@@ -36,19 +36,40 @@ count, which is the quantity Phase 1 and Phase 2 of the performance work move.
 `itPH` and `iter` are the quantities Phase 3 moves. `converged` must be true for
 a row to mean anything: an unconverged solve reports the cost of hitting an
 iteration budget, not the cost of solving the problem.
+
+A case whose forward solve does not converge has no adjoint to measure, since the
+adjoint operator is frozen at the forward state. Such a case yields a row with
+`fwd_converged = false` and `missing` adjoint entries, so a sweep records the
+failure and continues rather than aborting on it.
 """
 function adjoint_benchmark_case(; max_area, η_incl, kwargs...)
-    out = main(;
-        max_area, η_incl,
-        show_plot = false,
-        verbose = false,
-        adjoint_verbose = false,
-        adjoint_verbose_inner = false,
-        kwargs...,
-    )
+    out = try
+        main(;
+            max_area, η_incl,
+            show_plot = false,
+            verbose = false,
+            adjoint_verbose = false,
+            adjoint_verbose_inner = false,
+            kwargs...,
+        )
+    catch err
+        err isa InterruptException && rethrow()
+        return (;
+            max_area, η_incl,
+            nels = missing, nnodes = missing,
+            fwd_iter = missing, fwd_itPH = missing, fwd_time = missing,
+            fwd_converged = false,
+            adj_iter = missing, adj_itPH = missing, adj_time = missing,
+            adj_converged = false, adj_err = missing,
+            per_iter_ms = missing, adjoint_over_forward = missing,
+            density_gradient = missing, viscosity_gradient = missing,
+            failure = sprint(showerror, err),
+        )
+    end
 
     fwd, adj = out.solve_stats, out.adjoint_stats
     return (;
+        failure = nothing,
         max_area,
         η_incl,
         nels = out.mesh_stokes.nels,
@@ -94,23 +115,40 @@ function run_adjoint_benchmark(;
         adjoint_benchmark_case(; max_area = 1 / 16^2, η_incl = 1.0, kwargs...)
     end
 
-    @printf("%10s %8s %8s | %8s %10s | %6s %8s %10s %10s %8s\n",
+    @printf("%10s %8s %8s | %6s %8s %10s | %6s %8s %10s %10s %8s\n",
         "max_area", "η_incl", "nels",
-        "fwd_iter", "fwd_time", "PH", "adj_iter", "adj_time", "per_it_ms", "adj/fwd")
-    println("-"^100)
+        "fPH", "fwd_iter", "fwd_time", "aPH", "adj_iter", "adj_time",
+        "per_it_ms", "adj/fwd")
+    println("-"^108)
 
     results = NamedTuple[]
     for max_area in max_areas, η_incl in η_contrasts
         r = adjoint_benchmark_case(; max_area, η_incl, kwargs...)
         push!(results, r)
-        flag = (r.fwd_converged && r.adj_converged) ? "" : "  <- NOT CONVERGED"
-        @printf("%10.3e %8.0e %8d | %8d %10.3f | %6d %8d %10.3f %10.4f %8.2f%s\n",
-            r.max_area, r.η_incl, r.nels,
-            r.fwd_iter, r.fwd_time,
-            r.adj_itPH, r.adj_iter, r.adj_time, r.per_iter_ms, r.adjoint_over_forward,
-            flag)
+        print_benchmark_row(r)
     end
     return results
+end
+
+"""
+    print_benchmark_row(r, [io])
+
+Print one `adjoint_benchmark_case` row, marking a case whose forward solve failed
+and one that merely ran out of iterations as the distinct outcomes they are.
+"""
+function print_benchmark_row(r, io::IO = stdout)
+    if r.failure !== nothing
+        @printf(io, "%10.3e %8.0e %8s | forward solve failed: %s\n",
+            r.max_area, r.η_incl, "-", first(split(r.failure, '\n')))
+        return nothing
+    end
+    flag = (r.fwd_converged && r.adj_converged) ? "" : "  <- NOT CONVERGED"
+    @printf(io, "%10.3e %8.0e %8d | %6d %8d %10.3f | %6d %8d %10.3f %10.4f %8.2f%s\n",
+        r.max_area, r.η_incl, r.nels,
+        r.fwd_itPH, r.fwd_iter, r.fwd_time,
+        r.adj_itPH, r.adj_iter, r.adj_time, r.per_iter_ms, r.adjoint_over_forward,
+        flag)
+    return nothing
 end
 
 """
@@ -132,6 +170,11 @@ function compare_adjoint_benchmarks(baseline, candidate)
     for c in candidate
         b = get(lookup, key(c), nothing)
         b === nothing && continue
+        if c.failure !== nothing || b.failure !== nothing
+            @printf("%10.3e %8.0e | %12s %12s %12s\n",
+                c.max_area, c.η_incl, "failed", "failed", "failed")
+            continue
+        end
         @printf("%10.3e %8.0e | %12.3f %12.3f %12.3f\n",
             c.max_area, c.η_incl,
             c.adj_iter / b.adj_iter,

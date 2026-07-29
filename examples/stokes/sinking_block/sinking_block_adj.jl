@@ -489,7 +489,15 @@ function main(;
         verbose_inner = verbose_DR,
         collect_history = true,
     )
-    solve_stats.converged || @warn "Forward solve did not reach tolerance" solve_stats
+    # The adjoint freezes its transpose Jacobian, preconditioner, and λmax at the
+    # forward state, so differentiating an unconverged one yields a gradient of
+    # nothing in particular. Refusing here keeps that failure visible.
+    solve_stats.converged || error(
+        "Forward solve did not reach tolerance (err = $(solve_stats.err), " *
+            "tol = $(ϵ_tol), iter = $(solve_stats.iter)/$(total_iterMax)); " *
+            "the adjoint requires a converged forward state. Raise `iterMax`/" *
+            "`total_iterMax`, loosen `ϵ_tol`, or reduce the viscosity contrast."
+    )
 
     # ---------------------------------------------------------------------------
     # Visualisation helper — per-element average of nodal fields on the P triangles
