@@ -157,7 +157,9 @@ the outer pressure iteration continues until `adjoint_tol` or
 the complete adjoint. With `measure_λmax = true`, power iteration measures the
 largest eigenvalue of the Jacobi-preconditioned velocity block instead of using
 its looser Gershgorin bound. The returned statistics report both values and the
-number of power iterations.
+number of power iterations. Set `measure_λmax = false` to use the Gershgorin
+estimate directly; the Enzyme fallback also uses that estimate because it has no
+cheap frozen operator application for power iteration.
 
 `λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint

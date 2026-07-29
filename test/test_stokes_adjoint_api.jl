@@ -100,6 +100,8 @@ end
         verbose = false, verbose_inner = false)
     @test adj.converged
     @test any(!iszero, λvy)          # nontrivial adjoint field
+    @test adj.λmax_iterations > 0
+    @test adj.λmax < adj.λmax_gershgorin
 
     # Nonzero input fields are a warm start, not reset by the solver.
     λ_before = (copy(λvx), copy(λvy), copy(λP))
@@ -108,9 +110,10 @@ end
         phases, phases, τ_old, nothing, G, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
         vx_nodes, vy_nodes, adjoint_tol = 1.0e-9,
-        verbose = false, verbose_inner = false)
+        measure_λmax = false, verbose = false, verbose_inner = false)
     @test warm.converged
     @test warm.iter == 0
+    @test warm.λmax_iterations == 0
     @test (λvx, λvy, λP) == λ_before
 
     # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
