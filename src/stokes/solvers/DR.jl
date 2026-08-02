@@ -510,7 +510,7 @@ function solve_stokes_3d!(
     velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
     η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
     maxiter = 3000, ncheck = 100, tolerance = 1e-5,
-    velocity_step = 0.6, pressure_step = 0.2, workgroup = 256,
+    velocity_step = 0.6, pressure_step = 0.2, load = nothing, workgroup = 256,
 )
     residual_v = ntuple(i -> similar(velocity[i]), 3)
     residual_p = similar(pressure)
@@ -530,6 +530,11 @@ function solve_stokes_3d!(
         assemble_stokes_momentum_residual_3d!(
             residual_v, velocity, pressure, mesh, cell_phase, η, ρ, g; workgroup,
         )
+        if load !== nothing
+            for component in 1:3
+                @. residual_v[component] -= load[component]
+            end
+        end
         for component in 1:3
             @. velocity[component] -= velocity_step * residual_v[component] / diagonal[component]
             apply_dirichlet!(velocity[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
@@ -545,4 +550,24 @@ function solve_stokes_3d!(
         end
     end
     return (; iterations, converged, err_v, err_p)
+end
+
+"""
+    solve_stokes_adjoint_3d!(velocity, pressure, objective_load, mesh,
+                             cell_phase, η, fixed_nodes; kwargs...)
+
+Solve the transpose of the linear viscous 3-D Stokes operator. The operator is
+symmetric, so this reuses [`solve_stokes_3d!`](@ref) with `objective_load` as
+the momentum right-hand side.
+"""
+function solve_stokes_adjoint_3d!(
+    velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
+    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3}; kwargs...,
+)
+    zero_phase = map(zero, η)
+    zero_g = ntuple(_ -> zero(first(η)), 3)
+    return solve_stokes_3d!(
+        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
+        load = objective_load, kwargs...,
+    )
 end

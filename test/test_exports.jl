@@ -34,6 +34,8 @@ import FEMTools
         :StokesMaterial,
         :solver!,
         :solve_stokes_dyrel!,
+        :solve_stokes_3d!,
+        :solve_stokes_adjoint_3d!,
         :solve_stokes_adjoint_dyrel!,
         :LithostaticPressureDR,
         :AbstractElement,

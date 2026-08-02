@@ -35,6 +35,22 @@ include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinki
     @test norm(vec(stack(iterative_velocity; dims = 1)) - vec(forward.velocity)) < 2e-4
 
     adjoint = solve_sinking_block_adjoint_3d(forward)
+    block_nodes = unique(vec(Array(forward.mesh.el2n)[:, forward.cell_phase .== 2]))
+    objective_load = ntuple(i -> begin
+        load = zeros(forward.mesh.nnodes)
+        i == 2 && (load[block_nodes] .= 1 / length(block_nodes))
+        load
+    end, 3)
+    iterative_adjoint = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
+    iterative_adjoint_pressure = zeros(4, forward.mesh.nels)
+    adjoint_stats = solve_stokes_adjoint_3d!(
+        iterative_adjoint, iterative_adjoint_pressure, objective_load,
+        forward.mesh, forward.cell_phase, forward.η, fixed_nodes,
+        maxiter = 5000,
+    )
+    exact_adjoint_velocity = reshape(@view(adjoint.adjoint[1:(3forward.mesh.nnodes)]), 3, :)
+    @test adjoint_stats.converged
+    @test norm(vec(stack(iterative_adjoint; dims = 1)) - vec(exact_adjoint_velocity)) < 2e-4
     @test adjoint.density_relative_error < 1e-6
     @test adjoint.viscosity_relative_error < 1e-6
 end
