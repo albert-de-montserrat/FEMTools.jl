@@ -860,6 +860,41 @@ end
     end
 end
 
+function stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup = 256)
+    diagonal = ntuple(_ -> similar(mesh.coords, eltype(first(mesh.coords)), mesh.nnodes), 3)
+    pressure_mass = similar(first(diagonal), 4, mesh.nels)
+    foreach(x -> fill!(x, 0), diagonal)
+    fill!(pressure_mass, 0)
+    ip = mesh.element.integration_points
+    modes = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    backend = KA.get_backend(first(diagonal))
+    stokes_preconditioner_3d_kernel!(backend, workgroup)(
+        diagonal, pressure_mass, mesh.el2n, mesh.geometry, cell_phase, η, modes;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return diagonal, pressure_mass
+end
+
+@kernel function stokes_preconditioner_3d_kernel!(
+    diagonal, pressure_mass, @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(modes),
+)
+    cell = @index(Global)
+    phase = Int(cell_phase[cell])
+    for q in eachindex(geometry[cell])
+        gradient, dΩ = geometry[cell][q]
+        for a in 1:27, component in 1:3
+            value = η[phase] * (dot(gradient[a, :], gradient[a, :]) +
+                    gradient[a, component]^2 / 3) * dΩ
+            Atomix.@atomic :monotonic diagonal[component][el2n[a, cell]] += value
+        end
+        for mode in 1:4
+            pressure_mass[mode, cell] += modes[q][mode]^2 * dΩ
+        end
+    end
+end
+
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
     _gather_local(arr, nodes, Val(N))

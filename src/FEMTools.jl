@@ -138,6 +138,7 @@ export StokesMaterial, StokesDR, DruckerPrager,
     pressure_mass,
     rotate_stress!,
     solve_stokes_dyrel!,
+    solve_stokes_3d!,
     solve_stokes_adjoint_dyrel!,
     update_stokes_current_stress!
 
