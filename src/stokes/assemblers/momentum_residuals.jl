@@ -224,6 +224,56 @@ end
 end
 
 """
+    integrate_momentum_residual(v::NTuple{3}, P_loc, Pnum_loc, T_loc,
+                                geo_v_el, phase_loc, η, G, α, ρ0, K,
+                                g, Tref, Δt, Nq, NqP)
+
+Integrate the purely viscous 3-D momentum residual, including pressure and
+gravity. This is the element operator used by the Hex27/Q2--P1 solver path.
+"""
+@inline function integrate_momentum_residual(
+    v::NTuple{3, <:SVector{N}},
+    P_loc::SVector{NP},
+    Pnum_loc::Union{SVector{NP}, Nothing},
+    T_loc::SVector{NP},
+    geo_v_el,
+    phase_loc, η, G, α, ρ0, K,
+    g::NTuple{3},
+    Tref::Real,
+    Δt,
+    Nq,
+    NqP,
+) where {N, NP}
+    T = promote_type(map(eltype, v)...)
+    R = ntuple(_ -> zero(SVector{N, T}), 3)
+    β = map(inv, K)
+    for q in eachindex(geo_v_el)
+        ∂N∂x, dΩ = geo_v_el[q]
+        Nv = Nq[q]
+        ∇v = ntuple(i -> ∂N∂x' * v[i], 3)
+        div_v = ∇v[1][1] + ∇v[2][2] + ∇v[3][3]
+        ηq = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
+        τxx = 2ηq * (∇v[1][1] - div_v / 3)
+        τyy = 2ηq * (∇v[2][2] - div_v / 3)
+        τzz = 2ηq * (∇v[3][3] - div_v / 3)
+        τxy = ηq * (∇v[1][2] + ∇v[2][1])
+        τxz = ηq * (∇v[1][3] + ∇v[3][1])
+        τyz = ηq * (∇v[2][3] + ∇v[3][2])
+        τ = SMatrix{3, 3, T}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
+        Pq = dot(NqP[q], P_loc)
+        Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
+        Tq = dot(NqP[q], T_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) *
+             (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
+              interp2ip_phase(Nv, β, phase_loc) * Pq)
+        R = ntuple(i -> R[i] +
+            (∂N∂x * (τ[:, i] - SVector{3, T}(ntuple(j -> i == j ? Ptotal : zero(Ptotal), 3))) -
+             Nv * (ρq * g[i])) * dΩ, 3)
+    end
+    return R
+end
+
+"""
     integrate_momentum_x_residual(v, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
                                   η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP) -> Rv_x
 
@@ -760,6 +810,90 @@ end
 _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{3, <:AbstractMatrix}, iel) =
     IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
+
+"""
+    assemble_stokes_momentum_residual_3d!(R, v, P, mesh, cell_phase, η, ρ, g;
+                                          workgroup=256)
+
+Assemble the purely viscous 3-D momentum residual for continuous Hex27
+velocity and four cell-local pressure modes `(1, ξ, η, ζ)`.
+"""
+function assemble_stokes_momentum_residual_3d!(
+    R::NTuple{3}, v::NTuple{3}, P::AbstractMatrix, mesh::Mesh,
+    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
+)
+    size(P) == (4, mesh.nels) || throw(DimensionMismatch("P must be 4 × nels"))
+    all(length(r) == mesh.nnodes for r in R) || throw(DimensionMismatch("residual size must match mesh nodes"))
+    all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
+    length(cell_phase) == mesh.nels || throw(DimensionMismatch("cell_phase size must match mesh elements"))
+    Nq = shape_function_values(mesh.element)
+    ip = mesh.element.integration_points
+    NqP = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    foreach(r -> fill!(r, 0), R)
+    backend = KA.get_backend(first(R))
+    stokes_momentum_residual_3d_kernel!(backend, workgroup)(
+        R, v, P, mesh.el2n, mesh.geometry, cell_phase, η, ρ, g, Nq, NqP;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function stokes_momentum_residual_3d_kernel!(
+    R, @Const(v), @Const(P), @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(ρ), @Const(g), @Const(Nq), @Const(NqP),
+)
+    cell = @index(Global)
+    nodes = local_nodes_of(el2n, cell, Val(27))
+    velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
+    pressure = SVector{4}(ntuple(i -> P[i, cell], Val(4)))
+    phase = Int(cell_phase[cell])
+    phase_loc = SVector{27}(ntuple(_ -> phase, Val(27)))
+    residual = integrate_momentum_residual(
+        velocity, pressure, nothing, zero(pressure), geometry[cell], phase_loc,
+        η, map(x -> oftype(x, Inf), η), map(zero, η), ρ,
+        map(x -> oftype(x, Inf), η), g,
+        zero(eltype(pressure)), one(eltype(pressure)), Nq, NqP,
+    )
+    for (i, node) in enumerate(nodes), component in 1:3
+        Atomix.@atomic :monotonic R[component][node] += residual[component][i]
+    end
+end
+
+function stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup = 256)
+    diagonal = ntuple(_ -> similar(mesh.coords, eltype(first(mesh.coords)), mesh.nnodes), 3)
+    pressure_mass = similar(first(diagonal), 4, mesh.nels)
+    foreach(x -> fill!(x, 0), diagonal)
+    fill!(pressure_mass, 0)
+    ip = mesh.element.integration_points
+    modes = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    backend = KA.get_backend(first(diagonal))
+    stokes_preconditioner_3d_kernel!(backend, workgroup)(
+        diagonal, pressure_mass, mesh.el2n, mesh.geometry, cell_phase, η, modes;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return diagonal, pressure_mass
+end
+
+@kernel function stokes_preconditioner_3d_kernel!(
+    diagonal, pressure_mass, @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(modes),
+)
+    cell = @index(Global)
+    phase = Int(cell_phase[cell])
+    for q in eachindex(geometry[cell])
+        gradient, dΩ = geometry[cell][q]
+        for a in 1:27, component in 1:3
+            value = η[phase] * (dot(gradient[a, :], gradient[a, :]) +
+                    gradient[a, component]^2 / 3) * dΩ
+            Atomix.@atomic :monotonic diagonal[component][el2n[a, cell]] += value
+        end
+        for mode in 1:4
+            pressure_mass[mode, cell] += modes[q][mode]^2 * dΩ
+        end
+    end
+end
 
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N

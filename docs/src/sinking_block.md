@@ -53,6 +53,11 @@ The default problem contains 225 Hex27 cells and 2,255 velocity nodes. Its
 ``2.5\times10^{-15}``. The script writes `stokes_3D_sinking_block.vtk` with
 the three velocity components, cell-centre pressure, and material phase.
 
+[`solve_stokes_3d!`](@ref) provides the matrix-free package path for the same
+viscous Hex27/Q2--P1 discretization. It updates caller-owned velocity and
+pressure arrays with a diagonally preconditioned Uzawa iteration; the sparse
+solve remains the regression oracle.
+
 ![Orthogonal volume slices through the 3-D vertical-velocity field at the block centre. The orange wireframe marks the dense, viscous block.](assets/stokes_sinking_block_3d.png)
 
 The blue region around the block has negative vertical velocity, while the
@@ -97,7 +102,6 @@ adjoint command raises an error if either gradient check exceeds its tolerance.
 
 ## Choosing an example
 
-Use the 2-D pair for the package's iterative, backend-portable Stokes and
-adjoint solvers, including rheology extensions. Use the 3-D pair for the
-minimal Gmsh Q2/P1 formulation and an exact sparse discrete-transpose
-reference. The 3-D example is currently viscous, linear, and CPU-only.
+Use the 2-D pair for rheology and the iterative adjoint. Use the 3-D pair for
+the viscous matrix-free forward solver and exact sparse forward/transpose
+references.

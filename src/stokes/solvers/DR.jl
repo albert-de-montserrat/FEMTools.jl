@@ -496,3 +496,53 @@ function update_stokes_current_stress!(
     )
     return τ
 end
+
+"""
+    solve_stokes_3d!(velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+                     maxiter=3000, ncheck=100, tolerance=1e-5,
+                     velocity_step=0.6, pressure_step=0.2)
+
+Solve the viscous Hex27/Q2--P1 Stokes system with an in-place preconditioned
+Uzawa iteration. `fixed_nodes` contains constrained nodes for each velocity
+component. The solution remains in `velocity` and `pressure`.
+"""
+function solve_stokes_3d!(
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
+    η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
+    maxiter = 3000, ncheck = 100, tolerance = 1e-5,
+    velocity_step = 0.6, pressure_step = 0.2, workgroup = 256,
+)
+    residual_v = ntuple(i -> similar(velocity[i]), 3)
+    residual_p = similar(pressure)
+    diagonal, pressure_mass = stokes_preconditioner_3d(mesh, cell_phase, η; workgroup)
+    backend = KA.get_backend(first(velocity))
+    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
+    err_v = err_p = Inf
+    converged = false
+    iterations = 0
+    for iter in 1:maxiter
+        iterations = iter
+        assemble_stokes_pressure_residual_3d!(residual_p, velocity, mesh; workgroup)
+        @. pressure += pressure_step * residual_p / pressure_mass
+        pmean = sum(@view(pressure[1, :]) .* @view(pressure_mass[1, :])) /
+                sum(@view pressure_mass[1, :])
+        @views pressure[1, :] .-= pmean
+        assemble_stokes_momentum_residual_3d!(
+            residual_v, velocity, pressure, mesh, cell_phase, η, ρ, g; workgroup,
+        )
+        for component in 1:3
+            @. velocity[component] -= velocity_step * residual_v[component] / diagonal[component]
+            apply_dirichlet!(velocity[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
+        end
+        if iszero(iter % ncheck) || iter == maxiter
+            for component in 1:3
+                apply_dirichlet!(residual_v[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
+            end
+            err_v = maximum(norm, residual_v)
+            err_p = norm(residual_p)
+            converged = max(err_v, err_p) < tolerance
+            converged && break
+        end
+    end
+    return (; iterations, converged, err_v, err_p)
+end

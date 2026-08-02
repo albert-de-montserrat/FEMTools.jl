@@ -148,6 +148,7 @@ headless accelerator runs.
 
 ```@docs
 solve_stokes_dyrel!
+solve_stokes_3d!
 solve_stokes_adjoint_dyrel!
 FEMTools.FrozenAdjointOperator
 update_stokes_current_stress!
