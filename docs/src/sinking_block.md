@@ -53,7 +53,7 @@ The default problem contains 225 Hex27 cells and 2,255 velocity nodes. Its
 ``2.5\times10^{-15}``. The script writes `stokes_3D_sinking_block.vtk` with
 the three velocity components, cell-centre pressure, and material phase.
 
-![Cutaway of the 3-D sinking-block solution. Velocity nodes are coloured by vertical velocity; orange nodes mark the dense, viscous block.](assets/stokes_sinking_block_3d.png)
+![Orthogonal volume slices through the 3-D vertical-velocity field at the block centre. The orange wireframe marks the dense, viscous block.](assets/stokes_sinking_block_3d.png)
 
 The blue region around the block has negative vertical velocity, while the
 wall-normal velocity is exactly zero on every boundary face.
