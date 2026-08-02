@@ -224,6 +224,56 @@ end
 end
 
 """
+    integrate_momentum_residual(v::NTuple{3}, P_loc, Pnum_loc, T_loc,
+                                geo_v_el, phase_loc, η, G, α, ρ0, K,
+                                g, Tref, Δt, Nq, NqP)
+
+Integrate the purely viscous 3-D momentum residual, including pressure and
+gravity. This is the element operator used by the Hex27/Q2--P1 solver path.
+"""
+@inline function integrate_momentum_residual(
+    v::NTuple{3, <:SVector{N}},
+    P_loc::SVector{NP},
+    Pnum_loc::Union{SVector{NP}, Nothing},
+    T_loc::SVector{NP},
+    geo_v_el,
+    phase_loc, η, G, α, ρ0, K,
+    g::NTuple{3},
+    Tref::Real,
+    Δt,
+    Nq,
+    NqP,
+) where {N, NP}
+    T = promote_type(map(eltype, v)...)
+    R = ntuple(_ -> zero(SVector{N, T}), 3)
+    β = map(inv, K)
+    for q in eachindex(geo_v_el)
+        ∂N∂x, dΩ = geo_v_el[q]
+        Nv = Nq[q]
+        ∇v = ntuple(i -> ∂N∂x' * v[i], 3)
+        div_v = ∇v[1][1] + ∇v[2][2] + ∇v[3][3]
+        ηq = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
+        τxx = 2ηq * (∇v[1][1] - div_v / 3)
+        τyy = 2ηq * (∇v[2][2] - div_v / 3)
+        τzz = 2ηq * (∇v[3][3] - div_v / 3)
+        τxy = ηq * (∇v[1][2] + ∇v[2][1])
+        τxz = ηq * (∇v[1][3] + ∇v[3][1])
+        τyz = ηq * (∇v[2][3] + ∇v[3][2])
+        τ = SMatrix{3, 3, T}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
+        Pq = dot(NqP[q], P_loc)
+        Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
+        Tq = dot(NqP[q], T_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) *
+             (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
+              interp2ip_phase(Nv, β, phase_loc) * Pq)
+        R = ntuple(i -> R[i] +
+            (∂N∂x * (τ[:, i] - SVector{3, T}(ntuple(j -> i == j ? Ptotal : zero(Ptotal), 3))) -
+             Nv * (ρq * g[i])) * dΩ, 3)
+    end
+    return R
+end
+
+"""
     integrate_momentum_x_residual(v, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
                                   η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP) -> Rv_x
 

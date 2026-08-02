@@ -136,6 +136,38 @@ end
     end
 end
 
+@testset "3D viscous momentum element" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    Nv = SA[1.0]
+    v = (SA[1.0], SA[2.0], SA[3.0])
+    P = SA[5.0]
+    Pnum = SA[0.5]
+    T = SA[0.0]
+    g = (0.0, -2.0, 0.0)
+    R = FEMTools.integrate_momentum_residual(
+        v, P, Pnum, T, ((dNdx, 2.0),), SA[1],
+        (4.0,), (Inf,), (0.0,), (3.0,), (Inf,), g, 0.0, 1.0,
+        (Nv,), (Nv,),
+    )
+
+    grad_v = @SMatrix [0.2 0.3 0.4; 0.4 0.6 0.8; 0.6 0.9 1.2]
+    strain = (grad_v + grad_v') / 2
+    stress = 8 .* (strain - tr(strain) / 3 .* I)
+    expected = ntuple(i -> SA[dot(dNdx[1, :], stress[:, i]) - dNdx[1, i] * 5.5 - 3g[i]] .* 2, 3)
+    @test all(isapprox.(R, expected))
+end
+
+@testset "3D pressure element divergence" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    v = (SA[1.0], SA[2.0], SA[3.0])
+    residual = FEMTools.integrate_PH_pressure_residual(
+        v, SA[0.0], SA[0.0], SA[0.0], SA[0.0],
+        ((dNdx, 2.0),), ((dNdx, 2.0),), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],),
+    )
+    @test residual ≈ SA[-4.0]
+end
+
 @testset "DruckerPrager constructor precomputes phase parameters" begin
     for FP in (FP32, FP64)
         ϕ     = NTuple{2, FP}((π / 6, π / 4))

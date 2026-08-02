@@ -29,7 +29,7 @@ end
 
 Integrate the element pressure residual for a P–H (pressure–heat) coupled Stokes formulation.
 
-`v` is an `NTuple{2}` of element velocity vectors `(vxloc, vyloc)`. `P_loc`
+`v` contains one element velocity vector per spatial dimension. `P_loc`
 and `P0loc` are the current and previous pressure values at the `N` pressure
 nodes. `Tloc` and `T0loc` are the corresponding temperatures. `α` and `ηb`
 are per-phase thermal expansion and bulk viscosity `NTuple`s; `Δt` is the time
@@ -46,7 +46,7 @@ evaluated at velocity integration points rather than pressure points. Pressure
 and temperature rates are interpolated from their nodal increments before the
 material factors are applied.
 """
-@inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
+@inline function integrate_PH_pressure_residual(v::NTuple{D, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where {D, N}
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
