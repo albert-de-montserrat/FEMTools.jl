@@ -1,6 +1,18 @@
 include("sinking_block_3D.jl")
 
-"""Solve the discrete adjoint for block-density and viscosity sensitivities."""
+"""
+    solve_sinking_block_adjoint_3d([forward]; fd_step=1e-5)
+
+Solve the exact discrete transpose of a result from
+[`run_sinking_block_3d`](@ref) for the objective `J = mean(vy)` over velocity
+nodes belonging to the dense block. If `forward` is omitted, run the default
+forward problem without writing VTK output.
+
+Returns the forward result, adjoint vector, objective, density and viscosity
+gradients, centred finite-difference gradients, and relative differences.
+`fd_step` is the absolute density perturbation and the relative viscosity
+perturbation (`fd_step * η[2]`).
+"""
 function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false);
     fd_step = 1e-5,
 )

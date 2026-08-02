@@ -56,7 +56,9 @@ the three velocity components, cell-centre pressure, and material phase.
 ![Orthogonal volume slices through the 3-D vertical-velocity field at the block centre. The orange wireframe marks the dense, viscous block.](assets/stokes_sinking_block_3d.png)
 
 The blue region around the block has negative vertical velocity, while the
-wall-normal velocity is exactly zero on every boundary face.
+wall-normal velocity is exactly zero on every boundary face. For this figure,
+the unstructured nodal field is sampled to a regular ``51^3`` visualization
+grid and sliced through the block centre.
 
 ### Discrete adjoint
 
@@ -90,7 +92,8 @@ julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 
 With the default mesh, the relative differences are approximately
 ``4.4\times10^{-11}`` for block density and ``6.9\times10^{-7}`` for block
-viscosity. The command raises an error if either check exceeds its tolerance.
+viscosity. The forward command checks its free-degree-of-freedom residual; the
+adjoint command raises an error if either gradient check exceeds its tolerance.
 
 ## Choosing an example
 

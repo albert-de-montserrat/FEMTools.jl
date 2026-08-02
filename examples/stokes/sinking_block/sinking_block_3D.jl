@@ -10,7 +10,22 @@ using StaticArrays
 
 include("mesher.jl")
 
-"""Assemble and solve one viscous 3-D Q2/P1-disc sinking-block problem."""
+"""
+    run_sinking_block_3d(; mesh_size=0.2, nz=5, half_width=0.15,
+                         η=(1.0,100.0), ρ=(1.0,2.0),
+                         g=(0.0,-1.0,0.0), write_output=true)
+
+Assemble and solve the viscous 3-D sinking-block problem on a Gmsh Hex27 mesh.
+Velocity uses continuous Q2 functions and pressure four cell-local P1 modes.
+The two entries of `η` and `ρ` describe the matrix and centred block;
+`half_width` is the block half-width in every coordinate direction. Free-slip
+conditions constrain the normal velocity on all six walls.
+
+Returns the mesh, saddle-point matrix `A`, phase-2 viscosity derivative
+`dA_dη₂`, right-hand side and solution, reshaped velocity and pressure,
+cell phases, free indices, and material inputs. With `write_output=true`, also
+writes `stokes_3D_sinking_block.vtk` beside this script.
+"""
 function run_sinking_block_3d(;
     mesh_size = 0.2, nz = 5, half_width = 0.15,
     η = (1.0, 100.0), ρ = (1.0, 2.0), g = (0.0, -1.0, 0.0),
@@ -86,4 +101,9 @@ function run_sinking_block_3d(;
     return (; mesh, A, dA_dη₂, rhs, solution, velocity, pressure, cell_phase, free, η, ρ, g)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && run_sinking_block_3d()
+if abspath(PROGRAM_FILE) == abspath(@__FILE__)
+    result = run_sinking_block_3d()
+    residual = norm((result.A * result.solution - result.rhs)[result.free])
+    residual < 1e-10 || error("forward residual check failed: $residual")
+    @info "3D sinking-block forward solve" result.mesh.nnodes result.mesh.nels residual
+end

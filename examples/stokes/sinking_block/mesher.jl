@@ -89,7 +89,13 @@ end
     build_gmsh_hex27_mesh(; Lx=1, Ly=1, Lz=1, mesh_size=0.15, nz=6)
 
 Generate a recombined, vertically extruded Gmsh mesh and return it in
-FEMTools' Hex27 ordering.
+FEMTools' Hex27 ordering. `mesh_size` controls the in-plane target edge length
+and `nz` the number of extrusion layers. The domain is
+`[0,Lx] × [-Ly,0] × [0,Lz]`.
+
+Returns `(coords, el2n, boundary_nodes)`: three-dimensional coordinates,
+`27 × nels` element connectivity, and the sorted velocity-node indices on
+the six exterior faces. Mixed Gmsh volume-element output is rejected.
 """
 function build_gmsh_hex27_mesh(; Lx = 1.0, Ly = 1.0, Lz = 1.0, mesh_size = 0.15, nz = 6)
     gmsh.initialize()
