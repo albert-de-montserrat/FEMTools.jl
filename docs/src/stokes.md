@@ -121,7 +121,14 @@ viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
+julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
+julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 ```
+
+The 3-D pair uses a Gmsh Hex27 velocity mesh with four cell-local P1 pressure
+modes. Its sparse forward matrix is reused directly by the discrete adjoint,
+which checks the block-density and block-viscosity sensitivities against
+centered finite differences.
 
 The adjoint sinking-block example accepts an explicit backend. It builds the
 Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,

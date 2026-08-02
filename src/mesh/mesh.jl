@@ -223,6 +223,13 @@ _boundary_face_paths_3d(::Val{4}) =
 _boundary_face_paths_3d(::Val{8}) =
     ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
      (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
+_boundary_face_paths_3d(::Val{27}) =
+    ((1, 2, 3, 4, 9, 10, 11, 12, 21),
+     (5, 6, 7, 8, 13, 14, 15, 16, 26),
+     (1, 2, 6, 5, 9, 18, 13, 17, 22),
+     (4, 3, 7, 8, 11, 19, 15, 20, 24),
+     (1, 4, 8, 5, 12, 20, 16, 17, 25),
+     (2, 3, 7, 6, 10, 19, 14, 18, 23))
 _boundary_face_paths_3d(::Val{N}) where N =
     throw(ArgumentError("cannot infer 3D boundary face paths for elements with $N local nodes"))
 
@@ -233,9 +240,9 @@ Return sorted unique node indices that lie on the mesh boundary, as a vector
 with the same integer eltype as `el2n`.
 
 For 2-D meshes, a boundary edge is an edge whose corner endpoints appear in
-exactly one element. For 3-D meshes, a boundary face is a face whose corner
-nodes appear in exactly one element. Supported unstructured arities are T3,
-Q4, T6/T7, Q8/Q9, Tet4, and Hex8.
+exactly one element. For 3-D meshes, a boundary face is a face whose nodes
+appear in exactly one element. Supported unstructured arities are T3, Q4,
+T6/T7, Q8/Q9, Tet4, Hex8, and Hex27.
 """
 _unstructured_boundary_nodes(el2n::AbstractMatrix) = _unstructured_boundary_nodes(el2n, Val(2))
 

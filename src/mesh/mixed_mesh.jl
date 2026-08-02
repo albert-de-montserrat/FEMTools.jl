@@ -96,6 +96,11 @@ function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::A
     return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
+# Stokes examples select 3-D boundary faces by coordinate, so normals are not
+# needed there yet. Keep the mesh representation dimensionally consistent.
+_compute_node_normals(coords::AbstractVector{<:SVector{3, FP}}, el2n::AbstractMatrix{<:Integer}) where FP =
+    fill(zero(SVector{3, FP}), length(coords))
+
 
 function MixedMesh(
     element::ReferenceElement,
@@ -208,19 +213,19 @@ MixedMeshCache(geo_v, geo_P) = MixedMeshCache(geo_v, geo_P, nothing, nothing)
 function MixedMeshCache(
     backend,
     workgroup,
-    mesh::MixedMesh{2},
+    mesh::MixedMesh{nDim},
     element_v::ReferenceElement{TV},
     element_P::ReferenceElement{TP},
-) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+) where {nDim, NV, NP, FP, TV <: AbstractElement{nDim, NV, FP}, TP <: AbstractElement{nDim, NP, FP}}
     ip_v = element_v.integration_points
     NQ_v = length(ip_v.ω)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
+    ξq_v    = ntuple(q -> _integration_coordinates(ip_v, q), NQ_v)
     ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
     ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
-    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}
-    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}
+    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, nDim, FP, nDim * NV}, FP}}
+    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, nDim, FP, nDim * NP}, FP}}
     geo_v = KA.allocate(backend, GeoV, mesh.nels)
     geo_P = KA.allocate(backend, GeoP, mesh.nels)
 
@@ -249,7 +254,7 @@ end
 """
     generate_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
-Build the linear triangle topology and element-to-DoF map for discontinuous
+Build the linear corner topology and element-to-DoF map for discontinuous
 linear pressure elements.
 
 `el2n` may be either T3 or T6 triangle connectivity. The returned `p_el2n`
@@ -262,16 +267,18 @@ corner coordinates per element so a discontinuous nodal pressure field can be
 plotted or initialized directly on pressure DoFs.
 """
 function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
-    size(el2n, 1) >= 3 || throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+    nlocal = size(el2n, 1)
+    ncorners = nlocal in (3, 6, 7) ? 3 : nlocal in (8, 27) ? 8 :
+        throw(ArgumentError("unsupported velocity connectivity with $nlocal local nodes"))
 
     nels      = size(el2n, 2)
-    p_el2n    = Matrix{Int32}(el2n[1:3, :])
-    p_el2dof  = Matrix{Int32}(undef, 3, nels)
-    p_dof_coords = Vector{eltype(coords)}(undef, 3 * nels)
+    p_el2n    = Matrix{Int32}(el2n[1:ncorners, :])
+    p_el2dof  = Matrix{Int32}(undef, ncorners, nels)
+    p_dof_coords = Vector{eltype(coords)}(undef, ncorners * nels)
 
     for iel in 1:nels
-        base = 3 * (iel - 1)
-        for a in 1:3
+        base = ncorners * (iel - 1)
+        for a in 1:ncorners
             dof = base + a
             p_el2dof[a, iel] = Int32(dof)
             p_dof_coords[dof] = coords[p_el2n[a, iel]]
