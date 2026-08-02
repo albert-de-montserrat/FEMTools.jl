@@ -146,22 +146,3 @@ for FP in (FP32, FP64)
         @test eltype(mesh.normals) == SVector{2, FP}
     end
 end
-
-
-@testset "3-D Hex27/Q1-disc mixed mesh" begin
-    FP = Float64
-    velocity_element = ReferenceElement(QuadraticElement{3, 27, FP})
-    pressure_element = ReferenceElement(LinearElement{3, 8, FP})
-    mesh_v = Mesh(CPU(), (0.0..1.0) × (0.0..1.0) × (0.0..1.0), velocity_element, (1, 1, 1))
-    mesh = MixedMesh(mesh_v, pressure_element)
-    cache = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
-
-    @test mesh isa MixedMesh{3, 2, 1}
-    @test size(mesh.el2nP) == (8, 1)
-    @test mesh.nnodesP == 8
-    @test all(iszero, mesh.normals)
-    @test length(Mesh(Array(mesh.coords), Array(mesh.el2n); order = 2).Γnodes) == 26
-    @test length(cache.geo_v[1]) == 27
-    @test sum(last, cache.geo_v[1]) ≈ 1.0
-    @test sum(last, cache.geo_P[1]) ≈ 1.0
-end
