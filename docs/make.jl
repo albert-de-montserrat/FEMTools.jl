@@ -20,7 +20,10 @@ makedocs(;
         "Boundary Conditions" => "boundary_conditions.md",
         "Heat Diffusion" => "heat_diffusion.md",
         "Lithostatic Pressure" => "lithostatic_pressure.md",
-        "Stokes" => "stokes.md",
+        "Stokes" => [
+            "Overview" => "stokes.md",
+            "Sinking block" => "sinking_block.md",
+        ],
         "API" => "api.md",
     ],
 )
