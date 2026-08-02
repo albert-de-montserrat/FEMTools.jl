@@ -327,3 +327,36 @@ function solve_stokes_adjoint_dyrel!(
         history,
     )
 end
+
+"""
+    stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
+                                cell_phase, η, ρ, g; phase=2)
+
+Contract the matrix-free 3-D adjoint with the density load derivative and
+viscous operator derivative for one material phase.
+"""
+function stokes_material_gradient_3d(
+    forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
+    cell_phase, η, ρ, g::NTuple{3}; phase = 2, workgroup = 256,
+)
+    1 ≤ phase ≤ length(η) == length(ρ) || throw(ArgumentError("invalid material phase"))
+    pressure = similar(first(forward_velocity), 4, mesh.nels)
+    fill!(pressure, 0)
+    residual = ntuple(i -> similar(forward_velocity[i]), 3)
+    zero_velocity = ntuple(i -> fill!(similar(forward_velocity[i]), 0), 3)
+    zero_phase = map(zero, η)
+
+    density = ntuple(i -> i == phase ? one(ρ[i]) : zero(ρ[i]), length(ρ))
+    assemble_stokes_momentum_residual_3d!(
+        residual, zero_velocity, pressure, mesh, cell_phase, η, density, g; workgroup,
+    )
+    density_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+
+    viscosity = ntuple(i -> i == phase ? one(η[i]) : zero(η[i]), length(η))
+    assemble_stokes_momentum_residual_3d!(
+        residual, forward_velocity, pressure, mesh, cell_phase, viscosity,
+        zero_phase, ntuple(_ -> zero(first(g)), 3); workgroup,
+    )
+    viscosity_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    return (; density_gradient, viscosity_gradient)
+end

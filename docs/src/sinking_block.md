@@ -58,6 +58,10 @@ viscous Hex27/Q2--P1 discretization. It updates caller-owned velocity and
 pressure arrays with a diagonally preconditioned Uzawa iteration; the sparse
 solve remains the regression oracle.
 
+[`solve_stokes_adjoint_3d!`](@ref) reuses this symmetric operator, and
+[`stokes_material_gradient_3d`](@ref) contracts its fields for phase density
+and viscosity sensitivities.
+
 ![Orthogonal volume slices through the 3-D vertical-velocity field at the block centre. The orange wireframe marks the dense, viscous block.](assets/stokes_sinking_block_3d.png)
 
 The blue region around the block has negative vertical velocity, while the

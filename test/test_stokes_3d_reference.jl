@@ -51,6 +51,12 @@ include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinki
     exact_adjoint_velocity = reshape(@view(adjoint.adjoint[1:(3forward.mesh.nnodes)]), 3, :)
     @test adjoint_stats.converged
     @test norm(vec(stack(iterative_adjoint; dims = 1)) - vec(exact_adjoint_velocity)) < 2e-4
+    gradients = stokes_material_gradient_3d(
+        iterative_velocity, iterative_adjoint, forward.mesh, forward.cell_phase,
+        forward.η, forward.ρ, forward.g,
+    )
+    @test gradients.density_gradient ≈ adjoint.density_gradient rtol = 2e-3
+    @test gradients.viscosity_gradient ≈ adjoint.viscosity_gradient rtol = 2e-3
     @test adjoint.density_relative_error < 1e-6
     @test adjoint.viscosity_relative_error < 1e-6
 end
