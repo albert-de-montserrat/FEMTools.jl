@@ -46,7 +46,7 @@ evaluated at velocity integration points rather than pressure points. Pressure
 and temperature rates are interpolated from their nodal increments before the
 material factors are applied.
 """
-@inline function integrate_PH_pressure_residual(v::NTuple{D, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where {D, N}
+@inline function integrate_PH_pressure_residual(v::Tuple{SVector{M}, Vararg{SVector{M}, D}}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where {D, M, N}
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
@@ -187,4 +187,40 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
         geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NqP,
     )
     return local_nodes_P, Re
+end
+
+"""
+    assemble_stokes_pressure_residual_3d!(RP, v, mesh; workgroup=256)
+
+Assemble `-∇·v` against the four cell-local modes `(1, ξ, η, ζ)`.
+"""
+function assemble_stokes_pressure_residual_3d!(
+    RP::AbstractMatrix, v::NTuple{3}, mesh::Mesh; workgroup = 256,
+)
+    size(RP) == (4, mesh.nels) || throw(DimensionMismatch("RP must be 4 × nels"))
+    all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
+    ip = mesh.element.integration_points
+    NqP = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    backend = KA.get_backend(RP)
+    stokes_pressure_residual_3d_kernel!(backend, workgroup)(
+        RP, v, mesh.el2n, mesh.geometry, NqP; ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function stokes_pressure_residual_3d_kernel!(
+    RP, @Const(v), @Const(el2n), @Const(geometry), @Const(NqP),
+)
+    cell = @index(Global)
+    nodes = local_nodes_of(el2n, cell, Val(27))
+    velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
+    residual = zero(SVector{4, eltype(RP)})
+    for q in eachindex(geometry[cell])
+        gradient, dΩ = geometry[cell][q]
+        residual -= NqP[q] * (compute_velocity_divergence(velocity, gradient) * dΩ)
+    end
+    for i in 1:4
+        RP[i, cell] = residual[i]
+    end
 end

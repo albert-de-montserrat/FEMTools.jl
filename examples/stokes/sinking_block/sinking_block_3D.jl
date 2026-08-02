@@ -57,7 +57,8 @@ function run_sinking_block_3d(;
                 ia = vdof(nodes[a], i)
                 rhs[ia] += N[a] * ρ[phase] * g[i] * dΩ
                 for b in 1:27, j in 1:3
-                    dkab = ((i == j) * dot(grad[a, :], grad[b, :]) + grad[a, j] * grad[b, i]) * dΩ
+                    dkab = ((i == j) * dot(grad[a, :], grad[b, :]) + grad[a, j] * grad[b, i] -
+                            (2 / 3) * grad[a, i] * grad[b, j]) * dΩ
                     kab = η[phase] * dkab
                     iszero(kab) || (push!(rows, ia); push!(cols, vdof(nodes[b], j)); push!(vals, kab))
                     phase == 2 && !iszero(dkab) &&

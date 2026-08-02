@@ -811,6 +811,55 @@ _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{3, <:AbstractMatrix}, iel) =
     IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
 
+"""
+    assemble_stokes_momentum_residual_3d!(R, v, P, mesh, cell_phase, η, ρ, g;
+                                          workgroup=256)
+
+Assemble the purely viscous 3-D momentum residual for continuous Hex27
+velocity and four cell-local pressure modes `(1, ξ, η, ζ)`.
+"""
+function assemble_stokes_momentum_residual_3d!(
+    R::NTuple{3}, v::NTuple{3}, P::AbstractMatrix, mesh::Mesh,
+    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
+)
+    size(P) == (4, mesh.nels) || throw(DimensionMismatch("P must be 4 × nels"))
+    all(length(r) == mesh.nnodes for r in R) || throw(DimensionMismatch("residual size must match mesh nodes"))
+    all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
+    length(cell_phase) == mesh.nels || throw(DimensionMismatch("cell_phase size must match mesh elements"))
+    Nq = shape_function_values(mesh.element)
+    ip = mesh.element.integration_points
+    NqP = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    foreach(r -> fill!(r, 0), R)
+    backend = KA.get_backend(first(R))
+    stokes_momentum_residual_3d_kernel!(backend, workgroup)(
+        R, v, P, mesh.el2n, mesh.geometry, cell_phase, η, ρ, g, Nq, NqP;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function stokes_momentum_residual_3d_kernel!(
+    R, @Const(v), @Const(P), @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(ρ), @Const(g), @Const(Nq), @Const(NqP),
+)
+    cell = @index(Global)
+    nodes = local_nodes_of(el2n, cell, Val(27))
+    velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
+    pressure = SVector{4}(ntuple(i -> P[i, cell], Val(4)))
+    phase = Int(cell_phase[cell])
+    phase_loc = SVector{27}(ntuple(_ -> phase, Val(27)))
+    residual = integrate_momentum_residual(
+        velocity, pressure, nothing, zero(pressure), geometry[cell], phase_loc,
+        η, map(x -> oftype(x, Inf), η), map(zero, η), ρ,
+        map(x -> oftype(x, Inf), η), g,
+        zero(eltype(pressure)), one(eltype(pressure)), Nq, NqP,
+    )
+    for (i, node) in enumerate(nodes), component in 1:3
+        Atomix.@atomic :monotonic R[component][node] += residual[component][i]
+    end
+end
+
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
     _gather_local(arr, nodes, Val(N))
