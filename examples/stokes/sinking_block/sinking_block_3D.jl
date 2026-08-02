@@ -1,6 +1,3 @@
-import Pkg
-Pkg.activate(joinpath(@__DIR__, "../.."))
-
 using FEMTools
 using Gmsh
 using KernelAbstractions: CPU
