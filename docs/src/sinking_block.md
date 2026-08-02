@@ -102,6 +102,5 @@ adjoint command raises an error if either gradient check exceeds its tolerance.
 
 ## Choosing an example
 
-Use the 2-D pair for rheology and the iterative adjoint. Use the 3-D pair for
-the viscous matrix-free forward solver and exact sparse forward/transpose
-references.
+Use the 2-D pair for rheology. The 3-D pair provides matrix-free viscous
+forward/adjoint solvers plus exact sparse references.
