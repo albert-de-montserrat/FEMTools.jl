@@ -15,21 +15,6 @@ const backend   = CPU()
 const workgroup = 128
 
 # ---------------------------------------------------------------------------
-# Geometry precomputation
-# ---------------------------------------------------------------------------
-
-function precompute_geometry(coords, el2n, nels, element::ReferenceElement{T}) where T <: AbstractElement{2, N} where N
-    ip    = element.integration_points
-    NQ    = length(ip.ω)
-    ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = KernelAbstractions.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 2, Float64, 2N}, Float64}}, nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(N); ndrange = nels)
-    KernelAbstractions.synchronize(backend)
-    return geo
-end
-
-# ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------
 
@@ -119,7 +104,8 @@ function main(; max_area=1e5)
         n_circle = 64,
         max_area = max_area,
     )
-    mesh = Mesh(backend, coords_cpu, el2n_cpu)
+    element = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh = Mesh(backend, coords_cpu, el2n_cpu, element; workgroup)
     @printf("mesh: %d nodes, %d elements\n", mesh.nnodes, mesh.nels)
 
     # Dirichlet BCs --------------------------------------------------------
@@ -138,7 +124,7 @@ function main(; max_area=1e5)
         fill(T_bottom, length(bottom_nodes)),
         hole_dof_vecs...,
     ))
-    Γ_zero = zero(Γ_vals)
+    bc_T = DirichletBoundaryCondition(nothing, Γ_dofs, Γ_vals)
 
     @printf("Dirichlet: %d top, %d bottom", length(top_nodes), length(bottom_nodes))
     for (h, hn) in enumerate(hole_nodes_per_hole)
@@ -146,22 +132,14 @@ function main(; max_area=1e5)
     end
     @printf("\n")
 
-    # Element and geometry ------------------------------------------------
-    element = ReferenceElement(LinearElement{2, 3, Float64})
-    geo     = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
-
     # Material properties (single homogeneous phase) ----------------------
-    k   = (3.0,)
-    Cp  = (1200.0,)
-    ρ0  = (3300.0,)
-    α   = (3e-5,)
-    K   = (1e11,)
+    material = ThermalMaterial(; k = (3.0,), Cp = (1200.0,), ρ0 = (3300.0,), α = (3e-5,), K = (1e11,))
     Tref = 273.0
     g    = SA[0.0, -9.81]
     Δt  = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K;
+    dr = ThermalDiffusionDR(backend, mesh.nnodes, material;
                             CFL = 0.9, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
@@ -173,15 +151,14 @@ function main(; max_area=1e5)
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
-    P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
+    P0_litho = Float64[material.ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
-    Γ_P_dofs = TDev(top_nodes)
-    Γ_P_zero_vals = zero(dr.P[top_nodes])  # P = 0 at free surface
+    bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, geo, element, Γ_P_dofs, Γ_P_zero_vals, Γ_P_zero_vals, backend, workgroup; ncheck = 50, Tref = Tref, g = g)
+    @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 50, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK time-series setup -----------------------------------------------
@@ -204,7 +181,7 @@ function main(; max_area=1e5)
     P_obs  = Observable(Array(lp_dr.P))
     t_obs  = Observable(0.0)
 
-    P_max = ρ0[1] * (-g[2]) * Ly   # analytical pressure at max depth
+    P_max = material.ρ0[1] * (-g[2]) * Ly   # analytical pressure at max depth
 
     fig = Figure(size = (1300, 640))
     θ_c = range(0, 2π; length = 300)
@@ -245,7 +222,7 @@ function main(; max_area=1e5)
         @printf("─── time step %2d / %d ───\n", step, nsteps)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
-        @timeit to "solver" solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 100, Tref = Tref)
+        @timeit to "solver" solver!(dr, Δt, mesh, bc_T; workgroup, ncheck = 100, Tref = Tref)
         t_phys += Δt
 
         @timeit to "update obs" begin

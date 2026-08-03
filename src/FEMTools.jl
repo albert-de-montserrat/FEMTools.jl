@@ -69,6 +69,7 @@ include("boundary_conditions/apply.jl")
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
+include("heat_diffusion/assembly/residual_atomics.jl")
 include("heat_diffusion/assembly/residual_colored.jl")
 include("heat_diffusion/solvers/DR.jl")
 include("heat_diffusion/solvers/DR_colored.jl")
@@ -76,6 +77,8 @@ include("heat_diffusion/solvers/DR_colored.jl")
 # Lithostatic-pressure solver: types, assembly, and PT solver.
 include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
 include("lithostatic_pressure/assembly/residual.jl")
+include("lithostatic_pressure/assembly/residual_atomics.jl")
+include("lithostatic_pressure/assembly/residual_colored.jl")
 include("lithostatic_pressure/solvers/DR.jl")
 
 # Stokes solver: types and assembly.
@@ -86,6 +89,7 @@ include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/rheology.jl")
 include("stokes/assemblers/momentum_residuals.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
+include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
 include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
@@ -114,6 +118,7 @@ export generate_element2node,
     generate_boundary_elements,
     generate_coordinates,
     generate_dofs,
+    precompute_geometry,
     generate_sparsity_pattern,
     color_mesh,
     color_structured_triangles,
@@ -129,13 +134,15 @@ export eval_shape_function,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
-export ThermalDiffusionDR, solver!
+export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesDR, DruckerPrager,
+export StokesMaterial, StokesDR, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,
     solve_stokes_dyrel!,
+    solve_stokes_3d!,
+    solve_stokes_adjoint_3d!,
     solve_stokes_adjoint_dyrel!,
     update_stokes_current_stress!
 

@@ -1,4 +1,33 @@
 """
+    ThermalMaterial(; k=(1.0,), Cp=(1.0,), ρ0=(1.0,), α=(1.0,), K=(1.0,))
+
+Per-phase thermal conductivity, heat capacity, reference density, thermal
+expansivity, and bulk modulus. All properties use the same floating-point type
+and number of phases; mismatched tuple lengths throw `DimensionMismatch`.
+
+Fields use `NTuple{nphases, FP}` so phase count and precision remain available
+to the compiler. The defaults describe one unit-valued `Float64` phase.
+"""
+@kwdef struct ThermalMaterial{nphases, FP}
+    k::NTuple{nphases, FP} = (1e0,)
+    Cp::NTuple{nphases, FP} = (1e0,)
+    ρ0::NTuple{nphases, FP} = (1e0,)
+    α::NTuple{nphases, FP} = (1e0,)
+    K::NTuple{nphases, FP} = (1e0,)
+
+    function ThermalMaterial(
+        k::Tuple{FP, Vararg{FP}}, Cp::Tuple{FP, Vararg{FP}},
+        ρ0::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
+        K::Tuple{FP, Vararg{FP}},
+    ) where {FP}
+        nphases = length(k)
+        length(Cp) == length(ρ0) == length(α) == length(K) == nphases ||
+            throw(DimensionMismatch("material property tuples must have the same length"))
+        return new{nphases, FP}(k, Cp, ρ0, α, K)
+    end
+end
+
+"""
     ThermalDiffusionDR{nphases, _T, _TI, FP}
 
 Solver state for a transient multi-phase heat-diffusion problem solved with a
@@ -30,20 +59,22 @@ Dirichlet boundary conditions (DOF indices and prescribed values) are
 problem-specific and are therefore passed directly to `solver!` rather than
 stored here.
 
-# Per-phase scalar tuples (`NTuple{nphases, FP}`)
-`k` (conductivity), `Cp` (specific heat), `ρ0` (reference density),
-`α` (thermal expansivity), `K` (bulk modulus).
+# Material properties
+Properties are supplied together through [`ThermalMaterial`](@ref) and stored
+as `NTuple{nphases, FP}` fields in the solver state.
 The reference temperature `Tref` for the density EOS is passed to `solver!`.
 
 # Solver parameters
 `CFL`, `c_fact`, `ϵ` (convergence tolerance).
 
 # Constructors
-    ThermalDiffusionDR(backend, nnodes, k, Cp, ρ0, α, K; CFL=0.98, c_fact=0.9, ϵ=1e-6)
-    ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K; kwargs...)  # defaults to CPU()
+    ThermalDiffusionDR(backend, nnodes, material::ThermalMaterial; CFL=0.98, c_fact=0.9, ϵ=1e-6)
+    ThermalDiffusionDR(nnodes, material::ThermalMaterial; kwargs...)  # CPU
+
+The tuple-based constructors remain available for compatibility.
 
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
-The float type `FP` is inferred from the element type of the phase-property tuples.
+The float type `FP` and phase count are inferred from `material`.
 """
 struct ThermalDiffusionDR{nphases, _T, _TI, FP}
     # preallocated work arrays
@@ -73,14 +104,14 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP}
 
     function ThermalDiffusionDR(
         backend, nnodes,
-        k::NTuple{nphases, FP}, Cp::NTuple{nphases, FP},
-        ρ0::NTuple{nphases, FP}, α::NTuple{nphases, FP},
-        K::NTuple{nphases, FP};
+        k::Tuple{FP, Vararg{FP, N}}, Cp::Tuple{FP, Vararg{FP, N}},
+        ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
+        K::Tuple{FP, Vararg{FP, N}};
         CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
-    ) where {nphases, FP}
+    ) where {N, FP}
         newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
         newivec() = KernelAbstractions.ones(backend,  Int, nnodes)
-        new{nphases, typeof(newvec()), typeof(newivec()), FP}(
+        new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂T, PC
             newvec(), newvec(), newvec(),            # T, T0, ∂T∂τ
             newvec(), newvec(),                      # P, source
@@ -95,3 +126,8 @@ temperature(dr::ThermalDiffusionDR) = dr.T
 
 ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K; kwargs...) =
     ThermalDiffusionDR(CPU(), nnodes, k, Cp, ρ0, α, K; kwargs...)
+
+ThermalDiffusionDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
+    ThermalDiffusionDR(backend, nnodes, material.k, material.Cp, material.ρ0, material.α, material.K; kwargs...)
+ThermalDiffusionDR(nnodes, material::ThermalMaterial; kwargs...) =
+    ThermalDiffusionDR(CPU(), nnodes, material; kwargs...)

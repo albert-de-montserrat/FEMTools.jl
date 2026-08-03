@@ -1,19 +1,15 @@
 """
-    solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck = 100, iterMax = 10_000, verbose = true, Tref = 273)
+    solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
+            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
-step of size `Δt`.
+step of size `Δt` using explicitly supplied geometry, element, boundary arrays,
+backend, and workgroup size.
 
-`Γ_dofs` is an integer array of constrained DOF indices. `Γ_zero` and `Γ_vals`
-are float arrays of the same length: zero values (for zeroing the residual and
-rate at constrained nodes) and the prescribed Dirichlet values respectively.
-`backend` and `workgroup` are forwarded to all KernelAbstractions kernel
-launches. `ncheck` controls how often the spectral estimates and convergence
-criterion are recomputed (every `ncheck` PT iterations). `iterMax` is the
-maximum number of pseudo-transient iterations before a non-convergence error.
-Set `verbose = false` to suppress per-check residual output.
-`Tref` is the reference temperature used in the density equation of state.
+`ncheck` controls how often spectral
+estimates and convergence are recomputed, and `iterMax` limits the number of
+pseudo-transient iterations. Set `verbose=false` to suppress residual output.
+`Tref` is the reference temperature used by the density equation of state.
 
 The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
 the previous time step before calling. Returns `(iterations, residuals)`, where
@@ -82,6 +78,29 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
         end
     end
     error("Thermal diffusion DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
+end
+
+"""
+    solver!(dr, Δt, mesh, bc; workgroup=256, kwargs...)
+
+Solve one thermal-diffusion time step using the element and geometry stored in
+`mesh` and the prescribed values in `bc`. The backend is inferred from
+`mesh.coords`; remaining keywords are forwarded to the low-level solver.
+"""
+function solver!(
+    dr::ThermalDiffusionDR,
+    Δt,
+    mesh::Mesh,
+    bc::DirichletBoundaryCondition;
+    workgroup = 256,
+    kwargs...,
+)
+    isnothing(mesh.geometry) && throw(ArgumentError("mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
+    return solver!(
+        dr, Δt, mesh, mesh.geometry, mesh.element,
+        bc.DoFs, bc.zero_vals, bc.vals, KA.get_backend(mesh.coords), workgroup;
+        kwargs...,
+    )
 end
 
 # ---------------------------------------------------------------------------

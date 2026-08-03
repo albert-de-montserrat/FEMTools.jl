@@ -28,15 +28,18 @@ temperature and body-force vector without rebuilding the solver state.
 | `T`     | Temperature (input from thermal solver)   |
 | `phases`| Per-node phase index (1-based integer)    |
 
-# Per-phase scalar tuples (`NTuple{nphases, FP}`)
-`ρ0` (reference density), `α` (thermal expansivity), `K` (bulk modulus).
+# Material properties
+`ρ0`, `α`, and `K` are taken from [`ThermalMaterial`](@ref). This allows the
+same material definition to be shared with `ThermalDiffusionDR`.
 
 # Solver parameters
 `CFL`, `c_fact`, `ϵ` (convergence tolerance).
 
 # Constructor
-    LithostaticPressureDR(backend, nnodes, ρ0, α, K; CFL=0.98, c_fact=0.9, ϵ=1e-6)
-    LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...)  # defaults to CPU()
+    LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; CFL=0.98, c_fact=0.9, ϵ=1e-6)
+    LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...)  # CPU
+
+The tuple-based constructors remain available for compatibility.
 
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
 `T` should be filled via `copyto!(dr.T, ...)` before calling `solver!`.
@@ -65,13 +68,13 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP}
 
     function LithostaticPressureDR(
         backend, nnodes,
-        ρ0::NTuple{nphases, FP}, α::NTuple{nphases, FP},
-        K::NTuple{nphases, FP};
+        ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
+        K::Tuple{FP, Vararg{FP, N}};
         CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
-    ) where {nphases, FP}
+    ) where {N, FP}
         newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
         newivec() = KernelAbstractions.ones(backend,  Int, nnodes)
-        new{nphases, typeof(newvec()), typeof(newivec()), FP}(
+        new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂P, PC
             newvec(), newvec(),                      # P, ∂P∂τ
             newvec(),                                # T
@@ -86,3 +89,8 @@ pressure(dr::LithostaticPressureDR) = dr.P
 
 LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, ρ0, α, K; kwargs...)
+
+LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
+    LithostaticPressureDR(backend, nnodes, material.ρ0, material.α, material.K; kwargs...)
+LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...) =
+    LithostaticPressureDR(CPU(), nnodes, material; kwargs...)

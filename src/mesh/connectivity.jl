@@ -328,6 +328,15 @@ Build node-to-element adjacency from an element-to-node connectivity matrix.
 
 The result is a vector where entry `i` contains the element ids incident to
 node `i`.
+
+# Examples
+```jldoctest
+julia> generate_node2element([1 2; 2 3])
+3-element Vector{Vector{Int32}}:
+ [1]
+ [1, 2]
+ [2]
+```
 """
 function generate_node2element(el2n, n_nodes=maximum(el2n))
     n2el = [Int32[] for _ in 1:n_nodes]
@@ -366,6 +375,10 @@ dimension.
         coords[local_nodes[row]][col]
     end
     return SMatrix{N, D, T, D * N}(data)
+end
+
+@inline function element_coordinate_matrix(coords::AbstractArray{T}, local_nodes::SVector{N, Int}) where {T <: Number, N}
+    return SMatrix{N, 1, T, N}(ntuple(i -> coords[local_nodes[i]], Val(N)))
 end
 
 """

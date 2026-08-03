@@ -224,6 +224,56 @@ end
 end
 
 """
+    integrate_momentum_residual(v::NTuple{3}, P_loc, Pnum_loc, T_loc,
+                                geo_v_el, phase_loc, η, G, α, ρ0, K,
+                                g, Tref, Δt, Nq, NqP)
+
+Integrate the purely viscous 3-D momentum residual, including pressure and
+gravity. This is the element operator used by the Hex27/Q2--P1 solver path.
+"""
+@inline function integrate_momentum_residual(
+    v::NTuple{3, <:SVector{N}},
+    P_loc::SVector{NP},
+    Pnum_loc::Union{SVector{NP}, Nothing},
+    T_loc::SVector{NP},
+    geo_v_el,
+    phase_loc, η, G, α, ρ0, K,
+    g::NTuple{3},
+    Tref::Real,
+    Δt,
+    Nq,
+    NqP,
+) where {N, NP}
+    T = promote_type(map(eltype, v)...)
+    R = ntuple(_ -> zero(SVector{N, T}), 3)
+    β = map(inv, K)
+    for q in eachindex(geo_v_el)
+        ∂N∂x, dΩ = geo_v_el[q]
+        Nv = Nq[q]
+        ∇v = ntuple(i -> ∂N∂x' * v[i], 3)
+        div_v = ∇v[1][1] + ∇v[2][2] + ∇v[3][3]
+        ηq = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
+        τxx = 2ηq * (∇v[1][1] - div_v / 3)
+        τyy = 2ηq * (∇v[2][2] - div_v / 3)
+        τzz = 2ηq * (∇v[3][3] - div_v / 3)
+        τxy = ηq * (∇v[1][2] + ∇v[2][1])
+        τxz = ηq * (∇v[1][3] + ∇v[3][1])
+        τyz = ηq * (∇v[2][3] + ∇v[3][2])
+        τ = SMatrix{3, 3, T}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
+        Pq = dot(NqP[q], P_loc)
+        Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
+        Tq = dot(NqP[q], T_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) *
+             (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
+              interp2ip_phase(Nv, β, phase_loc) * Pq)
+        R = ntuple(i -> R[i] +
+            (∂N∂x * (τ[:, i] - SVector{3, T}(ntuple(j -> i == j ? Ptotal : zero(Ptotal), 3))) -
+             Nv * (ρq * g[i])) * dΩ, 3)
+    end
+    return R
+end
+
+"""
     integrate_momentum_x_residual(v, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
                                   η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP) -> Rv_x
 
@@ -610,6 +660,23 @@ function assemble_momentum_residual_matrices_atomix!(
     )
 end
 
+"""
+    assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
+                                       el2n_v, el2nP, geo_v, nels, phases,
+                                       τ_old, plastic, τ_store,
+                                       η, G, α, ρ0, K, g, Tref, Δt,
+                                       Nq, NqP, Val(NV), Val(NP), workgroup)
+
+Zero `Rv_x`/`Rv_y`, launch the atomic momentum-residual kernel over `nels`
+elements, and synchronize.
+
+Low-level entry point beneath `assemble_momentum_residual_matrices_atomix!`:
+the shape-function tables `Nq`, `NqP` and the local node counts `Val(NV)`,
+`Val(NP)` are passed explicitly instead of `ReferenceElement`s, which makes
+the call differentiable with Enzyme (see
+`assemble_momentum_residual_matrices_atomix_adj!`). The backend is inferred
+from `Rv_x`.
+"""
 function assemble_momentum_residual_kernel!(
     Rv_x, Rv_y,
     vx, vy, P, T, Pnum,
@@ -743,6 +810,90 @@ end
 _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{3, <:AbstractMatrix}, iel) =
     IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
+
+"""
+    assemble_stokes_momentum_residual_3d!(R, v, P, mesh, cell_phase, η, ρ, g;
+                                          workgroup=256)
+
+Assemble the purely viscous 3-D momentum residual for continuous Hex27
+velocity and four cell-local pressure modes `(1, ξ, η, ζ)`.
+"""
+function assemble_stokes_momentum_residual_3d!(
+    R::NTuple{3}, v::NTuple{3}, P::AbstractMatrix, mesh::Mesh,
+    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
+)
+    size(P) == (4, mesh.nels) || throw(DimensionMismatch("P must be 4 × nels"))
+    all(length(r) == mesh.nnodes for r in R) || throw(DimensionMismatch("residual size must match mesh nodes"))
+    all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
+    length(cell_phase) == mesh.nels || throw(DimensionMismatch("cell_phase size must match mesh elements"))
+    Nq = shape_function_values(mesh.element)
+    ip = mesh.element.integration_points
+    NqP = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    foreach(r -> fill!(r, 0), R)
+    backend = KA.get_backend(first(R))
+    stokes_momentum_residual_3d_kernel!(backend, workgroup)(
+        R, v, P, mesh.el2n, mesh.geometry, cell_phase, η, ρ, g, Nq, NqP;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function stokes_momentum_residual_3d_kernel!(
+    R, @Const(v), @Const(P), @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(ρ), @Const(g), @Const(Nq), @Const(NqP),
+)
+    cell = @index(Global)
+    nodes = local_nodes_of(el2n, cell, Val(27))
+    velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
+    pressure = SVector{4}(ntuple(i -> P[i, cell], Val(4)))
+    phase = Int(cell_phase[cell])
+    phase_loc = SVector{27}(ntuple(_ -> phase, Val(27)))
+    residual = integrate_momentum_residual(
+        velocity, pressure, nothing, zero(pressure), geometry[cell], phase_loc,
+        η, map(x -> oftype(x, Inf), η), map(zero, η), ρ,
+        map(x -> oftype(x, Inf), η), g,
+        zero(eltype(pressure)), one(eltype(pressure)), Nq, NqP,
+    )
+    for (i, node) in enumerate(nodes), component in 1:3
+        Atomix.@atomic :monotonic R[component][node] += residual[component][i]
+    end
+end
+
+function stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup = 256)
+    diagonal = ntuple(_ -> similar(mesh.coords, eltype(first(mesh.coords)), mesh.nnodes), 3)
+    pressure_mass = similar(first(diagonal), 4, mesh.nels)
+    foreach(x -> fill!(x, 0), diagonal)
+    fill!(pressure_mass, 0)
+    ip = mesh.element.integration_points
+    modes = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    backend = KA.get_backend(first(diagonal))
+    stokes_preconditioner_3d_kernel!(backend, workgroup)(
+        diagonal, pressure_mass, mesh.el2n, mesh.geometry, cell_phase, η, modes;
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return diagonal, pressure_mass
+end
+
+@kernel function stokes_preconditioner_3d_kernel!(
+    diagonal, pressure_mass, @Const(el2n), @Const(geometry), @Const(cell_phase),
+    @Const(η), @Const(modes),
+)
+    cell = @index(Global)
+    phase = Int(cell_phase[cell])
+    for q in eachindex(geometry[cell])
+        gradient, dΩ = geometry[cell][q]
+        for a in 1:27, component in 1:3
+            value = η[phase] * (dot(gradient[a, :], gradient[a, :]) +
+                    gradient[a, component]^2 / 3) * dΩ
+            Atomix.@atomic :monotonic diagonal[component][el2n[a, cell]] += value
+        end
+        for mode in 1:4
+            pressure_mass[mode, cell] += modes[q][mode]^2 * dΩ
+        end
+    end
+end
 
 _gather_or_scalar(x::Number, _, ::Val) = x
 @inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
@@ -948,7 +1099,14 @@ velocity-to-pressure-to-velocity coupling introduced by the Arrow-Hurwicz
 scheme. This makes the preconditioner more effective than
 `element_momentum_jacobians` for problems where that coupling is significant.
 
-Returns `(local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y)`.
+Returns `(local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy)`, the four velocity
+blocks of the augmented element Jacobian. Each is `NV`×`NV`. Because `Pnum` is
+formed inline from element-local pressures, the blocks already carry the
+Powell-Hestenes augmentation `Bnum·(γ_eff/MP)·C`; for a discontinuous pressure
+space that coupling is element-local, so the blocks are exact rather than an
+approximation.
+
+`jacobian_rowsums_and_diagonal` reduces them to the preconditioner diagnostics.
 """
 @inline function element_augmented_momentum_jacobians(
     vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
@@ -1012,12 +1170,6 @@ end
         ),
         vyloc,
     )
-    rowsums_x = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVx∂vy[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
-    diags_x = SVector{NV}(ntuple(i -> abs(∂RVx∂vx[i, i]), Val(NV)))
-
     ∂RVy∂vy = ForwardDiff.jacobian(
         vy_arg -> integrate_momentum_y_residual(
             (vxloc, vy_arg), P_loc, P0loc, T_loc, T0loc,
@@ -1034,13 +1186,26 @@ end
         ),
         vxloc,
     )
-    rowsums_y = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVy∂vx[i, j]) for j in 1:NV),
+    return local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy
+end
+
+"""
+    jacobian_rowsums_and_diagonal(∂R∂same, ∂R∂other) -> (rowsums, diags)
+
+Reduce a pair of element Jacobian blocks to the absolute row sums and the
+absolute diagonal of the block differentiated with respect to its own velocity
+component. The row sums bound the preconditioned spectral radius by Gershgorin;
+the diagonal is the Jacobi preconditioner.
+"""
+@inline function jacobian_rowsums_and_diagonal(
+        ∂R∂same::SMatrix{NV, NV}, ∂R∂other::SMatrix{NV, NV},
+    ) where {NV}
+    rowsums = SVector{NV}(ntuple(
+        i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:NV),
         Val(NV),
     ))
-    diags_y = SVector{NV}(ntuple(i -> abs(∂RVy∂vy[i, i]), Val(NV)))
-
-    return local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y
+    diags = SVector{NV}(ntuple(i -> abs(∂R∂same[i, i]), Val(NV)))
+    return rowsums, diags
 end
 
 """
@@ -1163,11 +1328,13 @@ end
     Nq, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_augmented_momentum_jacobians(
+    local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
+    rowsums_x, diags_x = jacobian_rowsums_and_diagonal(∂RVx∂vx, ∂RVx∂vy)
+    rowsums_y, diags_y = jacobian_rowsums_and_diagonal(∂RVy∂vy, ∂RVy∂vx)
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += rowsums_x[i]
         Atomix.@atomic :monotonic PC_vx[inod]    += diags_x[i]

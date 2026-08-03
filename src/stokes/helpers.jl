@@ -1,10 +1,10 @@
+# `backend::KA.Backend` keeps this disjoint from the deprecated leading-backend
+# shim below: without it, a 9-argument call matches both methods ambiguously.
 """
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup)
 
 Launch the Stokes geometry precompute kernel and synchronize the backend.
 """
-# `backend::KA.Backend` keeps this disjoint from the deprecated leading-backend
-# shim below: without it, a 9-argument call matches both methods ambiguously.
 function precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend::KA.Backend, workgroup) where N
     precompute_geometry_kernel!(backend, workgroup)(
         geo, coords, el2n, ∂N∂ξq, ω, Val(N);
@@ -64,6 +64,32 @@ function stokes_update_variable!(backend::KA.Backend, workgroup, u, ∂u∂τ, �
         :stokes_update_variable!,
     )
     return stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)
+end
+
+@kernel function update_stokes_velocity_kernel!(
+        rate_x, rate_y, vx, vy,
+        @Const(Rx), @Const(Ry), @Const(PCx), @Const(PCy),
+        βx, βy, αx, αy,
+    )
+    i = @index(Global)
+    new_rate_x = βx * rate_x[i] + Rx[i] / PCx[i]
+    new_rate_y = βy * rate_y[i] + Ry[i] / PCy[i]
+    rate_x[i] = new_rate_x
+    rate_y[i] = new_rate_y
+    vx[i] += αx * new_rate_x
+    vy[i] += αy * new_rate_y
+end
+
+function update_stokes_velocity!(
+        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
+        βx, βy, αx, αy, ndofs, backend, workgroup,
+    )
+    update_stokes_velocity_kernel!(backend, workgroup)(
+        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy, βx, βy, αx, αy;
+        ndrange = ndofs,
+    )
+    KA.synchronize(backend)
+    return nothing
 end
 
 """

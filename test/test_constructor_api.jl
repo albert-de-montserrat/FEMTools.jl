@@ -1,6 +1,7 @@
 using Test
 
 using FEMTools
+using KernelAbstractions: CPU
 using StaticArrays
 
 @testset "constructor API tidying" begin
@@ -35,6 +36,20 @@ using StaticArrays
     @test mesh.Γnodes === Γnodes
     @test mesh.nnodes === length(coords)
     @test mesh.nels === size(el2n, 2)
+end
+
+
+@testset "element-aware Mesh precomputes geometry" begin
+    element = ReferenceElement(LinearElement{2, 3, Float32})
+    coords = SVector{2, Float32}[
+        SVector(0, 0), SVector(1, 0), SVector(0, 1),
+    ]
+    el2n = reshape(Int32[1, 2, 3], 3, 1)
+    mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
+
+    @test mesh.element === element
+    @test length(mesh.geometry) == mesh.nels
+    @test eltype(mesh.geometry) == NTuple{3, Tuple{SMatrix{3, 2, Float32, 6}, Float32}}
 end
 
 @testset "unstructured Mesh accepts abstract array types" begin

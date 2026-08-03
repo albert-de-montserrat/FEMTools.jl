@@ -1,5 +1,25 @@
 using KernelAbstractions: CPU
 
+@testset "ThermalMaterial" begin
+    defaults = ThermalMaterial()
+    @test defaults isa ThermalMaterial{1, Float64}
+    @test defaults.k == defaults.Cp == defaults.ρ0 == defaults.α == defaults.K == (1.0,)
+
+    material = ThermalMaterial(;
+        k = (3.0, 4.0), Cp = (1200.0, 1300.0), ρ0 = (3300.0, 3400.0),
+        α = (3e-5, 4e-5), K = (1e11, 2e11),
+    )
+    @test material isa ThermalMaterial{2, Float64}
+    @test material.k == (3.0, 4.0)
+    @test_throws DimensionMismatch ThermalMaterial(; k = (3.0, 4.0), Cp = (1200.0,))
+    @test_throws MethodError ThermalMaterial(; k = (3.0f0,), Cp = (1.0,))
+
+    thermal = ThermalDiffusionDR(CPU(), 3, material)
+    litho = LithostaticPressureDR(CPU(), 3, material)
+    @test thermal.k === material.k
+    @test litho.ρ0 === material.ρ0
+end
+
 for FP in (FP32, FP64)
     @testset "ThermalDiffusionDR – $FP" begin
         nnodes  = 10

@@ -3,6 +3,7 @@
 [![CI](https://github.com/albert-de-montserrat/FEMTools.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/albert-de-montserrat/FEMTools.jl/actions/workflows/CI.yml)
 [![codecov](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/albert-de-montserrat/FEMTools.jl)
 [![docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://albert-de-montserrat.github.io/FEMTools.jl/dev/)
+[![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 Finite-element utilities for structured and unstructured meshes: reference
 elements, shape functions, integration points, sparsity construction, mesh
@@ -27,8 +28,8 @@ number of local nodes. Supported elements:
 
 | Type | Instances |
 |:-----|:----------|
-| `LinearElement{nDim, nVert}` | line (1×2), triangle (2×3), quad (2×4), hex (3×8) |
-| `QuadraticElement{nDim, nVert}` | line (1×3), triangle (2×6), quad (2×9), hex (3×27) |
+| `LinearElement{nDim, nVert}` | line (1×2), triangle (2×3), quad (2×4), tetrahedron (3×4), hex (3×8) |
+| `QuadraticElement{nDim, nVert}` | line (1×3), triangle (2×6/7), quad (2×9), tetrahedron (3×10/11), hex (3×27) |
 
 ```julia
 using FEMTools
@@ -120,6 +121,11 @@ primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 | Transient multi-phase heat diffusion | `ThermalDiffusionDR` | `solver!` |
 | Lithostatic pressure | `LithostaticPressureDR` | `solver!` |
 | Incompressible visco-elasto-plastic Stokes flow | `StokesDR` | `solve_stokes_dyrel!` |
+
+Thermal and lithostatic solvers share a typed `ThermalMaterial` containing
+per-phase `k`, `Cp`, `ρ0`, `α`, and `K` tuples.
+The Stokes solver similarly accepts a typed `StokesMaterial` containing its
+per-phase rheology, elastic, density, and equation-of-state properties.
 
 Runnable scripts live under [`examples/`](examples/); see the
 [documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the

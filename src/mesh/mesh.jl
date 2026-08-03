@@ -16,18 +16,24 @@ element-to-node connectivity, boundary nodes, and stores the node and element
 counts. For tensor-product domains, `nels` is a tuple such as `(nx, ny)` or
 `(nx, ny, nz)`.
 
-    Mesh(coords, el2n)
-    Mesh(backend, coords, el2n)
+    Mesh(coords, el2n; order=1)
+    Mesh(backend, coords, el2n; order=1)
+    Mesh(coords, el2n, element; workgroup=256)
+    Mesh(backend, coords, el2n, element; workgroup=256)
 
 Construct an unstructured mesh from pre-built arrays.
 
 `coords` is an `AbstractVector` of `SVector{nDim, T}` node coordinates and
 `el2n` is an `N × nels` `AbstractMatrix{<:Integer}` of element-to-node
-connectivity (one column per element). Boundary nodes are detected automatically
+connectivity (one column per element). The keyword `order` declares the
+polynomial order of the connectivity, stored in the mesh type parameter
+(e.g. `order = 2` for T6 triangles). Boundary nodes are detected automatically
 as nodes on mesh edges shared by exactly one element. `Ω` and `Γ` are set to
-`nothing`.
+`nothing`. Passing `element` also stores the reference element and precomputes
+the geometry used by single-field solvers. Constructors without `element`
+retain `nothing` for both fields.
 """
-struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
+struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
     Ω::D        # model domain
     Γ::B        # model boundary
     coords::T1  # vertex coordinates
@@ -36,8 +42,10 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     Γnodes::T4  # boundary nodes
     nnodes::Int # number of nodes
     nels::Int   # number of elements
+    element::E  # reference element
+    geometry::G # precomputed element geometry
 
-    function Mesh{nDim, O, D, B, T1, T2, T3, T4}(
+    function Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G}(
         Ω,
         Γ,
         coords,
@@ -46,11 +54,15 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         Γnodes,
         nnodes,
         nels,
-    ) where {nDim, O, D, B, T1, T2, T3, T4}
-        return new{nDim, O, D, B, T1, T2, T3, T4}(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels)
+        element,
+        geometry,
+    ) where {nDim, O, D, B, T1, T2, T3, T4, E, G}
+        return new{nDim, O, D, B, T1, T2, T3, T4, E, G}(
+            Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels, element, geometry,
+        )
     end
 
-    function Mesh(backend, Ω, element::ReferenceElement{T}, nels) where T<:AbstractElement{nDim} where nDim
+    function Mesh(backend, Ω, element::ReferenceElement{T}, nels; workgroup = 256) where T<:AbstractElement{nDim} where nDim
 
         TDev       = TA(backend)
         Γ          = boundary(Ω)
@@ -65,6 +77,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
         DoFs   = TDev(DoFs_cpu)
         el2n   = TDev(el2n_cpu)
         Γnodes = TDev(Γnodes_cpu)
+        geometry = precompute_geometry(coords, el2n, element; backend, workgroup)
 
         return new{
             nDim,
@@ -75,7 +88,9 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
             typeof(DoFs),
             typeof(el2n),
             typeof(Γnodes),
-        }(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2))
+            typeof(element),
+            typeof(geometry),
+        }(Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2), element, geometry)
     end
 
     Base.@constprop :aggressive function Mesh(
@@ -94,6 +109,14 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4} <: AbstractMesh
     end
 end
 
+function Mesh{nDim, O, D, B, T1, T2, T3, T4}(
+    Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels,
+) where {nDim, O, D, B, T1, T2, T3, T4}
+    return Mesh{nDim, O, D, B, T1, T2, T3, T4, Nothing, Nothing}(
+        Ω, Γ, coords, DoFs, el2n, Γnodes, Int(nnodes), Int(nels), nothing, nothing,
+    )
+end
+
 function _unstructured_mesh(
     backend,
     coords_cpu::AbstractVector{<:SVector{nDim}},
@@ -110,18 +133,37 @@ function _unstructured_mesh(
         el2n   = TDev(el2n_cpu)
         Γnodes = TDev(Γnodes_cpu)
 
-        return Mesh{nDim, O, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes)}(
-            nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2)
+        return Mesh{nDim, O, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes), Nothing, Nothing}(
+            nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2), nothing, nothing,
         )
+end
+
+function Mesh(
+    backend,
+    coords_cpu::AbstractVector{<:SVector{nDim}},
+    el2n_cpu::AbstractMatrix{<:Integer},
+    element::ReferenceElement{T};
+    workgroup = 256,
+) where {nDim, T <: AbstractElement{nDim}}
+    mesh = Mesh(backend, coords_cpu, el2n_cpu; order = order(element))
+    geometry = precompute_geometry(mesh.coords, mesh.el2n, element; backend, workgroup)
+    return Mesh{nDim, order(element), Nothing, Nothing,
+                typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n), typeof(mesh.Γnodes),
+                typeof(element), typeof(geometry)}(
+        nothing, nothing, mesh.coords, mesh.DoFs, mesh.el2n, mesh.Γnodes,
+        mesh.nnodes, mesh.nels, element, geometry,
+    )
 end
 
 function Base.show(io::IO, mesh::Mesh{nDim, O}) where {nDim, O}
     print(io, "Mesh{", nDim, ", ", O, "}(nnodes=", mesh.nnodes, ", nels=", mesh.nels, ")")
 end
 
-Mesh(Ω, element, nels) = Mesh(CPU(), Ω, element, nels)
+Mesh(Ω, element, nels; kwargs...) = Mesh(CPU(), Ω, element, nels; kwargs...)
 Mesh(coords_cpu::AbstractVector{<:SVector}, el2n_cpu::AbstractMatrix{<:Integer}; kwargs...) =
     Mesh(CPU(), coords_cpu, el2n_cpu; kwargs...)
+Mesh(coords_cpu::AbstractVector{<:SVector}, el2n_cpu::AbstractMatrix{<:Integer}, element::ReferenceElement; kwargs...) =
+    Mesh(CPU(), coords_cpu, el2n_cpu, element; kwargs...)
 
 """
     Mesh(element, Ω, Γ, coords, DoFs, el2n, Γnodes)
@@ -144,6 +186,8 @@ function Mesh(
     Γnodes::T4,  # boundary nodes
 ) where {D, B, nDim, FP, T2, T3, T4, T<:AbstractElement{nDim}}
 
+    geometry = precompute_geometry(coords, el2n, element)
+
     return Mesh{
         nDim,
         order(element),
@@ -153,7 +197,9 @@ function Mesh(
         T2,
         T3,
         T4,
-    }(Ω, Γ, coords, DoFs, el2n, Γnodes, length(coords), size(el2n, 2))
+        typeof(element),
+        typeof(geometry),
+    }(Ω, Γ, coords, DoFs, el2n, Γnodes, length(coords), size(el2n, 2), element, geometry)
 
 end
 
@@ -177,6 +223,13 @@ _boundary_face_paths_3d(::Val{4}) =
 _boundary_face_paths_3d(::Val{8}) =
     ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
      (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
+_boundary_face_paths_3d(::Val{27}) =
+    ((1, 2, 3, 4, 9, 10, 11, 12, 21),
+     (5, 6, 7, 8, 13, 14, 15, 16, 26),
+     (1, 2, 6, 5, 9, 18, 13, 17, 22),
+     (4, 3, 7, 8, 11, 19, 15, 20, 24),
+     (1, 4, 8, 5, 12, 20, 16, 17, 25),
+     (2, 3, 7, 6, 10, 19, 14, 18, 23))
 _boundary_face_paths_3d(::Val{N}) where N =
     throw(ArgumentError("cannot infer 3D boundary face paths for elements with $N local nodes"))
 
@@ -187,9 +240,9 @@ Return sorted unique node indices that lie on the mesh boundary, as a vector
 with the same integer eltype as `el2n`.
 
 For 2-D meshes, a boundary edge is an edge whose corner endpoints appear in
-exactly one element. For 3-D meshes, a boundary face is a face whose corner
-nodes appear in exactly one element. Supported unstructured arities are T3,
-Q4, T6/T7, Q8/Q9, Tet4, and Hex8.
+exactly one element. For 3-D meshes, a boundary face is a face whose nodes
+appear in exactly one element. Supported unstructured arities are T3, Q4,
+T6/T7, Q8/Q9, Tet4, Hex8, and Hex27.
 """
 _unstructured_boundary_nodes(el2n::AbstractMatrix) = _unstructured_boundary_nodes(el2n, Val(2))
 
@@ -517,6 +570,52 @@ generate_dofs(::ReferenceElement, npoints) = [Int32(i) for i in 1:npoints]
 # ---------------------------------------------------------------------------
 # KA kernels
 # ---------------------------------------------------------------------------
+
+function _integration_coordinates(ip::IntegrationPoints{nDim}, q) where {nDim}
+    return SVector{nDim}(ntuple(d -> getfield(ip, d)[q], Val(nDim)))
+end
+
+_geometry_jacobian(element, point, ::Val{nDim}) where {nDim} =
+    eval_shape_function_jacobian(element, point)
+_geometry_jacobian(element::ReferenceElement{T}, point, ::Val{1}) where {N, T <: AbstractElement{1, N}} =
+    SMatrix{N, 1}(eval_shape_function_jacobian(element, point))
+
+"""
+    precompute_geometry(coords, el2n, element; backend=KA.get_backend(coords), workgroup=256)
+
+Precompute physical shape-function gradients and weighted element volumes for
+all integration points of `element`.
+"""
+function precompute_geometry(
+    coords,
+    el2n,
+    element::ReferenceElement{T};
+    backend = KA.get_backend(coords),
+    workgroup = 256,
+) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
+    ip = element.integration_points
+    NQ = length(ip.ω)
+    points = ntuple(q -> _integration_coordinates(ip, q), Val(NQ))
+    jacobians = ntuple(q -> _geometry_jacobian(element, points[q], Val(nDim)), Val(NQ))
+    Geometry = NTuple{NQ, Tuple{SMatrix{N, nDim, FP, N * nDim}, FP}}
+    geometry = KA.allocate(backend, Geometry, size(el2n, 2))
+    if backend isa CPU
+        for iel in axes(el2n, 2)
+            local_nodes = local_nodes_of(el2n, iel, Val(N))
+            c = element_coordinate_matrix(coords, local_nodes)
+            geometry[iel] = ntuple(Val(NQ)) do q
+                J = c' * jacobians[q]
+                (jacobians[q] * inv(J), abs(det(J)) * ip.ω[q])
+            end
+        end
+        return geometry
+    end
+    precompute_geometry_kernel!(backend, workgroup)(
+        geometry, coords, el2n, jacobians, ip.ω, Val(N); ndrange = size(el2n, 2),
+    )
+    KA.synchronize(backend)
+    return geometry
+end
 
 """
     precompute_geometry_kernel!(geo, coords, el2n, ∂N∂ξq, ω, Val(N))

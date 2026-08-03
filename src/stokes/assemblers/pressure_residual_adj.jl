@@ -1,3 +1,17 @@
+"""
+    assemble_pressure_residual_matrices_atomix_adj!(
+        dr, dRP, dvx, dvy, dP,
+        mesh_stokes, geo_v, geo_P, element_v, element_P,
+        phases, Δt, workgroup)
+
+Reverse-mode (Enzyme) transpose of `assemble_pressure_residual_kernel!`.
+
+Reads the primal fields (`RP`, `vx`, `vy`, `P`, `P0`, `T`, `T0`) and the
+per-phase parameters `α`, `ηb` from the solver state `dr`. Given the adjoint
+seed `dRP` on the pressure residual, accumulate the transpose-Jacobian
+products into the input adjoints `dvx`, `dvy`, `dP`. The primal residual
+`dr.RP` is recomputed (overwritten) in the process.
+"""
 function assemble_pressure_residual_matrices_atomix_adj!(
     dr::StokesDR,
     dRP, dvx, dvy, dP,
