@@ -10,7 +10,8 @@ include("mesher.jl")
 """
     run_sinking_block_3d(; mesh_size=0.2, nz=5, half_width=0.15,
                          η=(1.0,100.0), ρ=(1.0,2.0),
-                         g=(0.0,-1.0,0.0), write_output=true)
+                         g=(0.0,-1.0,0.0), write_output=true,
+                         verbose=true, build_reference=false, solver_tol=1e-6)
 
 Assemble and solve the viscous 3-D sinking-block problem on a Gmsh Hex27 mesh.
 Velocity uses continuous Q2 functions and pressure four cell-local P1 modes.
@@ -23,6 +24,7 @@ and material inputs. With `write_output=true`, also writes
 `stokes_3D_sinking_block.vtk` beside this script. Set `build_reference=true`
 to additionally assemble the sparse saddle-point matrix and its phase-2
 viscosity derivative for regression or discrete-adjoint checks.
+`solver_tol` is passed to the 3-D `solve_stokes_dyrel!` convergence check.
 """
 function run_sinking_block_3d(;
     mesh_size = 0.2, nz = 5, half_width = 0.15,

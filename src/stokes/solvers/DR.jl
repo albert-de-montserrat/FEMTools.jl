@@ -506,6 +506,13 @@ DYREL solver entry point used by the mixed 2-D solver. Multiple dispatch keeps
 the cell-local four-mode pressure storage native to this discretization.
 `fixed_nodes` contains constrained nodes for each velocity component;
 velocity and pressure are updated in place.
+
+`ncheck` controls residual checks, `ϵ_tol` the absolute combined tolerance,
+and `total_iterMax` the iteration budget (`iterMax` supplies its default).
+`velocity_step` and `γP` scale the velocity and pressure updates. `load`, when
+provided, is an `NTuple{3}` momentum right-hand side used by the adjoint method.
+Returns convergence statistics including `iter`, `err`, `err_v`, `err_P`,
+`converged`, and `reached_total_iter`.
 """
 function solve_stokes_dyrel!(
     velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
@@ -555,9 +562,13 @@ function solve_stokes_dyrel!(
 end
 
 """
-    solve_stokes_3d!(args...; maxiter=3000, tolerance=1e-5, pressure_step=0.2, kwargs...)
+    solve_stokes_3d!(velocity, pressure, mesh, cell_phase, η, ρ, g,
+                     fixed_nodes; maxiter=3000, tolerance=1e-5,
+                     pressure_step=0.2, kwargs...)
 
 Compatibility wrapper for the 3-D [`solve_stokes_dyrel!`](@ref) method.
+`maxiter`, `tolerance`, and `pressure_step` map to `total_iterMax`, `ϵ_tol`,
+and `γP`, respectively.
 """
 function solve_stokes_3d!(
     velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
@@ -573,11 +584,13 @@ end
 
 """
     solve_stokes_adjoint_3d!(velocity, pressure, objective_load, mesh,
-                             cell_phase, η, fixed_nodes; kwargs...)
+                             cell_phase, η, fixed_nodes; maxiter=3000,
+                             tolerance=1e-5, pressure_step=0.2, kwargs...)
 
 Solve the transpose of the linear viscous 3-D Stokes operator. The operator is
 symmetric, so this compatibility wrapper forwards to the 3-D
 [`solve_stokes_adjoint_dyrel!`](@ref) method.
+The compatibility keywords map to `total_iterMax`, `adjoint_tol`, and `γP`.
 """
 function solve_stokes_adjoint_3d!(
     velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},

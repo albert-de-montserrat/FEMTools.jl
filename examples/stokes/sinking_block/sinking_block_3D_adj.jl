@@ -10,8 +10,10 @@ forward problem without writing VTK output. The adjoint uses
 `solve_stokes_adjoint_dyrel!`; the opt-in sparse forward data is used only for
 the centred finite-difference reference.
 
-Returns the forward result, adjoint vector, objective, density and viscosity
-gradients, centred finite-difference gradients, and relative differences.
+Returns the forward result, component-wise adjoint velocity and pressure,
+flattened adjoint vector, adjoint convergence statistics, objective, density
+and viscosity gradients, centred finite-difference gradients, and relative
+differences.
 `fd_step` is the absolute density perturbation and the relative viscosity
 perturbation (`fd_step * η[2]`).
 """

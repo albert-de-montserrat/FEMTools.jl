@@ -336,6 +336,10 @@ Solve the transpose of the linear viscous 3-D Hex27/Q2--P1 Stokes operator
 through the same adjoint DYREL entry point used by the 2-D solver. The operator
 is symmetric, so the 3-D method reuses the dimension-matched forward residual
 and preconditioner with the objective derivative as its momentum load.
+Velocity and pressure are updated in place from their supplied initial guesses.
+`adjoint_tol` sets the combined residual tolerance; `iterMax` and
+`total_iterMax` set the iteration budget. The returned convergence statistics
+match the 3-D forward method.
 """
 function solve_stokes_adjoint_dyrel!(
     velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
@@ -358,7 +362,9 @@ end
                                 cell_phase, η, ρ, g; phase=2)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
-viscous operator derivative for one material phase.
+viscous operator derivative for one material phase. `phase` selects the
+one-based material phase, and the returned named tuple contains
+`density_gradient` and `viscosity_gradient`.
 """
 function stokes_material_gradient_3d(
     forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
