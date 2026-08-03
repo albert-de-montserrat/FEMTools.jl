@@ -1,16 +1,21 @@
 include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinking_block_3D_adj.jl"))
 
-@testset "3D sinking-block sparse reference" begin
+@testset "3D sinking-block DYREL and sparse reference" begin
     forward = run_sinking_block_3d(;
         mesh_size = 0.25, nz = 2, half_width = 0.25, write_output = false,
+        verbose = false, build_reference = true,
     )
     residual = forward.A * forward.solution - forward.rhs
-    @test norm(residual[forward.free]) < 1e-10
+    @test forward.solve_stats.converged
+    @test norm(residual[forward.free]) < 2e-5
     @test Set(forward.cell_phase) == Set((1, 2))
+    @test all(iszero, forward.velocity[1][forward.fixed_nodes[1]])
+    @test all(iszero, forward.velocity[2][forward.fixed_nodes[2]])
+    @test all(iszero, forward.velocity[3][forward.fixed_nodes[3]])
 
     momentum = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
     continuity = zeros(4, forward.mesh.nels)
-    velocity = Tuple(eachrow(forward.velocity))
+    velocity = forward.velocity
     FEMTools.assemble_stokes_momentum_residual_3d!(
         momentum, velocity, forward.pressure, forward.mesh,
         forward.cell_phase, forward.η, forward.ρ, forward.g,
@@ -27,12 +32,14 @@ include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinki
     )
     iterative_velocity = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
     iterative_pressure = zeros(4, forward.mesh.nels)
-    stats = solve_stokes_3d!(
+    stats = solve_stokes_dyrel!(
         iterative_velocity, iterative_pressure, forward.mesh, forward.cell_phase,
         forward.η, forward.ρ, forward.g, fixed_nodes,
+        verbose = false,
     )
     @test stats.converged
-    @test norm(vec(stack(iterative_velocity; dims = 1)) - vec(forward.velocity)) < 2e-4
+    @test norm(vec(stack(iterative_velocity; dims = 1)) -
+               vec(stack(forward.velocity; dims = 1))) < 2e-4
 
     adjoint = solve_sinking_block_adjoint_3d(forward)
     block_nodes = unique(vec(Array(forward.mesh.el2n)[:, forward.cell_phase .== 2]))

@@ -13,10 +13,13 @@ gradients, centred finite-difference gradients, and relative differences.
 `fd_step` is the absolute density perturbation and the relative viscosity
 perturbation (`fd_step * η[2]`).
 """
-function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false);
+function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(;
+    write_output = false, build_reference = true);
     fd_step = 1e-5,
 )
-    (; mesh, A, rhs, solution, cell_phase, free) = forward
+    (; mesh, A, rhs, cell_phase, free) = forward
+    solution = zeros(length(rhs))
+    solution[free] = A[free, free] \ rhs[free]
     nv = 3mesh.nnodes
     block_nodes = unique(vec(Array(mesh.el2n)[:, cell_phase .== 2]))
     objective_load = zeros(length(solution))
