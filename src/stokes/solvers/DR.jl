@@ -576,17 +576,17 @@ end
                              cell_phase, η, fixed_nodes; kwargs...)
 
 Solve the transpose of the linear viscous 3-D Stokes operator. The operator is
-symmetric, so this reuses [`solve_stokes_3d!`](@ref) with `objective_load` as
-the momentum right-hand side.
+symmetric, so this compatibility wrapper forwards to the 3-D
+[`solve_stokes_adjoint_dyrel!`](@ref) method.
 """
 function solve_stokes_adjoint_3d!(
     velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3}; kwargs...,
+    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
+    maxiter = 3000, tolerance = 1e-5, pressure_step = 0.2, kwargs...,
 )
-    zero_phase = map(zero, η)
-    zero_g = ntuple(_ -> zero(first(η)), 3)
-    return solve_stokes_3d!(
-        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
-        load = objective_load, kwargs...,
+    return solve_stokes_adjoint_dyrel!(
+        velocity, pressure, objective_load, mesh, cell_phase, η, fixed_nodes;
+        iterMax = maxiter, total_iterMax = maxiter, adjoint_tol = tolerance,
+        γP = pressure_step, verbose = false, kwargs...,
     )
 end

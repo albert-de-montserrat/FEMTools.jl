@@ -50,12 +50,17 @@ include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinki
     end, 3)
     iterative_adjoint = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
     iterative_adjoint_pressure = zeros(4, forward.mesh.nels)
-    adjoint_stats = solve_stokes_adjoint_3d!(
+    adjoint_stats = solve_stokes_adjoint_dyrel!(
         iterative_adjoint, iterative_adjoint_pressure, objective_load,
         forward.mesh, forward.cell_phase, forward.η, fixed_nodes,
-        maxiter = 5000,
+        iterMax = 5000, verbose = false,
     )
-    exact_adjoint_velocity = reshape(@view(adjoint.adjoint[1:(3forward.mesh.nnodes)]), 3, :)
+    objective_vector = vcat(vec(stack(objective_load; dims = 1)), zeros(4forward.mesh.nels))
+    exact_adjoint = zeros(length(forward.rhs))
+    exact_adjoint[forward.free] =
+        transpose(forward.A[forward.free, forward.free]) \ objective_vector[forward.free]
+    exact_adjoint_velocity = reshape(@view(exact_adjoint[1:(3forward.mesh.nnodes)]), 3, :)
+    @test adjoint.adjoint_stats.converged
     @test adjoint_stats.converged
     @test norm(vec(stack(iterative_adjoint; dims = 1)) - vec(exact_adjoint_velocity)) < 2e-4
     gradients = stokes_material_gradient_3d(
@@ -64,6 +69,6 @@ include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinki
     )
     @test gradients.density_gradient ≈ adjoint.density_gradient rtol = 2e-3
     @test gradients.viscosity_gradient ≈ adjoint.viscosity_gradient rtol = 2e-3
-    @test adjoint.density_relative_error < 1e-6
-    @test adjoint.viscosity_relative_error < 1e-6
+    @test adjoint.density_relative_error < 2e-3
+    @test adjoint.viscosity_relative_error < 2e-3
 end

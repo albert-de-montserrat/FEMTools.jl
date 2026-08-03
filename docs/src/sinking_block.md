@@ -57,7 +57,9 @@ arrays with the same residual-driven solver interface as the 2-D method.
 [`solve_stokes_3d!`](@ref) remains as a compatibility wrapper; the sparse
 matrix assembly is retained only as a regression and discrete-adjoint oracle.
 
-[`solve_stokes_adjoint_3d!`](@ref) reuses this symmetric operator, and
+The 3-D [`solve_stokes_adjoint_dyrel!`](@ref) method reuses this symmetric
+operator through the same public adjoint solver entry point as the 2-D example.
+[`solve_stokes_adjoint_3d!`](@ref) remains as a compatibility wrapper, and
 [`stokes_material_gradient_3d`](@ref) contracts its fields for phase density
 and viscosity sensitivities.
 
@@ -76,7 +78,8 @@ For the linear system
 A(m)u=b(m), \qquad J=c^T u,
 ```
 
-the 3-D adjoint reuses the exact forward matrix and solves
+the 3-D adjoint solves the transpose system matrix-free with
+`solve_stokes_adjoint_dyrel!`:
 
 ```math
 A^T\lambda=c.
@@ -91,17 +94,15 @@ The material gradient is
 ```
 
 Density changes the gravity load, whereas viscosity changes the phase-2
-viscous matrix contribution. The executable checks both contractions against
-centred finite differences:
+viscous matrix contribution. The executable uses the opt-in sparse reference
+only to check both matrix-free contractions against centred finite differences:
 
 ```sh
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 ```
 
-With the default mesh, the relative differences are approximately
-``4.4\times10^{-11}`` for block density and ``6.9\times10^{-7}`` for block
-viscosity. The forward command checks its free-degree-of-freedom residual; the
-adjoint command raises an error if either gradient check exceeds its tolerance.
+The adjoint command raises an error if the iterative solve does not converge or
+if either gradient check exceeds its tolerance.
 
 ## Choosing an example
 

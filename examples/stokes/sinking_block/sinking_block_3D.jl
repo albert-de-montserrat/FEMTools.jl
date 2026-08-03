@@ -28,6 +28,7 @@ function run_sinking_block_3d(;
     mesh_size = 0.2, nz = 5, half_width = 0.15,
     η = (1.0, 100.0), ρ = (1.0, 2.0), g = (0.0, -1.0, 0.0),
     write_output = true, verbose = true, build_reference = false,
+    solver_tol = 1e-6,
 )
     backend = CPU()
     coords, el2n, _ = build_gmsh_hex27_mesh(; mesh_size, nz)
@@ -97,7 +98,7 @@ function run_sinking_block_3d(;
     pressure = zeros(4, ne)
     solve_stats = solve_stokes_dyrel!(
         velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-        ncheck = 50, ϵ_tol = 1e-5, iterMax = 50_000, total_iterMax = 50_000,
+        ncheck = 50, ϵ_tol = solver_tol, iterMax = 50_000, total_iterMax = 50_000,
         verbose,
     )
     solve_stats.converged || error("3D DYREL solve did not converge: $(solve_stats.err)")
