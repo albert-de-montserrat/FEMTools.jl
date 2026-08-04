@@ -498,32 +498,40 @@ function update_stokes_current_stress!(
 end
 
 """
-    solve_stokes_3d!(velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-                     maxiter=3000, ncheck=100, tolerance=1e-5,
-                     velocity_step=0.6, pressure_step=0.2)
+    solve_stokes_dyrel!(velocity, pressure, mesh, cell_phase, η, ρ, g,
+                        fixed_nodes; kwargs...)
 
-Solve the viscous Hex27/Q2--P1 Stokes system with an in-place preconditioned
-Uzawa iteration. `fixed_nodes` contains constrained nodes for each velocity
-component. The solution remains in `velocity` and `pressure`.
+Solve the viscous 3-D Hex27/Q2--P1 Stokes system through the same public
+DYREL solver entry point used by the mixed 2-D solver. Multiple dispatch keeps
+the cell-local four-mode pressure storage native to this discretization.
+`fixed_nodes` contains constrained nodes for each velocity component;
+velocity and pressure are updated in place.
+
+`ncheck` controls residual checks, `ϵ_tol` the absolute combined tolerance,
+and `total_iterMax` the iteration budget (`iterMax` supplies its default).
+`velocity_step` and `γP` scale the velocity and pressure updates. `load`, when
+provided, is an `NTuple{3}` momentum right-hand side used by the adjoint method.
+Returns convergence statistics including `iter`, `err`, `err_v`, `err_P`,
+`converged`, and `reached_total_iter`.
 """
-function solve_stokes_3d!(
+function solve_stokes_dyrel!(
     velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
     η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
-    maxiter = 3000, ncheck = 100, tolerance = 1e-5,
-    velocity_step = 0.6, pressure_step = 0.2, load = nothing, workgroup = 256,
+    ncheck = 100, ϵ_tol = 1e-5, iterMax = 3000, total_iterMax = iterMax,
+    velocity_step = 0.6, γP = 0.2, load = nothing, workgroup = 256,
+    verbose = true,
 )
     residual_v = ntuple(i -> similar(velocity[i]), 3)
     residual_p = similar(pressure)
     diagonal, pressure_mass = stokes_preconditioner_3d(mesh, cell_phase, η; workgroup)
     backend = KA.get_backend(first(velocity))
     zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
-    err_v = err_p = Inf
-    converged = false
-    iterations = 0
-    for iter in 1:maxiter
-        iterations = iter
+    err_v = err_P = err = Inf
+    iter = 0
+    for iteration in 1:total_iterMax
+        iter = iteration
         assemble_stokes_pressure_residual_3d!(residual_p, velocity, mesh; workgroup)
-        @. pressure += pressure_step * residual_p / pressure_mass
+        @. pressure += γP * residual_p / pressure_mass
         pmean = sum(@view(pressure[1, :]) .* @view(pressure_mass[1, :])) /
                 sum(@view pressure_mass[1, :])
         @views pressure[1, :] .-= pmean
@@ -536,38 +544,62 @@ function solve_stokes_3d!(
             end
         end
         for component in 1:3
+            apply_dirichlet!(residual_v[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
             @. velocity[component] -= velocity_step * residual_v[component] / diagonal[component]
             apply_dirichlet!(velocity[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
         end
-        if iszero(iter % ncheck) || iter == maxiter
-            for component in 1:3
-                apply_dirichlet!(residual_v[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
-            end
-            err_v = maximum(norm, residual_v)
-            err_p = norm(residual_p)
-            converged = max(err_v, err_p) < tolerance
-            converged && break
-        end
+        (iszero(iter % ncheck) || iter == total_iterMax) || continue
+        err_v = maximum(norm, residual_v)
+        err_P = norm(residual_p)
+        err = max(err_v, err_P)
+        isfinite(err) || error("non-finite residual in 3D DYREL solve")
+        verbose && @printf("iter = %06d err = %.3e - norm[Rv=%.3e, Rp=%.3e]\n",
+            iter, err, err_v, err_P)
+        err < ϵ_tol && break
     end
-    return (; iterations, converged, err_v, err_p)
+    return (; itPH = 1, iter, iterations = iter, err, err_v, err_P, err_p = err_P,
+        converged = err < ϵ_tol, reached_total_iter = iter >= total_iterMax && err >= ϵ_tol)
+end
+
+"""
+    solve_stokes_3d!(velocity, pressure, mesh, cell_phase, η, ρ, g,
+                     fixed_nodes; maxiter=3000, tolerance=1e-5,
+                     pressure_step=0.2, kwargs...)
+
+Compatibility wrapper for the 3-D [`solve_stokes_dyrel!`](@ref) method.
+`maxiter`, `tolerance`, and `pressure_step` map to `total_iterMax`, `ϵ_tol`,
+and `γP`, respectively.
+"""
+function solve_stokes_3d!(
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
+    η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
+    maxiter = 3000, tolerance = 1e-5, pressure_step = 0.2, kwargs...,
+)
+    return solve_stokes_dyrel!(
+        velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+        iterMax = maxiter, total_iterMax = maxiter, ϵ_tol = tolerance,
+        γP = pressure_step, verbose = false, kwargs...,
+    )
 end
 
 """
     solve_stokes_adjoint_3d!(velocity, pressure, objective_load, mesh,
-                             cell_phase, η, fixed_nodes; kwargs...)
+                             cell_phase, η, fixed_nodes; maxiter=3000,
+                             tolerance=1e-5, pressure_step=0.2, kwargs...)
 
 Solve the transpose of the linear viscous 3-D Stokes operator. The operator is
-symmetric, so this reuses [`solve_stokes_3d!`](@ref) with `objective_load` as
-the momentum right-hand side.
+symmetric, so this compatibility wrapper forwards to the 3-D
+[`solve_stokes_adjoint_dyrel!`](@ref) method.
+The compatibility keywords map to `total_iterMax`, `adjoint_tol`, and `γP`.
 """
 function solve_stokes_adjoint_3d!(
     velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3}; kwargs...,
+    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
+    maxiter = 3000, tolerance = 1e-5, pressure_step = 0.2, kwargs...,
 )
-    zero_phase = map(zero, η)
-    zero_g = ntuple(_ -> zero(first(η)), 3)
-    return solve_stokes_3d!(
-        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
-        load = objective_load, kwargs...,
+    return solve_stokes_adjoint_dyrel!(
+        velocity, pressure, objective_load, mesh, cell_phase, η, fixed_nodes;
+        iterMax = maxiter, total_iterMax = maxiter, adjoint_tol = tolerance,
+        γP = pressure_step, verbose = false, kwargs...,
     )
 end

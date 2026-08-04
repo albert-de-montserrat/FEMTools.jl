@@ -329,11 +329,42 @@ function solve_stokes_adjoint_dyrel!(
 end
 
 """
+    solve_stokes_adjoint_dyrel!(velocity, pressure, objective_load, mesh,
+                                cell_phase, η, fixed_nodes; kwargs...)
+
+Solve the transpose of the linear viscous 3-D Hex27/Q2--P1 Stokes operator
+through the same adjoint DYREL entry point used by the 2-D solver. The operator
+is symmetric, so the 3-D method reuses the dimension-matched forward residual
+and preconditioner with the objective derivative as its momentum load.
+Velocity and pressure are updated in place from their supplied initial guesses.
+`adjoint_tol` sets the combined residual tolerance; `iterMax` and
+`total_iterMax` set the iteration budget. The returned convergence statistics
+match the 3-D forward method.
+"""
+function solve_stokes_adjoint_dyrel!(
+    velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
+    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
+    ncheck = 100, adjoint_tol = 1e-5, iterMax = 3000,
+    total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
+    workgroup = 256, verbose = true,
+)
+    zero_phase = map(zero, η)
+    zero_g = ntuple(_ -> zero(first(η)), 3)
+    return solve_stokes_dyrel!(
+        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
+        ncheck, ϵ_tol = adjoint_tol, iterMax, total_iterMax, velocity_step, γP,
+        load = objective_load, workgroup, verbose,
+    )
+end
+
+"""
     stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
                                 cell_phase, η, ρ, g; phase=2)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
-viscous operator derivative for one material phase.
+viscous operator derivative for one material phase. `phase` selects the
+one-based material phase, and the returned named tuple contains
+`density_gradient` and `viscosity_gradient`.
 """
 function stokes_material_gradient_3d(
     forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,

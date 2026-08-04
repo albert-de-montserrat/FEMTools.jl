@@ -39,26 +39,27 @@ the four discontinuous P1 modes
 (1,\xi,\eta,\zeta),
 ```
 
-so every cell owns four pressure unknowns. The example assembles the symmetric
-saddle-point matrix directly with `SparseArrays`, fixes one pressure gauge
-unknown, applies free slip on all six walls, and solves the free degrees of
-freedom on the CPU.
+so every cell owns four pressure unknowns. The example applies free slip on all
+six walls and calls the package's `solve_stokes_dyrel!` solver, matching the
+solver entry point used by the 2-D example. Multiple dispatch selects the 3-D
+array layout for three velocity components and four cell-local pressure modes.
 
 ```sh
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
 ```
 
-The default problem contains 225 Hex27 cells and 2,255 velocity nodes. Its
-7,665-by-7,665 system reaches a free-degree-of-freedom residual of about
-``2.5\times10^{-15}``. The script writes `stokes_3D_sinking_block.vtk` with
+The default problem contains 225 Hex27 cells and 2,255 velocity nodes. The
+script writes `stokes_3D_sinking_block.vtk` with
 the three velocity components, cell-centre pressure, and material phase.
 
-[`solve_stokes_3d!`](@ref) provides the matrix-free package path for the same
-viscous Hex27/Q2--P1 discretization. It updates caller-owned velocity and
-pressure arrays with a diagonally preconditioned Uzawa iteration; the sparse
-solve remains the regression oracle.
+The 3-D `solve_stokes_dyrel!` method updates caller-owned velocity and pressure
+arrays with the same residual-driven solver interface as the 2-D method.
+[`solve_stokes_3d!`](@ref) remains as a compatibility wrapper; the sparse
+matrix assembly is retained only as a regression and discrete-adjoint oracle.
 
-[`solve_stokes_adjoint_3d!`](@ref) reuses this symmetric operator, and
+The 3-D [`solve_stokes_adjoint_dyrel!`](@ref) method reuses this symmetric
+operator through the same public adjoint solver entry point as the 2-D example.
+[`solve_stokes_adjoint_3d!`](@ref) remains as a compatibility wrapper, and
 [`stokes_material_gradient_3d`](@ref) contracts its fields for phase density
 and viscosity sensitivities.
 
@@ -77,7 +78,8 @@ For the linear system
 A(m)u=b(m), \qquad J=c^T u,
 ```
 
-the 3-D adjoint reuses the exact forward matrix and solves
+the 3-D adjoint solves the transpose system matrix-free with
+`solve_stokes_adjoint_dyrel!`:
 
 ```math
 A^T\lambda=c.
@@ -92,17 +94,15 @@ The material gradient is
 ```
 
 Density changes the gravity load, whereas viscosity changes the phase-2
-viscous matrix contribution. The executable checks both contractions against
-centred finite differences:
+viscous matrix contribution. The executable uses the opt-in sparse reference
+only to check both matrix-free contractions against centred finite differences:
 
 ```sh
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 ```
 
-With the default mesh, the relative differences are approximately
-``4.4\times10^{-11}`` for block density and ``6.9\times10^{-7}`` for block
-viscosity. The forward command checks its free-degree-of-freedom residual; the
-adjoint command raises an error if either gradient check exceeds its tolerance.
+The adjoint command raises an error if the iterative solve does not converge or
+if either gradient check exceeds its tolerance.
 
 ## Choosing an example
 
