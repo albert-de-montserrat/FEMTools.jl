@@ -104,6 +104,20 @@ end
 end
 
 """
+    launch!(kernel!, backend, workgroup, ndrange, args...)
+
+Launch a KernelAbstractions kernel over `ndrange` and synchronize `backend`.
+
+For a single kernel launch. Assemblers that launch several kernels, such as
+one per element color group, synchronize once after the last of them instead.
+"""
+@inline function launch!(kernel!, backend, workgroup, ndrange, args...)
+    kernel!(backend, workgroup)(args...; ndrange)
+    KA.synchronize(backend)
+    return nothing
+end
+
+"""
     jacobian_rowsums_and_diagonal(J) -> (rowsums, diags)
     jacobian_rowsums_and_diagonal(∂R∂same, ∂R∂other) -> (rowsums, diags)
 

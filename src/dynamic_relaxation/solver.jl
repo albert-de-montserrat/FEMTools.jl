@@ -134,9 +134,7 @@ after pseudo-transient updates. Returns `nothing`.
 """
 function apply_dirichlet!(v, dofs, vals, backend, workgroup)
     isempty(dofs) && return nothing
-    dirichlet_kernel!(backend, workgroup)(v, dofs, vals; ndrange = length(dofs))
-    KA.synchronize(backend)
-    return nothing
+    return launch!(dirichlet_kernel!, backend, workgroup, length(dofs), v, dofs, vals)
 end
 
 # ---------------------------------------------------------------------------

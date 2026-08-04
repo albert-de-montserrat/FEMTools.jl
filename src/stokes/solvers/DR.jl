@@ -9,21 +9,6 @@ function _stokes_cheb(Δτ, λmin, c_fact)
     return (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
 end
 
-@inline _normalize_stokes_verbose(verbose, verbose_inner, ::Nothing, ::Nothing) =
-    (Bool(verbose), Bool(verbose_inner))
-
-function _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
-    if verbose_PH !== nothing
-        Base.depwarn("`verbose_PH` is deprecated; use `verbose` instead", :solve_stokes_dyrel!)
-        verbose = verbose_PH
-    end
-    if verbose_DR !== nothing
-        Base.depwarn("`verbose_DR` is deprecated; use `verbose_inner` instead", :solve_stokes_dyrel!)
-        verbose_inner = verbose_DR
-    end
-    return Bool(verbose), Bool(verbose_inner)
-end
-
 """
     solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP;
                         plastic=nothing, workgroup=256, kwargs...)
@@ -154,8 +139,6 @@ function solve_stokes_dyrel!(
     rel_drop0 = 1.0e-2,
     verbose = true,
     verbose_inner = false,
-    verbose_PH = nothing,
-    verbose_DR = nothing,
     vx_nodes = Γnodes,
     vy_nodes = Γnodes,
     collect_history = false,
@@ -165,7 +148,7 @@ function solve_stokes_dyrel!(
     λmax_safety = 1.1,
     freeze_jacobian = plastic === nothing,
 )
-    verbose, verbose_inner = _normalize_stokes_verbose(verbose, verbose_inner, verbose_PH, verbose_DR)
+    verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
     spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
