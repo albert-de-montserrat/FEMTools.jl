@@ -166,10 +166,10 @@ _quadratic_line_∇N2(ξ::T) where T = -2ξ
 _quadratic_line_∇N3(ξ::T) where T = ξ + T(1/2)
 
 # Tensor-product quadrilateral and hexahedral elements reuse the 1D Lagrange
-# basis. The `side` or `node` argument is the reference coordinate of the local
-# node in that coordinate direction.
-_linear_line_N(ξ::T, side) where T = side == -1 ? (1 - ξ) * T(1/2) : (1 + ξ) * T(1/2)
-_linear_line_∇N(side::T) where T = side == -1 ? -T(1 / 2) : +T(1 / 2)
+# basis. The `node` argument is the reference coordinate of the local node in
+# that coordinate direction.
+_linear_line_N(ξ::T, node) where T = node == -1 ? (1 - ξ) * T(1/2) : (1 + ξ) * T(1/2)
+_linear_line_∇N(ξ::T, node) where T = node == -1 ? -T(1 / 2) : +T(1 / 2)
 
 function _quadratic_line_N(ξ, node)
     node == -1 && return _quadratic_line_N1(ξ)
@@ -181,6 +181,33 @@ function _quadratic_line_∇N(ξ, node)
     node == -1 && return _quadratic_line_∇N1(ξ)
     node == 0 && return _quadratic_line_∇N2(ξ)
     return _quadratic_line_∇N3(ξ)
+end
+
+"""
+    _tensor_product_shape_functions(line_N, line_∇N, nodes) -> ShapeFunctions
+
+Build the shape functions of a tensor-product element from a one-dimensional
+Lagrange basis.
+
+`nodes[a]` gives the reference coordinate of local node `a` in each direction,
+so `Nₐ(x) = ∏_d line_N(x_d, nodes[a][d])`. Each gradient component replaces one
+factor with `line_∇N` in the matching direction.
+"""
+function _tensor_product_shape_functions(
+        line_N, line_∇N,
+        nodes::Tuple{NTuple{D, Any}, Vararg{NTuple{D, Any}, M}},
+    ) where {D, M}
+    N = ntuple(Val(M + 1)) do a
+        node = nodes[a]
+        (x::Vararg{Any, D}) -> prod(ntuple(d -> line_N(x[d], node[d]), Val(D)))
+    end
+    ∇N = ntuple(Val(M + 1)) do a
+        node = nodes[a]
+        (x::Vararg{Any, D}) -> ntuple(Val(D)) do i
+            prod(ntuple(d -> (d == i ? line_∇N : line_N)(x[d], node[d]), Val(D)))
+        end
+    end
+    return ShapeFunctions(N, ∇N)
 end
 
 """
@@ -206,15 +233,15 @@ Return the four bilinear shape functions and gradients on the reference
 quadrilateral `-1 <= ξ <= 1`, `-1 <= η <= 1`.
 """
 function ShapeFunctions(::LinearElement{2, 4, T}) where T
-    N1 = (ξ, η) -> (1 - ξ) * (1 - η) * T(1/4)
-    N2 = (ξ, η) -> (1 + ξ) * (1 - η) * T(1/4)
-    N3 = (ξ, η) -> (1 + ξ) * (1 + η) * T(1/4)
-    N4 = (ξ, η) -> (1 - ξ) * (1 + η) * T(1/4)
-    ∇N1 = (ξ, η) -> (-(1 - η) * T(1/4), -(1 - ξ) * T(1/4))
-    ∇N2 = (ξ, η) -> (+(1 - η) * T(1/4), -(1 + ξ) * T(1/4))
-    ∇N3 = (ξ, η) -> (+(1 + η) * T(1/4), +(1 + ξ) * T(1/4))
-    ∇N4 = (ξ, η) -> (-(1 + η) * T(1/4), +(1 - ξ) * T(1/4))
-    return ShapeFunctions((N1, N2, N3, N4), (∇N1, ∇N2, ∇N3, ∇N4))
+    # Local node coordinates follow the ordering documented in
+    # `LinearElement{2, 4}`.
+    nodes = (
+        (-one(T), -one(T)),
+        (+one(T), -one(T)),
+        (+one(T), +one(T)),
+        (-one(T), +one(T)),
+    )
+    return _tensor_product_shape_functions(_linear_line_N, _linear_line_∇N, nodes)
 end
 
 """
@@ -224,6 +251,8 @@ Return the nine tensor-product quadratic shape functions and gradients on the
 reference quadrilateral `-1 <= ξ <= 1`, `-1 <= η <= 1`.
 """
 function ShapeFunctions(::QuadraticElement{2, 9, T}) where T
+    # Local node coordinates follow the ordering documented in
+    # `QuadraticElement{2, 9}`.
     nodes = (
         (-one(T), -one(T)),
         (+one(T), -one(T)),
@@ -235,20 +264,7 @@ function ShapeFunctions(::QuadraticElement{2, 9, T}) where T
         (-one(T), zero(T)),
         (zero(T), zero(T)),
     )
-
-    N = ntuple(Val(9)) do i
-        node = nodes[i]
-        (ξ, η) -> _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2])
-    end
-    ∇N = ntuple(Val(9)) do i
-        node = nodes[i]
-        (ξ, η) -> (
-            _quadratic_line_∇N(ξ, node[1]) * _quadratic_line_N(η, node[2]),
-            _quadratic_line_N(ξ, node[1]) * _quadratic_line_∇N(η, node[2]),
-        )
-    end
-
-    return ShapeFunctions(N, ∇N)
+    return _tensor_product_shape_functions(_quadratic_line_N, _quadratic_line_∇N, nodes)
 end
 
 """
@@ -353,20 +369,7 @@ function ShapeFunctions(::LinearElement{3, 8, T}) where T
         (-one(T), +one(T), +one(T)),
     )
 
-    N = ntuple(i -> begin
-        node = nodes[i]
-        (ξ, η, ζ) -> _linear_line_N(ξ, node[1]) * _linear_line_N(η, node[2]) * _linear_line_N(ζ, node[3])
-    end, Val(8))
-    ∇N = ntuple(i -> begin
-        node = nodes[i]
-        (ξ, η, ζ) -> (
-            _linear_line_∇N(node[1]) * _linear_line_N(η, node[2]) * _linear_line_N(ζ, node[3]),
-            _linear_line_N(ξ, node[1]) * _linear_line_∇N(node[2]) * _linear_line_N(ζ, node[3]),
-            _linear_line_N(ξ, node[1]) * _linear_line_N(η, node[2]) * _linear_line_∇N(node[3]),
-        )
-    end, Val(8))
-
-    return ShapeFunctions(N, ∇N)
+    return _tensor_product_shape_functions(_linear_line_N, _linear_line_∇N, nodes)
 end
 
 """
@@ -409,20 +412,7 @@ function ShapeFunctions(::QuadraticElement{3, 27, T}) where T
     )
 
 
-    N = ntuple(Val(27)) do i
-        node = nodes[i]
-        (ξ, η, ζ) -> _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3])
-    end
-    ∇N = ntuple(Val(27)) do i
-        node = nodes[i]
-        (ξ, η, ζ) -> (
-            _quadratic_line_∇N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_N(ζ, node[3]),
-            _quadratic_line_N(ξ, node[1]) * _quadratic_line_∇N(η, node[2]) * _quadratic_line_N(ζ, node[3]),
-            _quadratic_line_N(ξ, node[1]) * _quadratic_line_N(η, node[2]) * _quadratic_line_∇N(ζ, node[3]),
-        )
-    end
-
-    return ShapeFunctions(N, ∇N)
+    return _tensor_product_shape_functions(_quadratic_line_N, _quadratic_line_∇N, nodes)
 end
 
 """
