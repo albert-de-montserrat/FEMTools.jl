@@ -189,9 +189,9 @@ function solve_stokes_dyrel!(
             dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-            element_v, element_P, phases_v, phases_P, τ_old, plastic,
+            element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
-            backend, workgroup)
+            backend, workgroup; τ_old, plastic)
         nothing
     end
     λmax_gershgorin = max(
@@ -358,9 +358,9 @@ function solve_stokes_dyrel!(
                             dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
                             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
-                            element_v, element_P, phases_v, phases_P, τ_old, plastic,
+                            element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            dr.ηb, Δt, γP, M_P, backend, workgroup)
+                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic)
                         nothing
                     end
 
