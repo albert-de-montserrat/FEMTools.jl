@@ -68,3 +68,10 @@ the nodal phase assignments and linearised density equation of state.
     end
     return Re
 end
+
+# Argument bundle shared by the atomic and colored thermal assemblers, in the
+# order `element_residual` and `element_jacobian` consume it.
+@inline diffusion_element_arguments(T, T0, source, el2n, geo, phases,
+        k, Cp, ρ0, α, K, P, Δt, Tref, element) =
+    (T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref,
+     shape_function_values(element))

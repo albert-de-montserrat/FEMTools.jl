@@ -53,3 +53,9 @@ Integrate one element of `∫ (ρ(T, P) ∇Nᵢ⋅g - ∇Nᵢ⋅∇P) dΩ`, wher
     end
     return Re
 end
+
+# Argument bundle shared by the atomic and colored lithostatic-pressure
+# assemblers, in the order `lp_element_residual` and `lp_element_jacobian`
+# consume it.
+@inline lithostatic_element_arguments(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, element) =
+    (T, P, el2n, geo, phases, ρ0, α, K, Tref, g, shape_function_values(element))
