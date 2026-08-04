@@ -1,5 +1,34 @@
 dot_or_zero(a, ::Nothing) = zero(eltype(a))
 dot_or_zero(a, b) = dot(a, b)
+
+"""
+    eos_density(Nv, phase_loc, α, ρ0, β, Tq, Pq, Tref)
+
+Density at a quadrature point from the linearised equation of state
+`ρ = ρ0·(1 − α·(T − Tref) + β·P)`, with the per-phase properties interpolated
+from the element's nodal phase assignment. `β` is the compressibility `1/K`.
+"""
+@inline eos_density(Nv, phase_loc, α, ρ0, β, Tq, Pq, Tref) =
+    interp2ip_phase(Nv, ρ0, phase_loc) *
+    (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
+     interp2ip_phase(Nv, β, phase_loc) * Pq)
+
+"""
+    accumulate_momentum(R, ∂N∂x, Nv, τ, Ptotal, ρq, g, dΩ)
+
+Add one quadrature point's contribution to the element momentum residual,
+
+    Rᵢ += ∫ (∂Nᵢ/∂x_j·(τ_ji − P δ_ji) − Nᵢ·ρg_i) dΩ
+
+for every spatial direction `i`. `τ` is the full deviatoric stress tensor at
+the point and `Ptotal` the pressure including any numerical correction.
+"""
+@inline function accumulate_momentum(R::NTuple{D}, ∂N∂x, Nv, τ, Ptotal, ρq, g, dΩ) where {D}
+    return ntuple(Val(D)) do i
+        pressure = SVector{D}(ntuple(j -> j == i ? Ptotal : zero(Ptotal), Val(D)))
+        R[i] + (∂N∂x * (τ[:, i] - pressure) - Nv * (ρq * g[i])) * dΩ
+    end
+end
 @inline pressure_scale(γ_eff::Number, RP, MP) = γ_eff * RP ./ MP
 @inline pressure_scale(γ_eff::SVector, RP, MP) = γ_eff .* RP ./ MP
 @inline function _max_phase_value(var, phase_loc::SVector{N}) where N
@@ -102,10 +131,8 @@ quadrature-point stress output, as for the body-force-free method.
     plastic = nothing,
     τ_store = nothing,
 ) where {N, NP}
-    vxloc, vyloc = v
-    T    = promote_type(eltype(vxloc), eltype(vyloc))
-    Rv_x = zero(SVector{N, T})
-    Rv_y = zero(SVector{N, T})
+    T = promote_type(map(eltype, v)...)
+    R = ntuple(_ -> zero(SVector{N, T}), Val(2))
     # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
     # interp2ip_phase when quadratic shape functions are negative.
     β = map(inv, K)
@@ -113,21 +140,18 @@ quadrature-point stress output, as for the body-force-free method.
         ∂N∂x, dΩ = geo_v_el[q]
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q)
-        Pq    = dot(NqP[q], P_loc)
+        Pq = dot(NqP[q], P_loc)
+        # Plane strain: τzz = −(τxx + τyy) is carried by `deviatoric_stress`
+        # and never enters the in-plane residual.
         τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
-        Pnumq = dot_or_zero(NqP[q], Pnum_loc)
-        Tq    = dot(NqP[q], T_loc)
-        αq    = interp2ip_phase(Nv, α,  phase_loc)
-        βq    = interp2ip_phase(Nv, β,  phase_loc)
-        ρ0q   = interp2ip_phase(Nv, ρ0, phase_loc)
-        ρq    = ρ0q * (1 - αq * (Tq - Tref) + βq * Pq)
-        # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy − Nᵢ·ρgₓ) dΩ
-        Rv_x += (∂N∂x[:, 1] * (τxx - Pq - Pnumq) + ∂N∂x[:, 2] * τxy) * dΩ - Nv * (ρq * g[1] * dΩ)
-        # y-momentum: ∫ (∂Nᵢ/∂y·(τyy−P) + ∂Nᵢ/∂x·τxy − Nᵢ·ρgᵧ) dΩ
-        Rv_y += (∂N∂x[:, 2] * (τyy - Pq - Pnumq) + ∂N∂x[:, 1] * τxy) * dΩ - Nv * (ρq * g[2] * dΩ)
+        τ = SMatrix{2, 2}(τxx, τxy, τxy, τyy)
+        Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
+        Tq = dot(NqP[q], T_loc)
+        ρq = eos_density(Nv, phase_loc, α, ρ0, β, Tq, Pq, Tref)
+        R = accumulate_momentum(R, ∂N∂x, Nv, τ, Ptotal, ρq, g, dΩ)
     end
-    return Rv_x, Rv_y
+    return R
 end
 
 """
@@ -170,12 +194,8 @@ gravity. This is the element operator used by the Hex27/Q2--P1 solver path.
         Pq = dot(NqP[q], P_loc)
         Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
         Tq = dot(NqP[q], T_loc)
-        ρq = interp2ip_phase(Nv, ρ0, phase_loc) *
-             (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
-              interp2ip_phase(Nv, β, phase_loc) * Pq)
-        R = ntuple(i -> R[i] +
-            (∂N∂x * (τ[:, i] - SVector{3, T}(ntuple(j -> i == j ? Ptotal : zero(Ptotal), 3))) -
-             Nv * (ρq * g[i])) * dΩ, 3)
+        ρq = eos_density(Nv, phase_loc, α, ρ0, β, Tq, Pq, Tref)
+        R = accumulate_momentum(R, ∂N∂x, Nv, τ, Ptotal, ρq, g, dΩ)
     end
     return R
 end
