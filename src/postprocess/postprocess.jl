@@ -1,131 +1,38 @@
-"""
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v)
+# Element-averaged diagnostics, in the order the accumulator carries them.
+const _DIAGNOSTIC_FIELDS = (:εxx, :εyy, :εzz, :εxy, :εII, :τxx, :τyy, :τzz, :τxy, :tauII)
 
-Compute element-averaged strain-rate and current deviatoric-stress diagnostics
-from integration-point stresses.
 """
-function compute_strain_rate_stress_postprocess(
+    _strain_rate_stress_diagnostics(vx, vy, el2n_v, geo_v, element_v, element_stress)
+
+Volume-average strain-rate and deviatoric-stress diagnostics over each element.
+
+`element_stress(iel, local_nodes)` returns the stress law for one element as a
+callable `(q, Nv, ε_dev) -> (τxx, τyy, τzz, τxy)`, where `ε_dev` holds the
+deviatoric strain rate `(εxx, εyy, εzz, εxy)` at quadrature point `q`. Gathering
+the element's nodal data in `element_stress` keeps it out of the quadrature
+loop.
+
+Each field is integrated against `dΩ` and divided by the element volume.
+"""
+function _strain_rate_stress_diagnostics(
     vx, vy,
     el2n_v,
     geo_v,
-    τ_ip,
     element_v::ReferenceElement{TV},
+    element_stress,
 ) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
-
-    εxx = zeros(FP, nels)
-    εyy = zeros(FP, nels)
-    εzz = zeros(FP, nels)
-    εxy = zeros(FP, nels)
-    εII = zeros(FP, nels)
-    τxx = zeros(FP, nels)
-    τyy = zeros(FP, nels)
-    τzz = zeros(FP, nels)
-    τxy = zeros(FP, nels)
-    τII = zeros(FP, nels)
+    fields = ntuple(_ -> zeros(FP, nels), length(_DIAGNOSTIC_FIELDS))
 
     for iel in 1:nels
         local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
+        stress_at_ip = element_stress(iel, local_nodes)
         geo_el = geo_v[iel]
-        volume = zero(FP)
 
-        for q in eachindex(geo_el)
-            ∂N∂x, dΩ = geo_el[q]
-
-            ∇vx = ∂N∂x' * vxloc
-            ∇vy = ∂N∂x' * vyloc
-
-            εxx_q = ∇vx[1]
-            εyy_q = ∇vy[2]
-            εzz_q = zero(εxx_q)
-            εxy_q = (∇vx[2] + ∇vy[1]) / 2
-
-            tr = (εxx_q + εyy_q + εzz_q) / 3
-            εxx_dev = εxx_q - tr
-            εyy_dev = εyy_q - tr
-            εzz_dev = εzz_q - tr
-
-            τxx_q = τ_ip[1][q, iel]
-            τyy_q = τ_ip[2][q, iel]
-            τxy_q = τ_ip[3][q, iel]
-            τzz_q = -(τxx_q + τyy_q)
-
-            εII_q = sqrt((εxx_dev^2 + εyy_dev^2 + εzz_dev^2) / 2 + εxy_q^2)
-            τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
-
-            εxx[iel] += εxx_q * dΩ
-            εyy[iel] += εyy_q * dΩ
-            εzz[iel] += εzz_q * dΩ
-            εxy[iel] += εxy_q * dΩ
-            εII[iel] += εII_q * dΩ
-            τxx[iel] += τxx_q * dΩ
-            τyy[iel] += τyy_q * dΩ
-            τzz[iel] += τzz_q * dΩ
-            τxy[iel] += τxy_q * dΩ
-            τII[iel] += τII_q * dΩ
-            volume += dΩ
-        end
-
-        εxx[iel] /= volume
-        εyy[iel] /= volume
-        εzz[iel] /= volume
-        εxy[iel] /= volume
-        εII[iel] /= volume
-        τxx[iel] /= volume
-        τyy[iel] /= volume
-        τzz[iel] /= volume
-        τxy[iel] /= volume
-        τII[iel] /= volume
-    end
-
-    return (;
-        εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy,
-        tauII = τII,
-    )
-end
-
-"""
-    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v)
-
-Compute element-averaged strain-rate and viscoelastic deviatoric-stress
-diagnostics from nodal old-stress fields.
-"""
-function compute_strain_rate_stress_postprocess(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    phases_v,
-    τ_old,
-    η, G, Δt,
-    element_v::ReferenceElement{TV},
-) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
-    nels = size(el2n_v, 2)
-    Nq = shape_function_values(element_v)
-
-    εxx = zeros(FP, nels)
-    εyy = zeros(FP, nels)
-    εzz = zeros(FP, nels)
-    εxy = zeros(FP, nels)
-    εII = zeros(FP, nels)
-    τxx = zeros(FP, nels)
-    τyy = zeros(FP, nels)
-    τzz = zeros(FP, nels)
-    τxy = zeros(FP, nels)
-    τII = zeros(FP, nels)
-
-    for iel in 1:nels
-        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
-        vxloc = _gather_local(vx, local_nodes, Val(NV))
-        vyloc = _gather_local(vy, local_nodes, Val(NV))
-        τxx_old_loc = _gather_local(τ_old[1], local_nodes, Val(NV))
-        τyy_old_loc = _gather_local(τ_old[2], local_nodes, Val(NV))
-        τxy_old_loc = _gather_local(τ_old[3], local_nodes, Val(NV))
-        phase_loc = _gather_phase(phases_v, local_nodes, iel, Val(NV))
-        geo_el = geo_v[iel]
+        totals = ntuple(_ -> zero(FP), length(_DIAGNOSTIC_FIELDS))
         volume = zero(FP)
 
         for q in eachindex(geo_el)
@@ -141,12 +48,84 @@ function compute_strain_rate_stress_postprocess(
             εxy_q = (∇vx[2] + ∇vy[1]) / 2
 
             tr = (εxx_q + εyy_q + εzz_q) / 3
-            εxx_dev = εxx_q - tr
-            εyy_dev = εyy_q - tr
-            εzz_dev = εzz_q - tr
+            ε_dev = (εxx_q - tr, εyy_q - tr, εzz_q - tr, εxy_q)
 
+            τxx_q, τyy_q, τzz_q, τxy_q = stress_at_ip(q, Nv, ε_dev)
+
+            εII_q = sqrt((ε_dev[1]^2 + ε_dev[2]^2 + ε_dev[3]^2) / 2 + εxy_q^2)
+            τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
+
+            contribution = (
+                εxx_q, εyy_q, εzz_q, εxy_q, εII_q,
+                τxx_q, τyy_q, τzz_q, τxy_q, τII_q,
+            )
+            totals = map((total, value) -> total + value * dΩ, totals, contribution)
+            volume += dΩ
+        end
+
+        for (field, total) in zip(fields, totals)
+            field[iel] = total / volume
+        end
+    end
+
+    return NamedTuple{_DIAGNOSTIC_FIELDS}(fields)
+end
+
+"""
+    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, τ_ip, element_v)
+
+Compute element-averaged strain-rate and current deviatoric-stress diagnostics
+from integration-point stresses.
+
+`τ_ip` holds `(τxx, τyy, τxy)` as `nq × nels` matrices; the out-of-plane
+component follows from the deviatoric constraint `τzz = −(τxx + τyy)`.
+"""
+function compute_strain_rate_stress_postprocess(
+    vx, vy,
+    el2n_v,
+    geo_v,
+    τ_ip,
+    element_v::ReferenceElement{TV},
+) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
+    function element_stress(iel, _)
+        return function (q, _, _)
+            τxx_q = τ_ip[1][q, iel]
+            τyy_q = τ_ip[2][q, iel]
+            return τxx_q, τyy_q, -(τxx_q + τyy_q), τ_ip[3][q, iel]
+        end
+    end
+    return _strain_rate_stress_diagnostics(vx, vy, el2n_v, geo_v, element_v, element_stress)
+end
+
+"""
+    compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v)
+
+Compute element-averaged strain-rate and viscoelastic deviatoric-stress
+diagnostics from nodal old-stress fields.
+
+Stress follows the Maxwell viscoelastic law
+`τ = 2 ηeff (ε_dev + τ_old / (2 G Δt))` with `ηeff = (1/η + 1/(G Δt))⁻¹`.
+Compliance `1/G` is interpolated rather than `G`, so the purely viscous limit
+`G = Inf` stays finite where quadratic shape functions are negative.
+"""
+function compute_strain_rate_stress_postprocess(
+    vx, vy,
+    el2n_v,
+    geo_v,
+    phases_v,
+    τ_old,
+    η, G, Δt,
+    element_v::ReferenceElement{TV},
+) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
+    invG = map(inv, G)
+    function element_stress(iel, local_nodes)
+        τxx_old_loc = _gather_local(τ_old[1], local_nodes, Val(NV))
+        τyy_old_loc = _gather_local(τ_old[2], local_nodes, Val(NV))
+        τxy_old_loc = _gather_local(τ_old[3], local_nodes, Val(NV))
+        phase_loc = _gather_phase(phases_v, local_nodes, iel, Val(NV))
+        return function (_, Nv, ε_dev)
             ηq = interp2ip_phase(Nv, η, phase_loc)
-            invGq = interp2ip_phase(Nv, map(inv, G), phase_loc)
+            invGq = interp2ip_phase(Nv, invG, phase_loc)
             ηeff_q = inv(inv(ηq) + invGq / Δt)
             inv_2Gdt = invGq / (2 * Δt)
 
@@ -155,44 +134,15 @@ function compute_strain_rate_stress_postprocess(
             τxy_old_q = dot(Nv, τxy_old_loc)
             τzz_old_q = -(τxx_old_q + τyy_old_q)
 
-            τxx_q = 2 * ηeff_q * (εxx_dev + τxx_old_q * inv_2Gdt)
-            τyy_q = 2 * ηeff_q * (εyy_dev + τyy_old_q * inv_2Gdt)
-            τzz_q = 2 * ηeff_q * (εzz_dev + τzz_old_q * inv_2Gdt)
-            τxy_q = 2 * ηeff_q * (εxy_q + τxy_old_q * inv_2Gdt)
-
-            εII_q = sqrt((εxx_dev^2 + εyy_dev^2 + εzz_dev^2) / 2 + εxy_q^2)
-            τII_q = sqrt((τxx_q^2 + τyy_q^2 + τzz_q^2) / 2 + τxy_q^2)
-
-            εxx[iel] += εxx_q * dΩ
-            εyy[iel] += εyy_q * dΩ
-            εzz[iel] += εzz_q * dΩ
-            εxy[iel] += εxy_q * dΩ
-            εII[iel] += εII_q * dΩ
-            τxx[iel] += τxx_q * dΩ
-            τyy[iel] += τyy_q * dΩ
-            τzz[iel] += τzz_q * dΩ
-            τxy[iel] += τxy_q * dΩ
-            τII[iel] += τII_q * dΩ
-            volume += dΩ
+            return (
+                2 * ηeff_q * (ε_dev[1] + τxx_old_q * inv_2Gdt),
+                2 * ηeff_q * (ε_dev[2] + τyy_old_q * inv_2Gdt),
+                2 * ηeff_q * (ε_dev[3] + τzz_old_q * inv_2Gdt),
+                2 * ηeff_q * (ε_dev[4] + τxy_old_q * inv_2Gdt),
+            )
         end
-
-        εxx[iel] /= volume
-        εyy[iel] /= volume
-        εzz[iel] /= volume
-        εxy[iel] /= volume
-        εII[iel] /= volume
-        τxx[iel] /= volume
-        τyy[iel] /= volume
-        τzz[iel] /= volume
-        τxy[iel] /= volume
-        τII[iel] /= volume
     end
-
-    return (;
-        εxx, εyy, εzz, εxy, εII,
-        τxx, τyy, τzz, τxy,
-        tauII = τII,
-    )
+    return _strain_rate_stress_diagnostics(vx, vy, el2n_v, geo_v, element_v, element_stress)
 end
 
 """
