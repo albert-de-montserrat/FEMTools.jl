@@ -960,11 +960,7 @@ end
         ),
         vyloc,
     )
-    rowsums_x = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVx∂vx[i, j]) + abs(∂RVx∂vy[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
-    diags_x   = SVector{NV}(ntuple(i -> abs(∂RVx∂vx[i, i]), Val(NV)))
+    rowsums_x, diags_x = jacobian_rowsums_and_diagonal(∂RVx∂vx, ∂RVx∂vy)
 
     ∂RVy∂vy = ForwardDiff.jacobian(
         vy_loc -> integrate_momentum_y_residual(
@@ -980,11 +976,7 @@ end
         ),
         vxloc,
     )
-    rowsums_y = SVector{NV}(ntuple(
-        i -> sum(abs(∂RVy∂vy[i, j]) + abs(∂RVy∂vx[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
-    diags_y   = SVector{NV}(ntuple(i -> abs(∂RVy∂vy[i, i]), Val(NV)))
+    rowsums_y, diags_y = jacobian_rowsums_and_diagonal(∂RVy∂vy, ∂RVy∂vx)
 
     return local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y
 end
@@ -1187,25 +1179,6 @@ end
         vxloc,
     )
     return local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy
-end
-
-"""
-    jacobian_rowsums_and_diagonal(∂R∂same, ∂R∂other) -> (rowsums, diags)
-
-Reduce a pair of element Jacobian blocks to the absolute row sums and the
-absolute diagonal of the block differentiated with respect to its own velocity
-component. The row sums bound the preconditioned spectral radius by Gershgorin;
-the diagonal is the Jacobi preconditioner.
-"""
-@inline function jacobian_rowsums_and_diagonal(
-        ∂R∂same::SMatrix{NV, NV}, ∂R∂other::SMatrix{NV, NV},
-    ) where {NV}
-    rowsums = SVector{NV}(ntuple(
-        i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:NV),
-        Val(NV),
-    ))
-    diags = SVector{NV}(ntuple(i -> abs(∂R∂same[i, i]), Val(NV)))
-    return rowsums, diags
 end
 
 """

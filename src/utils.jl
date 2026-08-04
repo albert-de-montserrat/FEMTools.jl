@@ -103,6 +103,36 @@ end
     return nothing
 end
 
+"""
+    jacobian_rowsums_and_diagonal(J) -> (rowsums, diags)
+    jacobian_rowsums_and_diagonal(∂R∂same, ∂R∂other) -> (rowsums, diags)
+
+Reduce an element Jacobian to absolute row sums and absolute diagonal. The row
+sums bound the preconditioned spectral radius by Gershgorin; the diagonal is
+the Jacobi preconditioner.
+
+The two-block form is for coupled systems: `∂R∂same` is the block
+differentiated with respect to its own solution component and `∂R∂other` the
+off-diagonal coupling block. Row sums span both blocks; the diagonal is taken
+from `∂R∂same` alone.
+"""
+@inline function jacobian_rowsums_and_diagonal(J::StaticMatrix{N, N}) where {N}
+    rowsums = SVector{N}(ntuple(i -> sum(abs(J[i, j]) for j in 1:N), Val(N)))
+    diags = SVector{N}(ntuple(i -> abs(J[i, i]), Val(N)))
+    return rowsums, diags
+end
+
+@inline function jacobian_rowsums_and_diagonal(
+        ∂R∂same::StaticMatrix{N, N}, ∂R∂other::StaticMatrix{N, N},
+    ) where {N}
+    rowsums = SVector{N}(ntuple(
+        i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:N),
+        Val(N),
+    ))
+    diags = SVector{N}(ntuple(i -> abs(∂R∂same[i, i]), Val(N)))
+    return rowsums, diags
+end
+
 function _checked_λmax(jacobian, PC, label)
     λmax = maximum(jacobian ./ PC)
     if !(isfinite(λmax) && λmax > zero(λmax))

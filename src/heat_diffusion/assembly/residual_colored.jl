@@ -45,27 +45,20 @@ end
         @Const(el2n), @Const(geo), @Const(phases), k, Cp, ρ0, α, K, @Const(P),
         Δt, Tref, Nq, @Const(group), ::Val{N}) where N
     i = @index(Global)
-    iel = group[i]
-    local_nodes, Re = element_residual(
+    nodes, Re = element_residual(
         T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq,
-        iel, Val(N),
+        group[i], Val(N),
     )
-    for (i, node) in enumerate(local_nodes)
-        R[node] += Re[i]
-    end
+    _add_local!(R, nodes, Re, Val(false))
 end
 
 @kernel function jacobian_colored_kernel!(∂R∂T, PC, @Const(T), @Const(T0),
         @Const(source), @Const(el2n), @Const(geo), @Const(phases), k, Cp, ρ0,
         α, K, @Const(P), Δt, Tref, Nq, @Const(group), ::Val{N}) where N
     i = @index(Global)
-    iel = group[i]
-    local_nodes, rowsums, diags = element_jacobian(
+    nodes, rowsums, diags = element_jacobian(
         T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq,
-        iel, Val(N),
+        group[i], Val(N),
     )
-    for (i, node) in enumerate(local_nodes)
-        ∂R∂T[node] += rowsums[i]
-        PC[node] += diags[i]
-    end
+    _add_local_pair!(∂R∂T, PC, nodes, rowsums, diags, Val(false))
 end

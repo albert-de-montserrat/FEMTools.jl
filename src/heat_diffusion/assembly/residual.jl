@@ -38,8 +38,7 @@ Return element node indices, absolute Jacobian row sums, and absolute diagonal.
             Δt, Tref, Nq, Val(N),
         )
     end
-    rowsums = SVector{N}(ntuple(i -> sum(abs(J[i, j]) for j in 1:N), Val(N)))
-    diags = SVector{N}(ntuple(i -> abs(J[i, i]), Val(N)))
+    rowsums, diags = jacobian_rowsums_and_diagonal(J)
     return nodes, rowsums, diags
 end
 

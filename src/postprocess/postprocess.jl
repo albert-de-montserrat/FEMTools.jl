@@ -26,9 +26,9 @@ function compute_strain_rate_stress_postprocess(
     τII = zeros(FP, nels)
 
     for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
+        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+        vxloc = _gather_local(vx, local_nodes, Val(NV))
+        vyloc = _gather_local(vy, local_nodes, Val(NV))
         geo_el = geo_v[iel]
         volume = zero(FP)
 
@@ -88,12 +88,6 @@ function compute_strain_rate_stress_postprocess(
     )
 end
 
-@inline _phase_at_postprocess(phases::AbstractMatrix, _, i, iel) =
-    Int(phases[size(phases, 1) == 1 ? 1 : i, iel])
-@inline _phase_at_postprocess(phases, local_nodes, i, _) = Int(phases[local_nodes[i]])
-@inline _phase_loc_postprocess(phases, local_nodes, iel, ::Val{N}) where {N} =
-    SVector{N}(ntuple(i -> _phase_at_postprocess(phases, local_nodes, i, iel), Val(N)))
-
 """
     compute_strain_rate_stress_postprocess(vx, vy, el2n_v, geo_v, phases_v, τ_old, η, G, Δt, element_v)
 
@@ -124,13 +118,13 @@ function compute_strain_rate_stress_postprocess(
     τII = zeros(FP, nels)
 
     for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
-        τxx_old_loc = SVector{NV}(ntuple(i -> τ_old[1][local_nodes[i]], Val(NV)))
-        τyy_old_loc = SVector{NV}(ntuple(i -> τ_old[2][local_nodes[i]], Val(NV)))
-        τxy_old_loc = SVector{NV}(ntuple(i -> τ_old[3][local_nodes[i]], Val(NV)))
-        phase_loc = _phase_loc_postprocess(phases_v, local_nodes, iel, Val(NV))
+        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+        vxloc = _gather_local(vx, local_nodes, Val(NV))
+        vyloc = _gather_local(vy, local_nodes, Val(NV))
+        τxx_old_loc = _gather_local(τ_old[1], local_nodes, Val(NV))
+        τyy_old_loc = _gather_local(τ_old[2], local_nodes, Val(NV))
+        τxy_old_loc = _gather_local(τ_old[3], local_nodes, Val(NV))
+        phase_loc = _gather_phase(phases_v, local_nodes, iel, Val(NV))
         geo_el = geo_v[iel]
         volume = zero(FP)
 
