@@ -169,3 +169,25 @@ for FP in (FP32, FP64)
         end
     end
 end
+
+@testset "lithostatic incompressible limit stays finite" begin
+    # As for the thermal residual: interpolating 1/K rather than K keeps K=Inf
+    # finite where a quadratic shape function is negative.
+    dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
+    geo_el = ((dNdx, 1.0),)
+    Nq = (SA[-0.25, 1.25],)
+
+    Tloc = SA[300.0, 300.0]
+    Ploc = SA[1.0e6, 1.0e6]
+    g = (0.0, -9.81)
+
+    incompressible = FEMTools.lp_integrate_residual(
+        Ploc, Tloc, geo_el, SA[1, 1], (2.0,), (0.1,), (Inf,), 300.0, g, Nq, Val(2),
+    )
+    @test all(isfinite, incompressible)
+
+    stiff = FEMTools.lp_integrate_residual(
+        Ploc, Tloc, geo_el, SA[1, 1], (2.0,), (0.1,), (1.0e30,), 300.0, g, Nq, Val(2),
+    )
+    @test stiff ≈ incompressible
+end

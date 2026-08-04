@@ -41,14 +41,17 @@ Integrate one element of `∫ (ρ(T, P) ∇Nᵢ⋅g - ∇Nᵢ⋅∇P) dΩ`, wher
 """
 @inline function lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, ::Val{N}) where N
     Re = zero(Ploc)
+    # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
+    # interp2ip_phase when quadratic shape functions are negative.
+    β = map(inv, K)
     for q in eachindex(geo_el)
         ∂N∂x, dΩ = geo_el[q]
         Nv = Nq[q]
         Tq = dot(Nv, Tloc)
         Pq = dot(Nv, Ploc)
         αq = interp2ip_phase(Nv, α, phase_loc)
-        Kq = interp2ip_phase(Nv, K, phase_loc)
-        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + Pq / Kq)
+        βq = interp2ip_phase(Nv, β, phase_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + βq * Pq)
         Re += (ρq * (∂N∂x * SVector(g)) - ∂N∂x * (∂N∂x' * Ploc)) * dΩ
     end
     return Re
