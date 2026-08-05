@@ -468,7 +468,7 @@ let
         )
         Rτ_x, Rτ_y = FEMTools.integrate_momentum_residual(
             (vx0, vy0), P0_loc, nothing, T_loc,
-            geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, τ_old, Nq, NqP_v,
+            geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, Nq, NqP_v, τ_old,
         )
         @test !isapprox(Rτ_x, R0_x)
         @test !isapprox(Rτ_y, R0_y)

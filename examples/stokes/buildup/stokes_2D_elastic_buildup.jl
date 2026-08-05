@@ -181,9 +181,9 @@ function main(;
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, dr.M_P,
-            backend, workgroup,
+            backend, workgroup; τ_old, plastic,
         )
         λmax_vx0 = max(maximum(dr.∂Rv_x∂vx ./ dr.PC_vx), eps(Float64))
         λmax_vy0 = max(maximum(dr.∂Rv_y∂vy ./ dr.PC_vy), eps(Float64))
@@ -283,9 +283,9 @@ function main(;
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, dr.M_P,
-                        backend, workgroup,
+                        backend, workgroup; τ_old, plastic,
                     )
                 end
 

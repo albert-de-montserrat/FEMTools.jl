@@ -38,8 +38,7 @@ Return element node indices, absolute Jacobian row sums, and absolute diagonal.
             Δt, Tref, Nq, Val(N),
         )
     end
-    rowsums = SVector{N}(ntuple(i -> sum(abs(J[i, j]) for j in 1:N), Val(N)))
-    diags = SVector{N}(ntuple(i -> abs(J[i, i]), Val(N)))
+    rowsums, diags = jacobian_rowsums_and_diagonal(J)
     return nodes, rowsums, diags
 end
 
@@ -51,6 +50,9 @@ the nodal phase assignments and linearised density equation of state.
 """
 @inline function integrate_residual(Tloc, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc, Δt, Tref, Nq, ::Val{N}) where N
     Re = zero(Tloc)
+    # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
+    # interp2ip_phase when quadratic shape functions are negative.
+    β = map(inv, K)
     for q in eachindex(geo_el)
         ∂N∂x, dΩ = geo_el[q]
         Nv = Nq[q]
@@ -58,8 +60,8 @@ the nodal phase assignments and linearised density equation of state.
         Pq = dot(Nv, Ploc)
         kq = interp2ip_phase(Nv, k, phase_loc)
         αq = interp2ip_phase(Nv, α, phase_loc)
-        Kq = interp2ip_phase(Nv, K, phase_loc)
-        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + Pq / Kq)
+        βq = interp2ip_phase(Nv, β, phase_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + βq * Pq)
         Δt_ρCp = Δt / (ρq * interp2ip_phase(Nv, Cp, phase_loc))
         KTloc = kq * (∂N∂x * (∂N∂x' * Tloc))
         Re += SVector{N}(ntuple(Val(N)) do i
@@ -69,3 +71,10 @@ the nodal phase assignments and linearised density equation of state.
     end
     return Re
 end
+
+# Argument bundle shared by the atomic and colored thermal assemblers, in the
+# order `element_residual` and `element_jacobian` consume it.
+@inline diffusion_element_arguments(T, T0, source, el2n, geo, phases,
+        k, Cp, ρ0, α, K, P, Δt, Tref, element) =
+    (T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref,
+     shape_function_values(element))

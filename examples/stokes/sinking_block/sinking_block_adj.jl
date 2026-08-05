@@ -147,8 +147,8 @@ end
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
         (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
         (η_element[iel],), (G[phase],), (α[phase],),
-        (ρ_element[iel],), (K[phase],), g, Tref, Δt,
-        τ_old_e, nothing, Nq, NqP,
+        (ρ_element[iel],), (K[phase],), g, Tref, Δt, Nq, NqP,
+        τ_old_e,
     )
     contracted_residual[iel] = -(dot(λx_e, Re_x) + dot(λy_e, Re_y))
 end

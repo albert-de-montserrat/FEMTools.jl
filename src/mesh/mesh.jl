@@ -320,71 +320,72 @@ function generate_coordinates(::ReferenceElement{QuadraticElement{1, 3, T}}, Ω:
 end
 
 """
-    generate_coordinates(element::ReferenceElement{<:LinearElement{2, 3}}, Ω, nels)
+    _tensor_grid_coordinates(T, Ω, nels, nodes_per_element)
 
-Generate coordinates for a structured linear triangular mesh over a rectangular
-domain. Each quadrilateral cell is split into two triangles, so the node grid is
-the same `(nx+1) × (ny+1)` layout as the quadrilateral case.
+Generate the nodes of a structured tensor-product grid over the box `Ω`.
+
+`nels` gives the element count per axis and `nodes_per_element` the node
+spacings each element contributes to an axis, so an axis carries
+`nodes_per_element * nels[d] + 1` nodes. Coordinates are returned as
+`SVector{nDim, T}` with the first axis varying fastest.
 """
-function generate_coordinates(
-    ::ReferenceElement{LinearElement{2, 3, T}},
-    Ω,
-    nels::NTuple{2, <:Integer},
-) where {T}
-    nx, ny = nels
+function _tensor_grid_coordinates(::Type{T}, Ω, nels::NTuple{nDim, <:Integer}, nodes_per_element) where {T, nDim}
     left = leftendpoint(Ω)
     right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], nx + 1)
-    ys = LinRange(left[2], right[2], ny + 1)
-
-    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
-    inode = 1
-    for y in ys, x in xs
-        coords[inode] = SVector{2, T}(x, y)
-        inode += 1
+    grid = ntuple(d -> LinRange(left[d], right[d], nodes_per_element * nels[d] + 1), nDim)
+    coords = Vector{SVector{nDim, T}}(undef, prod(length, grid))
+    for (inode, node) in enumerate(Iterators.product(grid...))
+        coords[inode] = SVector{nDim, T}(node)
     end
-
     return coords
 end
 
 """
-    generate_coordinates(element::ReferenceElement{<:LinearElement{2, 4}}, Ω, nels)
+    generate_coordinates(element::ReferenceElement, Ω, nels)
 
-Generate coordinates for a linear quadrilateral mesh over a rectangular domain.
+Generate mesh coordinates for `element` over the box domain `Ω`, given the
+per-axis element counts `nels`.
 
-The rectangular domain is passed as `(xmin..xmax) × (ymin..ymax)` and the
-number of elements as `(nx, ny)`. Coordinates are returned as
-`SVector{2, Float64}` values with the x-coordinate varying fastest.
+The elements below lie on a structured tensor-product grid, with the
+x-coordinate varying fastest. Linear elements place nodes on the
+`(nx+1) × (ny+1) × …` element grid; quadratic elements add edge-midpoint and
+interior nodes on the refined `(2nx+1) × (2ny+1) × …` grid.
+
+| Element                      | Grid                          |
+|:---------------------------- |:----------------------------- |
+| `LinearElement{2, 3}` (T3)   | `(nx+1) × (ny+1)`             |
+| `LinearElement{2, 4}` (Q4)   | `(nx+1) × (ny+1)`             |
+| `QuadraticElement{2, 6}` (T6)| `(2nx+1) × (2ny+1)`           |
+| `QuadraticElement{2, 9}` (Q9)| `(2nx+1) × (2ny+1)`           |
+| `LinearElement{3, 8}` (H8)   | `(nx+1) × (ny+1) × (nz+1)`    |
+| `QuadraticElement{3, 27}` (H27) | `(2nx+1) × (2ny+1) × (2nz+1)` |
+
+Triangular meshes split each quadrilateral cell into two triangles, which
+changes the connectivity but not the node grid. `QuadraticElement{2, 7}` (T7)
+extends the T6 grid with one centroid node per element, and the
+one-dimensional elements have their own methods.
 """
-function generate_coordinates(
-    ::ReferenceElement{LinearElement{2, 4, T}},
-    Ω,
-    nels::NTuple{2, <:Integer},
-) where {T}
-    nx, ny = nels
-    left = leftendpoint(Ω)
-    right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], nx + 1)
-    ys = LinRange(left[2], right[2], ny + 1)
-
-    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
-    inode = 1
-    for y in ys, x in xs
-        coords[inode] = SVector{2, T}(x, y)
-        inode += 1
-    end
-
-    return coords
-end
+generate_coordinates(::ReferenceElement{LinearElement{2, 3, T}}, Ω, nels::NTuple{2, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 1)
+generate_coordinates(::ReferenceElement{LinearElement{2, 4, T}}, Ω, nels::NTuple{2, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 1)
+generate_coordinates(::ReferenceElement{QuadraticElement{2, 6, T}}, Ω, nels::NTuple{2, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 2)
+generate_coordinates(::ReferenceElement{QuadraticElement{2, 9, T}}, Ω, nels::NTuple{2, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 2)
+generate_coordinates(::ReferenceElement{LinearElement{3, 8, T}}, Ω, nels::NTuple{3, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 1)
+generate_coordinates(::ReferenceElement{QuadraticElement{3, 27, T}}, Ω, nels::NTuple{3, <:Integer}) where {T} =
+    _tensor_grid_coordinates(T, Ω, nels, 2)
 
 """
     generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 7}}, Ω, nels)
 
 Generate coordinates for a structured T7 mesh (T6 + centroid bubble node).
 
-The first `(2nx+1)×(2ny+1)` entries are the T6 tensor-grid nodes (identical
-to `QuadraticElement{2, 6}`). The remaining `2·nx·ny` entries are the element
-centroids, appended one per element in the same loop order used by
+The first `(2nx+1)×(2ny+1)` entries are the T6 tensor-grid nodes. The
+remaining `2·nx·ny` entries are the element centroids, appended one per
+element in the same loop order used by
 `generate_element2node(QuadraticElement{2, 7})`: `ey` outer, `ex` inner,
 first triangle then second triangle of each quad cell.
 """
@@ -394,167 +395,24 @@ function generate_coordinates(
     nels::NTuple{2, <:Integer},
 ) where {T}
     nx, ny = nels
+    coords = _tensor_grid_coordinates(T, Ω, nels, 2)
+
     left   = leftendpoint(Ω)
     right  = rightendpoint(Ω)
     x0, y0 = left[1], left[2]
     dx = (right[1] - x0) / nx
     dy = (right[2] - y0) / ny
+    # Centroid of the triangle spanning thirds (a, b) of cell (ex, ey).
+    centroid(ex, ey, a, b) = SVector{2, T}(x0 + (3ex + a) * dx / 3, y0 + (3ey + b) * dy / 3)
 
-    xs = LinRange(x0, right[1], 2nx + 1)
-    ys = LinRange(y0, right[2], 2ny + 1)
-
-    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys) + 2 * nx * ny)
-
-    inode = 1
-    for y in ys, x in xs
-        coords[inode] = SVector{2, T}(x, y)
-        inode += 1
-    end
-
-    # Centroid nodes — one per element, matching generate_element2node order.
     for ey in 0:(ny - 1), ex in 0:(nx - 1)
         if iseven(ex + ey)
-            # Triangle A (lower-right): BL + BR + TR centroid
-            coords[inode] = SVector{2, T}(x0 + (3ex + 2) * dx / 3, y0 + (3ey + 1) * dy / 3)
-            inode += 1
-            # Triangle B (upper-left): BL + TR + TL centroid
-            coords[inode] = SVector{2, T}(x0 + (3ex + 1) * dx / 3, y0 + (3ey + 2) * dy / 3)
-            inode += 1
+            # Triangle A (lower-right): BL + BR + TR; triangle B (upper-left): BL + TR + TL
+            push!(coords, centroid(ex, ey, 2, 1), centroid(ex, ey, 1, 2))
         else
-            # Triangle C (lower-left): BL + BR + TL centroid
-            coords[inode] = SVector{2, T}(x0 + (3ex + 1) * dx / 3, y0 + (3ey + 1) * dy / 3)
-            inode += 1
-            # Triangle D (upper-right): BR + TR + TL centroid
-            coords[inode] = SVector{2, T}(x0 + (3ex + 2) * dx / 3, y0 + (3ey + 2) * dy / 3)
-            inode += 1
+            # Triangle C (lower-left): BL + BR + TL; triangle D (upper-right): BR + TR + TL
+            push!(coords, centroid(ex, ey, 1, 1), centroid(ex, ey, 2, 2))
         end
-    end
-
-    return coords
-end
-
-"""
-    generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 6}}, Ω, nels)
-
-Generate coordinates for a structured quadratic triangular (T6) mesh.
-
-Nodes lie on the same refined `(2nx + 1) × (2ny + 1)` tensor-product grid as
-`QuadraticElement{2, 9}`, with the x-coordinate varying fastest. Corner nodes
-occupy even grid positions, edge-midpoint nodes occupy positions where exactly
-one index is odd, and cell-center nodes (diagonal midpoints) occupy positions
-where both indices are odd.
-"""
-function generate_coordinates(
-    ::ReferenceElement{QuadraticElement{2, 6, T}},
-    Ω,
-    nels::NTuple{2, <:Integer},
-) where {T}
-    nx, ny = nels
-    left = leftendpoint(Ω)
-    right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], 2nx + 1)
-    ys = LinRange(left[2], right[2], 2ny + 1)
-
-    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
-    inode = 1
-    for y in ys, x in xs
-        coords[inode] = SVector{2, T}(x, y)
-        inode += 1
-    end
-
-    return coords
-end
-
-"""
-    generate_coordinates(element::ReferenceElement{<:QuadraticElement{2, 9}}, Ω, nels)
-
-Generate coordinates for a quadratic quadrilateral mesh over a rectangular
-domain.
-
-The rectangular domain is passed as `(xmin..xmax) × (ymin..ymax)` and the
-number of elements as `(nx, ny)`. Vertex, edge-midpoint, and cell-center nodes
-lie on the refined `(2nx + 1) × (2ny + 1)` tensor-product grid, with the
-x-coordinate varying fastest.
-"""
-function generate_coordinates(
-    ::ReferenceElement{QuadraticElement{2, 9, T}},
-    Ω,
-    nels::NTuple{2, <:Integer},
-) where {T}
-    nx, ny = nels
-    left = leftendpoint(Ω)
-    right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], 2nx + 1)
-    ys = LinRange(left[2], right[2], 2ny + 1)
-
-    coords = Vector{SVector{2, T}}(undef, length(xs) * length(ys))
-    inode = 1
-    for y in ys, x in xs
-        coords[inode] = SVector{2, T}(x, y)
-        inode += 1
-    end
-
-    return coords
-end
-
-"""
-    generate_coordinates(element::ReferenceElement{<:LinearElement{3, 8}}, Ω, nels)
-
-Generate coordinates for a linear hexahedral mesh over a rectangular box.
-
-The box domain is passed as `(xmin..xmax) × (ymin..ymax) × (zmin..zmax)` and the
-number of elements as `(nx, ny, nz)`. Coordinates are returned as
-`SVector{3, Float64}` values with the x-coordinate varying fastest.
-"""
-function generate_coordinates(
-    ::ReferenceElement{LinearElement{3, 8, T}},
-    Ω,
-    nels::NTuple{3, <:Integer},
-) where {T}
-    nx, ny, nz = nels
-    left = leftendpoint(Ω)
-    right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], nx + 1)
-    ys = LinRange(left[2], right[2], ny + 1)
-    zs = LinRange(left[3], right[3], nz + 1)
-
-    coords = Vector{SVector{3, T}}(undef, length(xs) * length(ys) * length(zs))
-    inode = 1
-    for z in zs, y in ys, x in xs
-        coords[inode] = SVector{3, T}(x, y, z)
-        inode += 1
-    end
-
-    return coords
-end
-
-"""
-    generate_coordinates(element::ReferenceElement{<:QuadraticElement{3, 27}}, Ω, nels)
-
-Generate coordinates for a quadratic hexahedral mesh over a rectangular box.
-
-The box domain is passed as `(xmin..xmax) × (ymin..ymax) × (zmin..zmax)` and the
-number of elements as `(nx, ny, nz)`. Nodes lie on the refined
-`(2nx + 1) × (2ny + 1) × (2nz + 1)` tensor-product grid, with the x-coordinate
-varying fastest.
-"""
-function generate_coordinates(
-    ::ReferenceElement{QuadraticElement{3, 27, T}},
-    Ω,
-    nels::NTuple{3, <:Integer},
-) where {T}
-    nx, ny, nz = nels
-    left = leftendpoint(Ω)
-    right = rightendpoint(Ω)
-    xs = LinRange(left[1], right[1], 2nx + 1)
-    ys = LinRange(left[2], right[2], 2ny + 1)
-    zs = LinRange(left[3], right[3], 2nz + 1)
-
-    coords = Vector{SVector{3, T}}(undef, length(xs) * length(ys) * length(zs))
-    inode = 1
-    for z in zs, y in ys, x in xs
-        coords[inode] = SVector{3, T}(x, y, z)
-        inode += 1
     end
 
     return coords

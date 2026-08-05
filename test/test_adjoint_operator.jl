@@ -141,8 +141,8 @@ using DomainSets: ×
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh.el2n, mesh.DoFsP, cache.geo_v, cache.geo_P, mesh.nels,
         element_v, element_P, phases, phases,
-        τ_old, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-        dr.ηb, Δt, γP, dr.M_P, backend, wg)
+        dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+        dr.ηb, Δt, γP, dr.M_P, backend, wg; τ_old)
     @test rowsum_vx_op ≈ dr.∂Rv_x∂vx
     @test rowsum_vy_op ≈ dr.∂Rv_y∂vy
     @test PC_vx_op ≈ dr.PC_vx

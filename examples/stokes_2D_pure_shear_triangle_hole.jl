@@ -268,8 +268,8 @@ function main(;
             iterMax,
             total_iterMax,
             rel_drop0,
-            verbose_PH,
-            verbose_DR,
+            verbose = verbose_PH,
+            verbose_inner = verbose_DR,
             vx_nodes = vx_nodes,
             vy_nodes = vy_nodes,
         )
