@@ -36,6 +36,7 @@ operators and the same mixed spaces. It therefore computes gradients of the
 StokesDR
 DruckerPrager
 pressure_mass
+velocity_mass
 ```
 
 The velocity and pressure fields live on separate node sets described by a
@@ -112,6 +113,7 @@ FEMTools.assemble_momentum_residual_matrices_atomix!
 FEMTools.assemble_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_pressure_residual_matrices_atomix!
+assemble_velocity_mass!
 FEMTools.assemble_viscosity_weighted_pressure_scaling!
 FEMTools.momentum_element_residual
 FEMTools.element_momentum_jacobians

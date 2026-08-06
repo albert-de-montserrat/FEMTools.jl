@@ -3,3 +3,12 @@
 *.pvd
 *.gif
 *.html
+
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+Manifest.toml
+Manifest-v*.toml
+
+docs/build/
