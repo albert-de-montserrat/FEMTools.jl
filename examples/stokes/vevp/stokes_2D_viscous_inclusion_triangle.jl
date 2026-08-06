@@ -17,23 +17,6 @@ const backend   = CPU()
 const workgroup = 128
 
 """
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
-"""
     build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
 
 Build an unstructured T7 velocity mesh around a circular inclusion.
@@ -116,16 +99,16 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; nsteps=15, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
+    main(; nsteps=1, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
 
-Run the unstructured T7/P1-disc pure-shear Stokes example.
+Run the unstructured T7/P1-disc viscous circular-inclusion benchmark.
 
-The model builds a square domain with a circular inclusion, applies pure-shear
-boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
-VTK file per physical step, and returns the stress-history diagnostics.
+The model builds a square domain with a circular inclusion under pure shear,
+advances the Stokes solve, writes one VTK file per physical step, and compares
+the pressure field against the `ExactFieldSolutions` analytical solution.
 """
-function main(; 
-    nsteps = 1, 
+function main(;
+    nsteps = 1,
     n_circle = 96,
     max_area = 1 / (1 * 64^2),
     Δt = 1 / 6,
@@ -202,7 +185,7 @@ function main(;
     NP    = length(element_P)
 
     cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    geo_v = cache.geo_v
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -298,10 +281,6 @@ function main(;
     mkpath(out_dir)
     post = nothing
 
-    @show size(coords)
-    @show size(coords_v)
-    @show size(coords_v_cpu)
-
     el_P_anal = zeros(mesh_stokes.nels)
 
     # Evaluate analytics
@@ -352,7 +331,7 @@ function main(;
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
 
-        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
+        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_viscous_inclusion_triangle_%04d.vtk", istep))
         write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
         @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
     end  # physical time step loop
@@ -366,7 +345,7 @@ function main(;
     # ---------------------------------------------------------------------------
 
     # Per-element average pressure (mean of 3 pressure DoFs per element)
-    el_P_num  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels] 
+    el_P_num  = [mean(P_cpu[DoFsP_cpu[:, i]]) for i in 1:mesh_stokes.nels]
 
     pts   = [Point2f(c) for c in coords_v]
     polys = [[pts[el2nP_cpu[1, i]], pts[el2nP_cpu[2, i]], pts[el2nP_cpu[3, i]]]
@@ -398,7 +377,7 @@ function main(;
     ax3 = Axis(fig[1, 5]; aspect = DataAspect(),
             title = "Pressure  error", xlabel = "x", ylabel = "y")
     p = poly!(ax3, polys; color = errP, colormap = :vik, strokewidth = 0)
-    Colorbar(fig[1, 6], p; 
+    Colorbar(fig[1, 6], p;
             label = "log10(err)", width = 15, tellheight = false)
     lines!(ax3, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
@@ -407,4 +386,4 @@ function main(;
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-main()
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()

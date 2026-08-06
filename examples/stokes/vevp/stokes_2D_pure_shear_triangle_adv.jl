@@ -15,23 +15,6 @@ using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, Da
 const backend   = CPU()
 const workgroup = 128
 
-"""
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
 function straighten_t7_geometry!(coords, el2n)
     @inbounds for iel in axes(el2n, 2)
         n1, n2, n3 = Int(el2n[1, iel]), Int(el2n[2, iel]), Int(el2n[3, iel])
@@ -154,8 +137,8 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; nsteps=15, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6,
-          show_plot=true, advect_mesh=false, mesh_cfl=0.25) -> NamedTuple
+    main(; nsteps=500, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6,
+          show_plot=true, advect_mesh=true, mesh_cfl=0.99) -> NamedTuple
 
 Run the unstructured T7/P1-disc pure-shear Stokes example.
 
@@ -165,7 +148,7 @@ VTK file per physical step, and returns the stress-history diagnostics. When
 mesh advection is enabled, `Δt` is treated as the maximum step and the actual
 step is limited by `mesh_cfl * hmin / vmax`.
 """
-function main(; 
+function main(;
     nsteps = 500,
     n_circle = 96,
     max_area = 1 / (1 * 64^2),
@@ -245,7 +228,6 @@ function main(;
     NP    = length(element_P)
 
     cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -335,7 +317,7 @@ function main(;
     @info "Starting PH/DYREL-style Stokes solver" nsteps Δt iterMax total_iterMax ncheck ϵ_tol advect_mesh
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
-    out_dir = if advect_mesh 
+    out_dir = if advect_mesh
         joinpath(@__DIR__, "output_stokes")
     else
         joinpath(@__DIR__, "output_stokes_no_adv")
@@ -404,13 +386,13 @@ function main(;
         post = compute_strain_rate_stress_postprocess(
             vx_cpu, vy_cpu,
             el2n_v_cpu,
-            Array(geo_v),
+            Array(cache.geo_v),
             τ,
             element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII)
         if advect_mesh
-            rotate_stress!(dr, mesh_stokes, geo_v, element_v, dt_step)
+            rotate_stress!(dr, mesh_stokes, cache, element_v, dt_step)
         else
             copyto!(dr.τxx_old, dr.τxx)
             copyto!(dr.τyy_old, dr.τyy)
@@ -419,7 +401,7 @@ function main(;
         vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_advected_triangle_%04d.vtk", istep))
         write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
         @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
-       
+
         if advect_mesh
             hmin = corner_mesh_hmin(coords_v, el2n_v_cpu)
             max_disp = corner_max_displacement(vx_cpu, vy_cpu, el2n_v_cpu, dt_step)
@@ -444,8 +426,9 @@ function main(;
             end
             copyto!(mesh_v.coords, coords_v)
             copyto!(mesh_stokes.coords, coords_v)
-            precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-            precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+            # The advected coordinates invalidate every Jacobian, so rebuild the
+            # geometry cache from the updated mesh.
+            cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
         end
         # fill!(dr.vx, 0.0)
         # fill!(dr.vy, 0.0)
@@ -489,5 +472,4 @@ function main(;
     return (; time = time_history, Δt = dt_history, mean_tauII = mean_tauII_history, post)
 end
 
-main(; advect_mesh = true)
-# main(; advect_mesh = false)
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main(; advect_mesh = true)
