@@ -158,13 +158,18 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     # ---------------------------------------------------------------------------
     # Boundary conditions — pure shear
     #   vx = +ε̇_bg * (x - Lx/2),   vy = -ε̇_bg * (y - Ly/2)
+    # The lateral sides (x=0, x=Lx) prescribe the normal (vx) component and
+    # leave the tangential (vy) component free — vertical free slip. The
+    # bottom (y=0) prescribes the normal (vy) component and leaves vx free —
+    # horizontal free slip. The top (y=Ly) has no Dirichlet condition on
+    # either component, so it is a true traction-free surface.
     # ---------------------------------------------------------------------------
 
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
     tol = max(Lx, Ly) * eps(Float64) * 32
     vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - Ly) ≤ tol]
+    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol]
 
     bc_vx_vals = Float64[ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = Float64[-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
@@ -181,7 +186,12 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     zero_vx_bc = zero(bc_vx_vals)
     zero_vy_bc = zero(bc_vy_vals)
 
-    @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
+    constrained = falses(mesh_v.nnodes)
+    constrained[vx_nodes] .= true
+    constrained[vy_nodes] .= true
+    n_free_surface = count(n -> !constrained[n], Γnodes)
+
+    @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_free_surface max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
     # FEM pressure residuals are assembled in weak form:
     #
@@ -269,7 +279,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, M_P,
             backend, workgroup,
         )
@@ -416,7 +426,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, M_P,
                         backend, workgroup,
                     )

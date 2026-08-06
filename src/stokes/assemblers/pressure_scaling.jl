@@ -1,8 +1,26 @@
 """
+    _finite_viscosity_mean(η) -> mean of the non-`Inf` entries of `η`
+
+Mean of the finite-viscosity phases in a per-phase viscosity tuple, used as the
+numerical-penalty scale for `Inf`-viscosity (rigid) phases: substituting `Inf`
+directly into `γ_num = γfact * η` would propagate to `γ_eff = γ_phy*γ_num/(γ_phy+γ_num)`
+as `NaN` (`Inf/Inf`) rather than the intended fully-numerical penalty.
+
+Errors if every phase has infinite viscosity, since there is then no finite
+scale to fall back to.
+"""
+function _finite_viscosity_mean(η)
+    finite = filter(!isinf, η)
+    isempty(finite) && throw(ArgumentError(
+        "η_mean requires at least one finite-viscosity phase in η=$η"))
+    return sum(finite) / length(finite)
+end
+
+"""
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v=dr.phases_v, η=dr.η, K=dr.K,
+        phases_v=dr.phases_v, η=dr.η, K=dr.K, η_mean=_finite_viscosity_mean(η),
     )
 
 Assemble the pressure mass and viscosity-weighted pressure scale using a
@@ -10,6 +28,9 @@ Assemble the pressure mass and viscosity-weighted pressure scale using a
 
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
+`η_mean` is the fallback numerical-penalty scale substituted for any `Inf`
+entries of `η` (rigid phases); it defaults to the mean of `η`'s finite entries
+and rarely needs overriding.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
@@ -24,13 +45,15 @@ function assemble_viscosity_weighted_pressure_scaling!(
     phases_v = dr.phases_v,
     η = dr.η,
     K = dr.K,
+    η_mean = _finite_viscosity_mean(η),
 )
     return assemble_viscosity_weighted_pressure_scaling!(
         dr.M_P, γP,
         mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P,
         phases_v, η, γfact, K, Δt,
-        backend, workgroup,
+        backend, workgroup;
+        η_mean,
     )
 end
 
@@ -38,7 +61,7 @@ end
     assemble_viscosity_weighted_pressure_scaling(
         dr, mesh, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v=dr.phases_v, η=dr.η, K=dr.K,
+        phases_v=dr.phases_v, η=dr.η, K=dr.K, η_mean=_finite_viscosity_mean(η),
     ) -> γP
 
 Allocate the viscosity-weighted pressure scale `γP` on pressure DoFs and return
@@ -57,12 +80,13 @@ function assemble_viscosity_weighted_pressure_scaling(
     phases_v = dr.phases_v,
     η = dr.η,
     K = dr.K,
+    η_mean = _finite_viscosity_mean(η),
 )
     γP = KA.zeros(backend, eltype(dr.M_P), mesh.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v, η, K,
+        phases_v, η, K, η_mean,
     )
     return γP
 end
@@ -93,6 +117,10 @@ where `γ_num = γfact * η_q`, `γ_phy = K_q * Δt`, and
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)`. If `K` is omitted, this falls back
 to the incompressible JustRelax penalty branch where
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)` and `γ_num = γ_phy = γfact * η`.
+
+Any `Inf` entries of `η` (rigid phases) are replaced by `η_mean` — the mean of
+`η`'s finite entries by default — before interpolation, keeping `γ_eff` a
+finite, purely-numerical penalty for those phases instead of `NaN`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
     MP, γP,
@@ -104,11 +132,13 @@ function assemble_viscosity_weighted_pressure_scaling!(
     phases_v,
     η,
     γfact,
-    backend, workgroup,
+    backend, workgroup;
+    η_mean = _finite_viscosity_mean(η),
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     return assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n_v, dofs_P, geo_P, nels, element_v, element_P,
-        phases_v, η, γfact, nothing, nothing, backend, workgroup,
+        phases_v, η, γfact, nothing, nothing, backend, workgroup;
+        η_mean,
     )
 end
 
@@ -124,15 +154,25 @@ function assemble_viscosity_weighted_pressure_scaling!(
     γfact,
     K,
     Δt,
-    backend, workgroup,
+    backend, workgroup;
+    η_mean = _finite_viscosity_mean(η),
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqV = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
 
+    # `interp2ip_phase` interpolates via a shape-function-weighted sum
+    # `Σ N[i]*η[phase[i]]`. Higher-order elements have quadrature points where
+    # some `N[i] < 0`; with a uniform phase this sum is still exactly `η[phase]`
+    # for finite values (the N[i] sum to 1), but for `η[phase] == Inf` the
+    # positive- and negative-weighted terms become `Inf + (-Inf) = NaN` instead
+    # of the intended `Inf`. Substituting `η_mean` for `Inf` entries here, before
+    # interpolation, avoids that cancellation entirely.
+    η_reg = map(ηi -> isinf(ηi) ? η_mean : ηi, η)
+
     fill!(MP, 0)
     fill!(γP, 0)
     viscosity_weighted_pressure_scaling_kernel!(backend, workgroup)(
-        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, K, Δt, NqV, NqP, Val(NV), Val(NP);
+        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η_reg, γfact, K, Δt, NqV, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -146,8 +186,8 @@ end
 
 """
     viscosity_weighted_pressure_scaling_kernel!(MP, γP, el2n_v, dofs_P, geo_P,
-                                                phases_v, η, γfact, K, Δt, NqV, NqP,
-                                                Val(NV), Val(NP))
+                                                phases_v, η, γfact, K, Δt,
+                                                NqV, NqP, Val(NV), Val(NP))
 
 KernelAbstractions kernel that accumulates the lumped pressure mass `MP` and
 viscosity-weighted pressure scale `γP` by numerical quadrature.
@@ -156,6 +196,12 @@ At each quadrature point `q` in element `iel`, accumulates
 `MP_a += N_a(q) dΩ` and `γP_a += N_a(q) γ_eff(q) dΩ` for every
 pressure DoF `a`. Atomix atomics are used unconditionally for correctness
 when pressure DoFs are shared across elements (continuous pressure spaces).
+
+`η` must already have any `Inf` entries replaced by a finite fallback (see
+[`assemble_viscosity_weighted_pressure_scaling!`](@ref)): interpolating an
+`Inf` viscosity through `interp2ip_phase`'s shape-function-weighted sum can
+produce `Inf + (-Inf) = NaN` at quadrature points where a higher-order
+element's shape functions take negative values.
 """
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
     MP, γP,

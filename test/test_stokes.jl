@@ -554,6 +554,35 @@ end
     @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1e-12
 end
 
+@testset "assemble_viscosity_weighted_pressure_scaling! — Inf-viscosity phase" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 6, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
+    mesh      = MixedMesh(mesh_v, element_P)
+    geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+
+    M_P      = zeros(FP, mesh.nnodesP)
+    γP       = zeros(FP, mesh.nnodesP)
+    phases_v = ones(Int, mesh.nnodes)
+
+    # Every quadrature point sees phase 1's Inf viscosity; naively feeding that
+    # into γ_num would send γ_eff to Inf/Inf = NaN, not the mean-viscosity
+    # fallback (η_mean = 99.0, the only finite entry of η) this guards against.
+    assemble_viscosity_weighted_pressure_scaling!(
+        M_P, γP,
+        mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P,
+        phases_v, (Inf, 99.0), 2.0,
+        CPU(), 1,
+    )
+
+    @test all(isfinite, γP)
+    @test γP ≈ fill(99.0, mesh.nnodesP) atol = 1e-12
+
+    @test_throws ArgumentError FEMTools._finite_viscosity_mean((Inf, Inf))
+end
+
 @testset "assemble_momentum_residual_matrices_atomix! — zero velocity + zero gravity" begin
     FP        = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})

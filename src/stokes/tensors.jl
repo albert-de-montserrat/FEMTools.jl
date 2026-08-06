@@ -100,19 +100,50 @@ Base.getindex(A::SymmetricTensor3D, q::Int, iel::Int) = SA[
 Advance the deviatoric-stress history by rotating the current stress `dr.τ` with
 the local vorticity over the time step `Δt`, writing the result into `dr.τ_old`.
 Unpacks the solver state, connectivity (`mesh_stokes.el2n`), and element
-geometry (`cache.geo_v`) for the low-level `_rotate_stress!` worker.
-`element_v` supplies the velocity-node count `NV`.
+geometry (`cache.geo_v`) for a KernelAbstractions launch on the state array's
+backend. `element_v` supplies the velocity-node count `NV`.
 """
 function rotate_stress!(dr, mesh_stokes, cache::MixedMeshCache, element_v, Δt)
     return rotate_stress!(dr, mesh_stokes, cache.geo_v, element_v, Δt)
 end
 
 function rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
-    return _rotate_stress!(
-        (dr.τxx_old, dr.τyy_old, dr.τxy_old),
-        (dr.τxx, dr.τyy, dr.τxy),
-        dr.vx, dr.vy, mesh_stokes.el2n, geo_v, Δt, element_v,
+    backend = KA.get_backend(dr.vx)
+    rotate_stress_kernel!(backend)(
+        dr.τxx_old, dr.τyy_old, dr.τxy_old,
+        dr.τxx, dr.τyy, dr.τxy,
+        dr.vx, dr.vy, mesh_stokes.el2n, geo_v, Δt, Val(length(element_v));
+        ndrange = mesh_stokes.nels,
     )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function rotate_stress_kernel!(
+    τxx_old, τyy_old, τxy_old,
+    @Const(τxx), @Const(τyy), @Const(τxy),
+    @Const(vx), @Const(vy), @Const(el2n_v), @Const(geo_v), dt,
+    ::Val{NV},
+) where {NV}
+    iel = @index(Global)
+    local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
+    vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
+    vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
+    geo_el = geo_v[iel]
+
+    for q in eachindex(geo_el)
+        ∂N∂x, = geo_el[q]
+        ∇vx = ∂N∂x' * vxloc
+        ∇vy = ∂N∂x' * vyloc
+        ωxy_q = (∇vx[2] - ∇vy[1]) / 2
+        sinθ, cosθ = sincos(ωxy_q * dt)
+        τxx_q = τxx[q, iel]
+        τyy_q = τyy[q, iel]
+        τxy_q = τxy[q, iel]
+        τxx_old[q, iel] = cosθ^2 * τxx_q - 2 * sinθ * cosθ * τxy_q + sinθ^2 * τyy_q
+        τyy_old[q, iel] = sinθ^2 * τxx_q + 2 * sinθ * cosθ * τxy_q + cosθ^2 * τyy_q
+        τxy_old[q, iel] = sinθ * cosθ * (τxx_q - τyy_q) + (cosθ^2 - sinθ^2) * τxy_q
+    end
 end
 
 function _rotate_stress!(
