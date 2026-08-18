@@ -1,64 +1,71 @@
 include("sinking_block_3D.jl")
 
-"""
-    solve_sinking_block_adjoint_3d([forward]; fd_step=1e-5)
+using LinearAlgebra
 
-Solve the exact discrete transpose of a result from
-[`run_sinking_block_3d`](@ref) for the objective `J = mean(vy)` over velocity
-nodes belonging to the dense block. If `forward` is omitted, run the default
-forward problem without writing VTK output.
+# Discrete adjoint of the 3-D sinking block. For the linear system `A(m) u = b(m)`
+# and a scalar objective `J = cᵀu`, the sensitivity to a material parameter `m` is
+#
+#     dJ/dm = λᵀ (∂b/∂m − (∂A/∂m) u),   where   Aᵀλ = c,
+#
+# so one transpose solve delivers the gradient with respect to every parameter at
+# once, instead of one forward solve per parameter as finite differences require.
 
-Returns the forward result, adjoint vector, objective, density and viscosity
-gradients, centred finite-difference gradients, and relative differences.
-`fd_step` is the absolute density perturbation and the relative viscosity
-perturbation (`fd_step * η[2]`).
 """
-function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false);
-    fd_step = 1e-5,
-)
-    (; mesh, A, rhs, solution, cell_phase, free) = forward
-    nv = 3mesh.nnodes
+    solve_sinking_block_adjoint_3d([forward])
+
+Solve the discrete transpose of a result from [`run_sinking_block_3d`](@ref)
+for the objective `J = mean(vz)` over velocity nodes belonging to the dense
+block. If `forward` is omitted, run the default forward problem without writing
+VTK output. Both stages are matrix-free: `solve_stokes_adjoint_dyrel!` for the
+transpose solve, then `stokes_material_gradient_3d` for the sensitivities.
+
+Returns the forward result, the objective load, component-wise adjoint velocity
+and pressure, adjoint convergence statistics, the objective value, and the
+phase-2 `density_gradient` and `viscosity_gradient`.
+"""
+function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false))
+    (; mesh, cell_phase) = forward
+    # Every node touched by a phase-2 cell, including those it shares with the
+    # surrounding matrix cells.
     block_nodes = unique(vec(Array(mesh.el2n)[:, cell_phase .== 2]))
-    objective_load = zeros(length(solution))
-    objective_load[3 .* (block_nodes .- 1) .+ 2] .= 1 / length(block_nodes)
+    # The load `c = ∂J/∂v`. `J` averages the vertical velocity over those nodes,
+    # so component 3 carries 1/N there and every other entry is zero.
+    objective_velocity = ntuple(i -> begin
+        load = zeros(mesh.nnodes)
+        i == 3 && (load[block_nodes] .= 1 / length(block_nodes))
+        load
+    end, 3)
 
-    adjoint = zeros(length(solution))
-    adjoint[free] = transpose(A[free, free]) \ objective_load[free]
+    # The linear viscous operator is symmetric, so `Aᵀ = A` and the transpose
+    # solve reuses the forward residual and preconditioner with `c` as its
+    # momentum load. The constrained nodes carry over unchanged for the same
+    # reason: `Aᵀ` eliminates the same rows and columns.
+    adjoint_velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
+    adjoint_pressure = zeros(4, mesh.nels)
+    adjoint_stats = solve_stokes_adjoint_dyrel!(
+        adjoint_velocity, adjoint_pressure, objective_velocity,
+        mesh, cell_phase, forward.η, forward.fixed_nodes;
+        ncheck = 50, adjoint_tol = 1e-6, iterMax = 50_000,
+        total_iterMax = 50_000, verbose = false,
+    )
+    adjoint_stats.converged || error("3D adjoint DYREL solve did not converge: $(adjoint_stats.err)")
+    # Contracts `λ` against `∂b/∂ρ` and `(∂A/∂η) u` for one phase — phase 2 by
+    # default. Both derivatives are applied as residual evaluations with unit
+    # material properties, so neither derivative matrix is ever assembled.
+    gradients = stokes_material_gradient_3d(
+        forward.velocity, adjoint_velocity, mesh, cell_phase,
+        forward.η, forward.ρ, forward.g,
+    )
 
-    d_rhs_dρ₂ = zeros(length(solution))
-    element = mesh.element
-    Nq = shape_function_values(element, element.integration_points)
-    g = SVector(forward.g)
-    for cell in findall(==(2), cell_phase), q in eachindex(mesh.geometry[cell])
-        _, dΩ = mesh.geometry[cell][q]
-        nodes = @view mesh.el2n[:, cell]
-        for a in 1:27, i in 1:3
-            d_rhs_dρ₂[3(nodes[a] - 1) + i] += Nq[q][a] * g[i] * dΩ
-        end
-    end
-
-    density_gradient = dot(adjoint, d_rhs_dρ₂)
-    viscosity_gradient = -dot(adjoint, forward.dA_dη₂ * solution)
-    A_free = A[free, free]
-    plus = A_free \ (rhs[free] + fd_step * d_rhs_dρ₂[free])
-    minus = A_free \ (rhs[free] - fd_step * d_rhs_dρ₂[free])
-    density_gradient_fd = dot(objective_load[free], plus - minus) / (2fd_step)
-    dA_free = forward.dA_dη₂[free, free]
-    viscosity_step = fd_step * forward.η[2]
-    plus = (A_free + viscosity_step * dA_free) \ rhs[free]
-    minus = (A_free - viscosity_step * dA_free) \ rhs[free]
-    viscosity_gradient_fd = dot(objective_load[free], plus - minus) / (2viscosity_step)
-
-    return (; forward, adjoint, objective = dot(objective_load, solution),
-        density_gradient, density_gradient_fd,
-        density_relative_error = abs(density_gradient - density_gradient_fd) / abs(density_gradient_fd),
-        viscosity_gradient, viscosity_gradient_fd,
-        viscosity_relative_error = abs(viscosity_gradient - viscosity_gradient_fd) / abs(viscosity_gradient_fd))
+    # `J = cᵀu`: the mean vertical velocity over the block, i.e. its sinking rate.
+    objective = sum(dot(objective_velocity[i], forward.velocity[i]) for i in 1:3)
+    return (;
+        forward, objective_velocity, adjoint_velocity, adjoint_pressure,
+        adjoint_stats, objective, gradients...,
+    )
 end
 
 if abspath(PROGRAM_FILE) == abspath(@__FILE__)
     result = solve_sinking_block_adjoint_3d()
-    result.density_relative_error < 1e-6 || error("density adjoint check failed")
-    result.viscosity_relative_error < 1e-6 || error("viscosity adjoint check failed")
-    @info "3D sinking-block adjoint" result.objective result.density_gradient result.density_gradient_fd result.density_relative_error result.viscosity_gradient result.viscosity_gradient_fd result.viscosity_relative_error
+    @info "3D sinking-block adjoint" result.objective result.density_gradient result.viscosity_gradient
 end

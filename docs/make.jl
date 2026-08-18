@@ -23,6 +23,7 @@ makedocs(;
         "Stokes" => [
             "Overview" => "stokes.md",
             "Sinking block" => "sinking_block.md",
+            "Sinking block (3-D)" => "sinking_block_3d.md",
         ],
         "API" => "api.md",
     ],

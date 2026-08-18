@@ -145,6 +145,7 @@ export StokesMaterial, StokesDR, DruckerPrager,
     solve_stokes_dyrel!,
     solve_stokes_3d!,
     solve_stokes_adjoint_3d!,
+    stokes_material_gradient_3d,
     solve_stokes_adjoint_dyrel!,
     update_stokes_current_stress!
 

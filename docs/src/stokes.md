@@ -23,9 +23,11 @@ with a Maxwell viscoelastic deviatoric stress that carries stress history
 `ρ0`, `K`) and the body-force parameters are grouped in a typed
 `StokesMaterial`.
 
-The saddle-point system is solved with a Powell–Hestenes / DYREL iteration: an
-outer Arrow–Hurwicz pressure update wraps an inner Chebyshev-accelerated
-dynamic-relaxation sweep on the momentum residual.
+The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
+mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
+Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
+3-D Hex27/Q2--P1 method uses three caller-owned velocity arrays and a `4 × nels`
+cell-local pressure array with diagonally preconditioned residual updates.
 
 The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
@@ -70,7 +72,28 @@ expanded positional methods remain available for custom and adjoint workflows.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
-### Forward spectral estimate and frozen Jacobian
+### Three-dimensional array layout
+
+The Hex27/Q2--P1 method uses multiple dispatch rather than `StokesDR`, because
+its four pressure modes are cell-local rather than stored on a pressure-node
+mesh:
+
+```julia
+velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
+pressure = zeros(4, mesh.nels)
+
+stats = solve_stokes_dyrel!(
+    velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+    ϵ_tol = 1e-6,
+)
+```
+
+`fixed_nodes` is an `NTuple{3}` containing the constrained nodes for each
+velocity component. The matching `solve_stokes_adjoint_dyrel!` method accepts
+the same storage plus a three-component objective load. `solve_stokes_3d!` and
+`solve_stokes_adjoint_3d!` remain compatibility wrappers.
+
+### Two-dimensional spectral estimate and frozen Jacobian
 
 The forward velocity sweep uses a diagonal Jacobi preconditioner ``P`` and the
 augmented momentum Jacobian ``A``. By default, `solve_stokes_dyrel!` obtains a
@@ -128,7 +151,7 @@ julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.
 
-The adjoint sinking-block example accepts an explicit backend. It builds the
+The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
 Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,
 geometry caches, phase indices, and boundary data before launching kernels:
 
@@ -144,13 +167,14 @@ Loading CUDA activates the FEMTools CUDA extension, for which
 allocation and execution. Plotting is host-side; keep `show_plot = false` for
 headless accelerator runs.
 
-## Driver
+## Drivers
 
 ```@docs
 solve_stokes_dyrel!
+solve_stokes_adjoint_dyrel!
 solve_stokes_3d!
 solve_stokes_adjoint_3d!
-solve_stokes_adjoint_dyrel!
+stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
 update_stokes_current_stress!
 ```
@@ -171,7 +195,7 @@ The reduced material derivative is then contracted elementwise as
 = -\lambda_e^T \frac{\partial R_e}{\partial m_e},
 ```
 
-using the sign convention of the sinking-block reference. The example forms a
+using the sign convention of the sinking-block reference. The 2-D example forms a
 finite-element objective load for
 `J(v_y) = -∫_{Ωobs} v_y dΩ`, solves the transpose system with
 `solve_stokes_adjoint_dyrel!`, and uses Enzyme reverse mode on the element
@@ -179,6 +203,12 @@ momentum residual contraction to obtain density and viscosity sensitivities.
 The returned sensitivity arrays contain raw element integrals. Their sums give
 phase gradients; division by element area is used only to visualise a spatial
 sensitivity density.
+
+The 3-D viscous operator is symmetric, so its adjoint DYREL method reuses the
+3-D forward residual and preconditioner with the objective derivative as the
+momentum load. `stokes_material_gradient_3d` then contracts the forward and
+adjoint velocity fields analytically. `test/test_stokes_3d_reference.jl`
+validates those contractions against a sparse finite-difference oracle.
 
 ### Why the discrete transpose matters
 
@@ -191,7 +221,7 @@ different discretisation. When adding an objective or material parameter,
 validate that contract with a central finite difference as demonstrated in
 `test/test_stokes_adjoint_api.jl`.
 
-### Frozen operator and solver controls
+### Two-dimensional frozen operator and solver controls
 
 The forward state must be converged before the adjoint solve. At that fixed
 state the transpose Jacobian is constant, so the default

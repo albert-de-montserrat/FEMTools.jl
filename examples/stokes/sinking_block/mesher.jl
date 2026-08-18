@@ -89,9 +89,9 @@ end
     build_gmsh_hex27_mesh(; Lx=1, Ly=1, Lz=1, mesh_size=0.15, nz=6)
 
 Generate a recombined, vertically extruded Gmsh mesh and return it in
-FEMTools' Hex27 ordering. `mesh_size` controls the in-plane target edge length
+FEMTools' Hex27 ordering. `mesh_size` controls the horizontal target edge length
 and `nz` the number of extrusion layers. The domain is
-`[0,Lx] × [-Ly,0] × [0,Lz]`.
+`[0,Lx] × [0,Ly] × [0,Lz]`, with `z` the vertical axis.
 
 Returns `(coords, el2n, boundary_nodes)`: three-dimensional coordinates,
 `27 × nels` element connectivity, and the sorted velocity-node indices on
@@ -104,11 +104,13 @@ function build_gmsh_hex27_mesh(; Lx = 1.0, Ly = 1.0, Lz = 1.0, mesh_size = 0.15,
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)
         gmsh.model.add("sinking_block_3d")
 
+        # Counterclockwise base rectangle in the horizontal x-y plane at z = 0;
+        # the extrusion below raises it to z = Lz.
         points = (
-            gmsh.model.geo.addPoint(0, -Ly, 0, mesh_size),
-            gmsh.model.geo.addPoint(Lx, -Ly, 0, mesh_size),
-            gmsh.model.geo.addPoint(Lx, 0, 0, mesh_size),
             gmsh.model.geo.addPoint(0, 0, 0, mesh_size),
+            gmsh.model.geo.addPoint(Lx, 0, 0, mesh_size),
+            gmsh.model.geo.addPoint(Lx, Ly, 0, mesh_size),
+            gmsh.model.geo.addPoint(0, Ly, 0, mesh_size),
         )
         lines = ntuple(i -> gmsh.model.geo.addLine(points[i], points[mod1(i + 1, 4)]), 4)
         surface = gmsh.model.geo.addPlaneSurface([gmsh.model.geo.addCurveLoop(collect(lines))])
@@ -132,7 +134,7 @@ function build_gmsh_hex27_mesh(; Lx = 1.0, Ly = 1.0, Lz = 1.0, mesh_size = 0.15,
         tol = 32eps(Float64) * max(Lx, Ly, Lz)
         boundary_nodes = Int32[i for i in eachindex(coords) if
             abs(coords[i][1]) ≤ tol || abs(coords[i][1] - Lx) ≤ tol ||
-            abs(coords[i][2]) ≤ tol || abs(coords[i][2] + Ly) ≤ tol ||
+            abs(coords[i][2]) ≤ tol || abs(coords[i][2] - Ly) ≤ tol ||
             abs(coords[i][3]) ≤ tol || abs(coords[i][3] - Lz) ≤ tol]
         return coords, el2n, boundary_nodes
     finally
