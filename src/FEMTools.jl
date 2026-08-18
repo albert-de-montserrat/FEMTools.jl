@@ -19,7 +19,7 @@ using Printf: Printf, @printf
 using ForwardDiff: ForwardDiff
 using Enzyme: Enzyme
 using Atomix: Atomix
-using StaticArrays: StaticArrays, SA, SMatrix, SVector
+using StaticArrays: StaticArrays, SA, SMatrix, SOneTo, StaticMatrix, SVector
 using DomainSets: DomainSets, ClosedInterval, boundary, leftendpoint, rightendpoint
 using SparseArrays: SparseArrays, sparse
 using KernelAbstractions: KernelAbstractions, @Const, @index, @kernel, CPU
@@ -67,14 +67,23 @@ include("mesh/coloring.jl")
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
+# Dynamic relaxation: the scatter kernels, Dirichlet enforcement, update
+# kernels, and pseudo-transient loop shared by every DR problem.
+include("dynamic_relaxation/solver.jl")
+include("dynamic_relaxation/assembly.jl")
+
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")
+include("heat_diffusion/assembly/residual_atomics.jl")
+include("heat_diffusion/assembly/residual_colored.jl")
 include("heat_diffusion/solvers/DR.jl")
 
 # Lithostatic-pressure solver: types, assembly, and PT solver.
 include("lithostatic_pressure/types/lithostatic_pressure_types.jl")
 include("lithostatic_pressure/assembly/residual.jl")
+include("lithostatic_pressure/assembly/residual_atomics.jl")
+include("lithostatic_pressure/assembly/residual_colored.jl")
 include("lithostatic_pressure/solvers/DR.jl")
 
 # Stokes solver: types and assembly.
@@ -86,6 +95,7 @@ include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/rheology.jl")
 include("stokes/assemblers/momentum_residuals.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
+include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
 include("stokes/tensors.jl")
 include("stokes/solvers/DR.jl")
@@ -116,6 +126,7 @@ export generate_element2node,
     generate_boundary_elements,
     generate_coordinates,
     generate_dofs,
+    precompute_geometry,
     generate_sparsity_pattern,
     color_mesh,
     generate_element_groups,
@@ -129,9 +140,9 @@ export eval_shape_function,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
-export ThermalDiffusionDR, solver!
+export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesDR, DruckerPrager,
+export StokesMaterial, StokesDR, DruckerPrager,
     assemble_velocity_mass!,
     assemble_viscosity_weighted_pressure_scaling!,
     assemble_viscosity_weighted_pressure_scaling,
@@ -139,6 +150,8 @@ export StokesDR, DruckerPrager,
     pressure_mass,
     rotate_stress!,
     solve_stokes_dyrel!,
+    solve_stokes_3d!,
+    solve_stokes_adjoint_3d!,
     solve_stokes_adjoint_dyrel!,
     solve_stokes_adjoint_coupled_experimental!,
     update_stokes_current_stress!
@@ -167,12 +180,8 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_kernel!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!,
-    assemble_momentum_adjoint_blocks,
-    apply_momentum_adjoint_blocks!,
-    assemble_pressure_adjoint_blocks,
-    apply_pressure_adjoint_blocks!,
     assemble_experimental_adjoint_spectral_diagnostics!
-public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!, precompute_geometry
+public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public velocity, stress, pressure, temperature

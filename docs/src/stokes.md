@@ -13,14 +13,15 @@ continuity balances
 
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t} = 0,
+\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+- \alpha\frac{\partial T}{\partial t} = 0,
 ```
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
-`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `α`, `ρ0`,
-`K`) are stored as `NTuple{nphases, FP}` scalars encoded in the type parameters;
-`g` and `Tref` are stored on the solver state.
+`ρ = ρ0 (1 − α(T − Tref) + P/K)`. Per-phase properties (`η`, `ηb`, `G`, `α`,
+`ρ0`, `K`) and the body-force parameters are grouped in a typed
+`StokesMaterial`.
 
 The saddle-point system is solved with a Powell–Hestenes / DYREL iteration: an
 outer Arrow–Hurwicz pressure update wraps an inner Chebyshev-accelerated
@@ -33,6 +34,7 @@ operators and the same mixed spaces. It therefore computes gradients of the
 ## Solver state
 
 ```@docs
+StokesMaterial
 StokesDR
 DruckerPrager
 pressure_mass
@@ -46,6 +48,71 @@ pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
 
+### Compact setup
+
+```julia
+material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
+dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
+              stress_size=(nq, mesh.nels))
+
+cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
+bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, vy_vals)
+
+assemble_viscosity_weighted_pressure_scaling!(
+    γP, dr, mesh, cache, γfact, Δt; workgroup,
+)
+solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; workgroup)
+```
+
+`MixedMeshCache` retains the reference elements alongside both geometry arrays,
+so the high-level assembly and solver calls infer elements and backend. The
+expanded positional methods remain available for custom and adjoint workflows.
+The pressure kernel interpolates nodal pressure and temperature increments
+directly, avoiding temporary per-node rate calculations.
+
+### Forward spectral estimate and frozen Jacobian
+
+The forward velocity sweep uses a diagonal Jacobi preconditioner ``P`` and the
+augmented momentum Jacobian ``A``. By default, `solve_stokes_dyrel!` obtains a
+conservative upper estimate from the assembled absolute row sums. Set
+`measure_λmax = true` to instead apply power iteration to
+
+```math
+\widehat A = P^{-1/2} A P^{-1/2}.
+```
+
+``P^{-1}A`` and ``\widehat A`` are similar and therefore have the same
+eigenvalues, while the symmetric scaling avoids the artificial non-normality
+introduced by left Jacobi scaling when ``A`` is symmetric. The DYREL step is
+
+```math
+\Delta\tau = \frac{2\,\mathrm{CFL}_v}{\sqrt{\lambda_{\max}}},
+```
+
+so an unnecessarily large Gershgorin estimate shortens every pseudo-time step.
+Power iteration is opt-in because it stores one dense augmented velocity block
+per element. Its dominant vector is warm-started across Jacobian refreshes.
+
+For linear viscous and viscoelastic rheologies (`plastic === nothing`), the
+augmented Jacobian is independent of the iterated velocity and pressure.
+`freeze_jacobian` therefore defaults to `true` and the blocks, row sums,
+preconditioner, and ``\lambda_{\max}`` are assembled only once. Convergence
+checks continue updating ``\lambda_{\min}`` and the Chebyshev coefficients.
+Set `freeze_jacobian = false` to force refreshes.
+
+Drucker–Prager plasticity is state-dependent, so its default remains
+`freeze_jacobian = false`. A non-associated plastic tangent is also non-normal:
+the solver consequently applies at least a 1.5 safety factor to the measured
+value, compared with the configurable `λmax_safety = 1.1` on the linear path.
+The power controls are `λmax_power_iterations` and `λmax_power_rtol`.
+
+The returned statistics include the `λmax` actually used, the
+`λmax_gershgorin` reference, cumulative `λmax_iterations`, and
+`jacobian_assemblies`. The inner loop also fuses both velocity-component rate
+and field updates into one kernel and copies residual history only at
+convergence checks.
+
 ## Example
 
 The scripts under `examples/stokes/` set up complete problems, including a
@@ -55,7 +122,12 @@ viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
+julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
+julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 ```
+
+See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
+discretisations, physical setup, output, figure, and material-gradient checks.
 
 The adjoint sinking-block example accepts an explicit backend. It builds the
 Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,
@@ -77,7 +149,10 @@ headless accelerator runs.
 
 ```@docs
 solve_stokes_dyrel!
+solve_stokes_3d!
+solve_stokes_adjoint_3d!
 solve_stokes_adjoint_dyrel!
+FEMTools.FrozenAdjointOperator
 update_stokes_current_stress!
 ```
 
@@ -105,6 +180,58 @@ momentum residual contraction to obtain density and viscosity sensitivities.
 The returned sensitivity arrays contain raw element integrals. Their sums give
 phase gradients; division by element area is used only to visualise a spatial
 sensitivity density.
+
+### Why the discrete transpose matters
+
+The adjoint uses the same velocity and pressure spaces, quadrature points,
+constitutive update, and element residuals as the forward solve. Transposing
+those discrete operators exactly makes the resulting gradient the derivative of
+the objective that the code actually evaluates. Changing the adjoint space,
+quadrature, or rheology independently would instead produce a gradient of a
+different discretisation. When adding an objective or material parameter,
+validate that contract with a central finite difference as demonstrated in
+`test/test_stokes_adjoint_api.jl`.
+
+### Frozen operator and solver controls
+
+The forward state must be converged before the adjoint solve. At that fixed
+state the transpose Jacobian is constant, so the default
+`frozen_operator = true` path assembles three dense blocks per element once and
+reuses them throughout the Powell–Hestenes / DYREL solve. Each subsequent
+operator application is only an element gather, dense products, and scatter;
+it does not reevaluate the rheology or invoke automatic differentiation.
+
+The inner velocity iteration stops after reducing its residual by `rel_drop`;
+the outer pressure iteration continues until `adjoint_tol` or
+`max_ph_iterations`. `iterMax` limits one inner solve and `total_iterMax` limits
+the complete adjoint. With `measure_λmax = true`, power iteration measures the
+largest eigenvalue of the Jacobi-preconditioned velocity block instead of using
+its looser Gershgorin bound. The returned statistics report both values and the
+number of power iterations. Set `measure_λmax = false` to use the Gershgorin
+estimate directly; the Enzyme fallback also uses that estimate because it has no
+cheap frozen operator application for power iteration.
+
+`λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
+for a cold solve; in an optimization loop, leave the previous design's adjoint
+in place to warm-start the next solve.
+
+If the velocity residual stalls, inspect the measured-to-Gershgorin ratio and
+increase the iteration budgets before changing tolerances. If the velocity
+residual drops but the pressure residual does not, the outer PH iteration is
+the bottleneck; lowering `rel_drop` only spends more work on the already-solved
+subproblem.
+
+The cached T7/P1-disc operator stores 280 floating-point values per element,
+about 2.2 kB per element in `Float64`. Set `frozen_operator = false` when that
+memory footprint is unsuitable, notably for larger three-dimensional elements.
+The fallback reconstructs the same transpose products with Enzyme on every
+iteration and is therefore slower but avoids the block storage.
+
+See `examples/stokes/sinking_block/sinking_block_adj.jl` for a complete solve
+and `examples/benchmarks/adjoint_perf.jl` for a headless mesh/contrast sweep.
+Forward comparisons are available in
+`examples/benchmarks/forward_lambda_perf.jl` and
+`examples/benchmarks/forward_lambda_shear_band_perf.jl`.
 
 ## Assembly
 

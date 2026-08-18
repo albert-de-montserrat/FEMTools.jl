@@ -1,4 +1,34 @@
 """
+    StokesMaterial(; η=(1.0,), ηb=(1.0,), G=(Inf,), α=(0.0,),
+                   ρ0=(1.0,), K=(Inf,), g=(0.0, 0.0), Tref=0.0)
+
+Typed per-phase material properties and body-force parameters for `StokesDR`.
+All property tuples must have the same length and floating-point type.
+"""
+@kwdef struct StokesMaterial{nphases, FP}
+    η::NTuple{nphases, FP} = (1.0,)
+    ηb::NTuple{nphases, FP} = (1.0,)
+    G::NTuple{nphases, FP} = (Inf,)
+    α::NTuple{nphases, FP} = (0.0,)
+    ρ0::NTuple{nphases, FP} = (1.0,)
+    K::NTuple{nphases, FP} = (Inf,)
+    g::NTuple{2, FP} = (0.0, 0.0)
+    Tref::FP = 0.0
+
+    function StokesMaterial(
+        η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
+        G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
+        ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
+        g::NTuple{2, FP}, Tref::FP,
+    ) where {FP}
+        nphases = length(η)
+        length(ηb) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
+            throw(DimensionMismatch("Stokes material property tuples must have the same length"))
+        return new{nphases, FP}(η, ηb, G, α, ρ0, K, g, Tref)
+    end
+end
+
+"""
     StokesDR{nphases, _T, _TI, _TS, FP}
 
 Solver state for an incompressible Stokes flow solved with a pseudo-transient
@@ -51,20 +81,22 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `Pnum`     | Arrow-Hurwicz numerical pressure correction (`γP·RP/M_P`) passed to the momentum equation |
 | `phases_P` | Per-node phase index (1-based integer)    |
 
-# Per-phase scalar tuples (`NTuple{nphases, FP}`)
-`η` (dynamic shear viscosity), `ηb` (bulk viscosity), `α` (thermal expansivity),
-`ρ0` (reference density, default 1), `K` (bulk modulus for EOS, default Inf).
+# Material properties
+Properties are supplied together through [`StokesMaterial`](@ref).
 
 # Global scalar fields
-`g::NTuple{2,FP}` (gravity vector, default `(0,0)`), `Tref::FP` (reference
+`G` is the shear modulus. `g::NTuple{2,FP}` (gravity vector, default `(0,0)`), `Tref::FP` (reference
 temperature for the linearised EOS, default 0).
 
 # Solver parameters
 `CFL_v`, `CFL_P`, `c_fact`, `ϵ` (convergence tolerance).
 
 # Constructor
+    StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial;
+             CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
+             stress_size=nothing)
     StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
-             ρ0=nothing, K=nothing, g=nothing, Tref=nothing,
+             ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
              stress_size=nothing)
     StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
@@ -123,6 +155,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     α::NTuple{nphases, FP}     # thermal expansivity     [K⁻¹]
     ρ0::NTuple{nphases, FP}    # reference density       [kg m⁻³]
     K::NTuple{nphases, FP}     # bulk modulus (EOS)      [Pa]
+    G::NTuple{nphases, FP}     # shear modulus           [Pa]
     # global scalar parameters
     g::NTuple{2, FP}           # gravitational acceleration [m s⁻²]
     Tref::FP                   # reference temperature for EOS [K]
@@ -134,16 +167,19 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
 
     function StokesDR(
         backend, nnodes_v, nnodes_P,
-        η::NTuple{nphases, FP}, ηb::NTuple{nphases, FP}, α::NTuple{nphases, FP};
+        η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
         ρ0   = nothing,
         K    = nothing,
+        G    = nothing,
         g    = nothing,
         Tref = nothing,
         CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
         stress_size = nothing,
-    ) where {nphases, FP}
+    ) where {N, FP}
+        nphases = N + 1
         _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
         _K   = K   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
+        _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
         _g   = g   === nothing ? (FP(0), FP(0))   : (FP(g[1]), FP(g[2]))
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
         stress_dims = stress_size === nothing ? (nnodes_v,) :
@@ -166,7 +202,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
             newP(),                                    # Q
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
-            η, ηb, α, _ρ0, _K, _g, _Tref,
+            η, ηb, α, _ρ0, _K, _G, _g, _Tref,
             FP(CFL_v), FP(CFL_P), FP(c_fact), FP(ϵ),
         )
     end
@@ -175,33 +211,42 @@ end
 """
     velocity(dr::StokesDR) -> (vx, vy)
 
-Return the current velocity components of a Stokes solver state.
+Return the nodal velocity-component arrays of a Stokes solver state.
 """
 velocity(dr::StokesDR) = (dr.vx, dr.vy)
 
 """
     stress(dr::StokesDR) -> (τxx, τyy, τxy)
 
-Return the current deviatoric stress components of a Stokes solver state.
+Return the current deviatoric-stress arrays of a Stokes solver state.
 """
 stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
 
 """
-    pressure(dr::StokesDR) -> P
+    pressure(dr) -> P
 
-Return the current pressure field of a Stokes solver state.
+Return the pressure array of a `StokesDR` or `LithostaticPressureDR` solver
+state.
 """
 pressure(dr::StokesDR) = dr.P
 
 """
-    temperature(dr::StokesDR) -> T
+    temperature(dr) -> T
 
-Return the current temperature field of a Stokes solver state.
+Return the temperature array of a `StokesDR` or `ThermalDiffusionDR` solver
+state.
 """
 temperature(dr::StokesDR) = dr.T
 
 StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
+
+StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
+    StokesDR(backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
+        ρ0 = material.ρ0, K = material.K, G = material.G,
+        g = material.g, Tref = material.Tref, kwargs...)
+StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
+    StokesDR(CPU(), nnodes_v, nnodes_P, material; kwargs...)
 
 """
     DruckerPrager{nphases, FP}
@@ -238,15 +283,23 @@ volumetric bulk modulus `Kb`. All arguments are `NTuple{nphases, FP}`.
 
 Stores `cos(ϕ)` and `sin(ϕ)` / `sin(Ψ)` precomputed so that yield-function
 evaluations inside assembly kernels avoid repeated trigonometric calls.
+
+# Examples
+```jldoctest
+julia> dp = DruckerPrager((deg2rad(30),), (0.0,), (1.0e6,), (1.0e19,), (1.0e10,));
+
+julia> dp.sinϕ[1] ≈ 0.5
+true
+```
 """
 function DruckerPrager(
-    ϕ     :: NTuple{nphases, FP},
-    Ψ     :: NTuple{nphases, FP},
-    C     :: NTuple{nphases, FP},
-    η_reg :: NTuple{nphases, FP},
-    Kb    :: NTuple{nphases, FP},
-) where {nphases, FP}
-    DruckerPrager{nphases, FP}(
+    ϕ     :: Tuple{FP, Vararg{FP, N}},
+    Ψ     :: Tuple{FP, Vararg{FP, N}},
+    C     :: Tuple{FP, Vararg{FP, N}},
+    η_reg :: Tuple{FP, Vararg{FP, N}},
+    Kb    :: Tuple{FP, Vararg{FP, N}},
+) where {N, FP}
+    DruckerPrager{N + 1, FP}(
         map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
     )
 end

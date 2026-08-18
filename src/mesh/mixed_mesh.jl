@@ -54,7 +54,6 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
         )
     end
 end
-
 function Base.show(io::IO, mesh::MixedMesh{nDim, O1, O2}) where {nDim, O1, O2}
     print(io, "MixedMesh{", nDim, ", ", O1, ", ", O2, "}(nnodes=", mesh.nnodes,
           ", nnodesP=", mesh.nnodesP, ", nels=", mesh.nels, ")")
@@ -194,11 +193,16 @@ arrays; mixing host and device inputs in an assembly kernel is unsupported.
 Fields:
 - `geo_v`: primary-field shape-function gradients and weighted volumes.
 - `geo_P`: secondary-field shape-function gradients and weighted volumes.
+- `element_v`, `element_P`: reference elements used to build the cache.
 """
-struct MixedMeshCache{GV, GP}
+struct MixedMeshCache{GV, GP, EV, EP}
     geo_v::GV
     geo_P::GP
+    element_v::EV
+    element_P::EP
 end
+
+MixedMeshCache(geo_v, geo_P) = MixedMeshCache(geo_v, geo_P, nothing, nothing)
 
 function MixedMeshCache(
     backend,
@@ -234,7 +238,7 @@ function MixedMeshCache(
     )
     KA.synchronize(backend)
 
-    return MixedMeshCache(geo_v, geo_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end
 
 # ---------------------------------------------------------------------------
@@ -275,5 +279,3 @@ function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integ
 
     return p_el2n, p_el2dof, p_dof_coords
 end
-
-Base.@deprecate build_discontinuous_linear_mesh generate_discontinuous_linear_mesh false

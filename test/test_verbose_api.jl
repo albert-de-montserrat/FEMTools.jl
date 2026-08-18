@@ -69,25 +69,23 @@ function _stokes_case()
     Γnodes = mesh_v.Γnodes
     mesh = MixedMesh(mesh_v, element_P)
     cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
-    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,); ϵ = 2.0)
+    material = StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,))
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material; ϵ = 2.0)
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache.geo_P, element_v, element_P,
-        1.0, 1.0, backend, workgroup,
+        γP, dr, mesh, cache, 1.0, 1.0; workgroup,
     )
     nq = length(element_v.integration_points.ω)
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
-    bc = zeros(Float64, length(Γnodes))
-    return (; dr, mesh, cache, element_v, element_P, τ_old, γP, Γnodes, bc, backend, workgroup)
+    bc = DirichletBoundaryCondition(nothing, Γnodes, zeros(Float64, length(Γnodes)))
+    return (; dr, mesh, cache, τ_old, γP, Γnodes, bc, workgroup)
 end
 
 function _stokes_output(; kwargs...)
-    (; dr, mesh, cache, element_v, element_P, τ_old, γP, Γnodes, bc, backend, workgroup) = _stokes_case()
+    (; dr, mesh, cache, τ_old, γP, bc, workgroup) = _stokes_case()
     return _capture_stdout() do
         solve_stokes_dyrel!(
-            dr, mesh, cache, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
-            Γnodes, bc, bc, backend, workgroup;
+            dr, mesh, cache, bc, bc, 1.0, γP; τ_old, workgroup,
             ncheck = 1,
             ϵ_tol = 2.0,
             iterMax = 0,
@@ -99,15 +97,15 @@ function _stokes_output(; kwargs...)
 end
 
 function _stokes_split_bc_output()
-    (; dr, mesh, cache, element_v, element_P, τ_old, γP, Γnodes, backend, workgroup) = _stokes_case()
+    (; dr, mesh, cache, τ_old, γP, Γnodes, workgroup) = _stokes_case()
     coords = Array(mesh.coords)
     vx_nodes = Int32[n for n in Γnodes if coords[n][1] ≈ 0.0 || coords[n][1] ≈ 1.0]
     vy_nodes = Int32[n for n in Γnodes if coords[n][2] ≈ 0.0 || coords[n][2] ≈ 1.0]
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, zeros(Float64, length(vx_nodes)))
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(Float64, length(vy_nodes)))
     return _capture_stdout() do
         solve_stokes_dyrel!(
-            dr, mesh, cache, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
-            Γnodes, zeros(Float64, length(vx_nodes)), zeros(Float64, length(vy_nodes)), backend, workgroup;
+            dr, mesh, cache, bc_vx, bc_vy, 1.0, γP; τ_old, workgroup,
             ncheck = 1,
             ϵ_tol = 2.0,
             iterMax = 0,
@@ -115,8 +113,6 @@ function _stokes_split_bc_output()
             max_ph_iterations = 1,
             verbose = false,
             verbose_inner = false,
-            vx_nodes = vx_nodes,
-            vy_nodes = vy_nodes,
         )
     end
 end
@@ -130,7 +126,4 @@ end
     @test_logs (:info, "Initial momentum preconditioner") begin
         @test occursin("itPH", _stokes_output(verbose = true, verbose_inner = false))
     end
-
-    @test (@test_deprecated _stokes_output(verbose_PH = false, verbose_inner = false)) == ""
-    @test (@test_deprecated _stokes_output(verbose = false, verbose_DR = false)) == ""
 end

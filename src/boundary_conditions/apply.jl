@@ -15,10 +15,8 @@ constrained diagonal entries to one, and assigns constrained RHS values.
 
 All methods mutate their arguments in place and return `nothing`.
 """
-function apply_bc!(rhs::AbstractVector, ΓD::DirichletBoundaryCondition)
-    rhs[ΓD.DoFs] .= ΓD.vals
-    return nothing
-end
+apply_bc!(rhs::AbstractVector, ΓD::DirichletBoundaryCondition; workgroup = 256) =
+    apply_dirichlet!(rhs, ΓD.DoFs, ΓD.vals, KA.get_backend(rhs), workgroup)
 
 function apply_bc!(A::AbstractMatrix, ΓD::DirichletBoundaryCondition)
     for dof in ΓD.DoFs

@@ -114,6 +114,8 @@ for FP in (FP32, FP64)
             27,
             1,
         )
+        coords = generate_coordinates(hex27, (zero(FP)..one(FP)) × (zero(FP)..one(FP)) × (zero(FP)..one(FP)), (1, 1, 1))
+        @test length(Mesh(coords, el2n; order = 2).Γnodes) == 26
     end
 
     @testset "mesh constructor" begin

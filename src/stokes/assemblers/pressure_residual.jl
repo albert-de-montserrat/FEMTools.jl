@@ -9,11 +9,11 @@ gradients at the point. The result is the scalar `∑ⱼ ∂Nᵢ/∂xⱼ · vⱼ
 over all nodes `i` and spatial dimensions `j`. Implemented as a `@generated`
 function to unroll all loops at compile time.
 """
-@generated function compute_velocity_divergence(v::Tuple{Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
+@generated function compute_velocity_divergence(v::Tuple{SVector{M}, Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
     quote
         @inline
         ∇V = zero(∂N∂x_v[1, 1] * v[1][1])
-        @nexprs $N j-> begin
+        @nexprs $(N + 1) j-> begin
             v_j = v[j]
             @nexprs $M i-> begin
                 ∇V += ∂N∂x_v[i,j] * v_j[i]
@@ -29,7 +29,7 @@ end
 
 Integrate the element pressure residual for a P–H (pressure–heat) coupled Stokes formulation.
 
-`v` is an `NTuple{2}` of element velocity vectors `(vxloc, vyloc)`. `P_loc`
+`v` contains one element velocity vector per spatial dimension. `P_loc`
 and `P0loc` are the current and previous pressure values at the `N` pressure
 nodes. `Tloc` and `T0loc` are the corresponding temperatures. `α` and `ηb`
 are per-phase thermal expansion and bulk viscosity `NTuple`s; `Δt` is the time
@@ -43,10 +43,12 @@ Weak form per pressure node `i`:
 
 where `geo_v_el` provides velocity shape-function gradients and `geo_P_el`
 provides pressure quadrature weights. Note: velocity gradients are currently
-evaluated at velocity integration points rather than pressure points. The
-compatibility method without `Qloc` evaluates the same residual with `Q = 0`.
+evaluated at velocity integration points rather than pressure points. Pressure
+and temperature rates are interpolated from their nodal increments before the
+material factors are applied. The compatibility method without `Qloc`
+evaluates the same residual with `Q = 0`.
 """
-@inline function integrate_PH_pressure_residual(v::Tuple{<:SVector, <:SVector}, P_loc::SVector{N}, P0loc, Tloc, T0loc, Qloc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where N
+@inline function integrate_PH_pressure_residual(v::Tuple{SVector{M}, Vararg{SVector{M}, D}}, P_loc::SVector{N}, P0loc, Tloc, T0loc, Qloc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where {D, M, N}
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
@@ -56,18 +58,8 @@ compatibility method without `Qloc` evaluates the same residual with `Q = 0`.
         # project parameters to integration point
         ηbq = interp2ip_phase(Nv, ηb, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
-        # project ∂P∂t to integration points
-        ∂P∂t = interp2ip(
-            Nv,
-            (P, P0) ->  (P - P0) / (ηbq * Δt),
-            (P_loc, P0loc)
-        )
-        # project ∂T∂t to integration point
-        ∂T∂t = interp2ip(
-            Nv,
-            (T, T0) ->  αq * (T - T0) / Δt,
-            (Tloc, T0loc)
-        )
+        ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt)
+        ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
         # project divergence to integration point
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
         Qq = dot(Nv, Qloc)
@@ -130,7 +122,6 @@ function assemble_pressure_residual_matrices_atomix!(
     )
 end
 
-
 function assemble_pressure_residual_matrices_atomix!(
     RP, vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
     element_v, element_P, phases, α, ηb, Δt, backend, workgroup,
@@ -147,13 +138,16 @@ end
                                        phases, α, ηb, Δt, NqP,
                                        Val(NV), Val(NP), workgroup)
 
-Launch the Atomix-backed pressure-residual kernel and synchronize the backend.
+Zero `RP`, launch the atomic pressure-residual kernel over `nels` elements,
+and synchronize.
 
-Lower-level entry point used by `assemble_pressure_residual_matrices_atomix!`
-once the pressure shape-function values `NqP` and node counts (`Val(NV)`,
-`Val(NP)`) have been extracted from `element_v`/`element_P`. `Q` is the
-pressure-node volumetric source/sink rate; the compatibility method without it
-uses `Q = 0`.
+Low-level entry point beneath `assemble_pressure_residual_matrices_atomix!`:
+the pressure shape-function table `NqP` (evaluated at the velocity quadrature
+points) and the local node counts `Val(NV)`, `Val(NP)` are passed explicitly,
+which makes the call differentiable with Enzyme (see
+`assemble_pressure_residual_matrices_atomix_adj!`). The backend is inferred
+from `RP`. `Q` is the pressure-node volumetric source/sink rate; the
+compatibility method without it uses `Q = 0`.
 """
 function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0, Q,
@@ -234,3 +228,39 @@ end
     geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, nv, np) =
     pressure_element_residual(vx, vy, P, P0, T, T0, zero(P), el2n_v, el2nP,
         geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, nv, np)
+
+"""
+    assemble_stokes_pressure_residual_3d!(RP, v, mesh; workgroup=256)
+
+Assemble `-∇·v` against the four cell-local modes `(1, ξ, η, ζ)`.
+"""
+function assemble_stokes_pressure_residual_3d!(
+    RP::AbstractMatrix, v::NTuple{3}, mesh::Mesh; workgroup = 256,
+)
+    size(RP) == (4, mesh.nels) || throw(DimensionMismatch("RP must be 4 × nels"))
+    all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
+    ip = mesh.element.integration_points
+    NqP = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    backend = KA.get_backend(RP)
+    stokes_pressure_residual_3d_kernel!(backend, workgroup)(
+        RP, v, mesh.el2n, mesh.geometry, NqP; ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function stokes_pressure_residual_3d_kernel!(
+    RP, @Const(v), @Const(el2n), @Const(geometry), @Const(NqP),
+)
+    cell = @index(Global)
+    nodes = local_nodes_of(el2n, cell, Val(27))
+    velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
+    residual = zero(SVector{4, eltype(RP)})
+    for q in eachindex(geometry[cell])
+        gradient, dΩ = geometry[cell][q]
+        residual -= NqP[q] * (compute_velocity_divergence(velocity, gradient) * dΩ)
+    end
+    for i in 1:4
+        RP[i, cell] = residual[i]
+    end
+end

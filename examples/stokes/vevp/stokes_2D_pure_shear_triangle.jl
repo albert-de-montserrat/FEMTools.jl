@@ -16,23 +16,6 @@ const backend   = CPU()
 const workgroup = 128
 
 """
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
-"""
     build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
 
 Build an unstructured T7 velocity mesh around a circular inclusion.
@@ -123,7 +106,10 @@ The model builds a square domain with a circular inclusion, applies pure-shear
 boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
 VTK file per physical step, and returns the stress-history diagnostics.
 """
-function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6, show_plot = true)
+function main(;
+        nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6,
+        show_plot = true, write_output = true, verbose = true,
+        measure_λmax = false, λmax_safety = 1.1)
     # Domain
     Lx, Ly = 1.0, 1.0
 
@@ -194,29 +180,16 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v = cache.geo_v
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
         CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
     )
@@ -255,6 +228,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
@@ -262,8 +237,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     copyto!(dr.vx, [ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
     copyto!(dr.vy, [-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
@@ -283,8 +258,7 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     # adapts the pressure step to viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup, phases_v = phases_v_cpu,
     )
 
     time_history = zeros(Float64, nsteps)
@@ -302,6 +276,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
     post = nothing
+    solve_stats_history = NamedTuple[]
+    solve_time = 0.0
 
     for istep in 1:nsteps
         t = istep * Δt
@@ -310,24 +286,19 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.T0, dr.T)
         @info "Physical time step" istep nsteps t
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, G_stokes, Δt, γP,
-            Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-            ncheck,
-            ϵ_tol,
-            iterMax,
-            total_iterMax,
-            rel_drop0,
-            verbose = verbose_PH,
-            verbose_inner = verbose_DR,
-            vx_nodes = vx_nodes,
-            vy_nodes = vy_nodes,
-        )
+        solve_stats = nothing
+        solve_time += @elapsed solve_stats = solve_stokes_dyrel!(
+                dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+                phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
+                ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0,
+                verbose = verbose && verbose_PH,
+                verbose_inner = verbose && verbose_DR,
+                measure_λmax, λmax_safety)
+        push!(solve_stats_history, solve_stats)
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, geo_v, element_v, element_P,
-            phases_v_cpu, τ_old, plastic, τ, G_stokes, Δt, backend, workgroup,
+            dr, mesh_stokes, cache, τ, Δt;
+            phases_v = phases_v_cpu, τ_old, plastic, workgroup,
         )
 
         P_cpu  = Array(dr.P)
@@ -345,9 +316,11 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
 
-        vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
-        write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
-        @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+        if write_output
+            vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
+            write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
+            @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+        end
     end  # physical time step loop
 
     P_cpu  = Array(dr.P)
@@ -385,7 +358,8 @@ function main(; nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 /
     lines!(ax1, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
     show_plot && display(fig)
-    return (; time = time_history, mean_tauII = mean_tauII_history, post)
+    return (; time = time_history, mean_tauII = mean_tauII_history, post,
+        solve_stats = solve_stats_history, solve_time)
 end
 
-main()
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()

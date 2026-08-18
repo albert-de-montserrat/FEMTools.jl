@@ -8,18 +8,26 @@ const SUPPORTED_ELEMENTS = (
     QuadraticElement{1, 3, FP64},
     LinearElement{2, 3, FP64},
     QuadraticElement{2, 6, FP64},
+    QuadraticElement{2, 7, FP64},
     LinearElement{2, 4, FP64},
     QuadraticElement{2, 9, FP64},
     LinearElement{3, 8, FP64},
     QuadraticElement{3, 27, FP64},
+    LinearElement{3, 4, FP64},
+    QuadraticElement{3, 10, FP64},
+    QuadraticElement{3, 11, FP64},
     LinearElement{1, 2, FP32},
     QuadraticElement{1, 3, FP32},
     LinearElement{2, 3, FP32},
     QuadraticElement{2, 6, FP32},
+    QuadraticElement{2, 7, FP32},
     LinearElement{2, 4, FP32},
     QuadraticElement{2, 9, FP32},
     LinearElement{3, 8, FP32},
     QuadraticElement{3, 27, FP32},
+    LinearElement{3, 4, FP32},
+    QuadraticElement{3, 10, FP32},
+    QuadraticElement{3, 11, FP32},
 
 )
 
@@ -30,11 +38,15 @@ const SUPPORTED_ELEMENTS = (
         @test LinearElement{2, 3, FP} <: FEMTools.AbstractLinearElement{2, 3, FP}
         @test LinearElement{2, 4, FP} <: FEMTools.AbstractLinearElement{2, 4, FP}
         @test LinearElement{3, 8, FP} <: FEMTools.AbstractLinearElement{3, 8, FP}
+        @test LinearElement{3, 4, FP} <: FEMTools.AbstractLinearElement{3, 4, FP}
 
         @test QuadraticElement{1, 3, FP} <: FEMTools.AbstractQuadraticElement{1, 3, FP}
         @test QuadraticElement{2, 6, FP} <: FEMTools.AbstractQuadraticElement{2, 6, FP}
+        @test QuadraticElement{2, 7, FP} <: FEMTools.AbstractQuadraticElement{2, 7, FP}
         @test QuadraticElement{2, 9, FP} <: FEMTools.AbstractQuadraticElement{2, 9, FP}
         @test QuadraticElement{3, 27, FP} <: FEMTools.AbstractQuadraticElement{3, 27, FP}
+        @test QuadraticElement{3, 10, FP} <: FEMTools.AbstractQuadraticElement{3, 10, FP}
+        @test QuadraticElement{3, 11, FP} <: FEMTools.AbstractQuadraticElement{3, 11, FP}
 
         @test LinearElement{1, 2, FP} <: FEMTools.AbstractElement{1, 2, FP}
         @test QuadraticElement{1, 3, FP} <: FEMTools.AbstractElement{1, 3, FP}
@@ -66,10 +78,14 @@ end
         (QuadraticElement{1, 3}, QuadraticElement{1, 3, Float64}),
         (LinearElement{2, 3}, LinearElement{2, 3, Float64}),
         (QuadraticElement{2, 6}, QuadraticElement{2, 6, Float64}),
+        (QuadraticElement{2, 7}, QuadraticElement{2, 7, Float64}),
         (LinearElement{2, 4}, LinearElement{2, 4, Float64}),
         (QuadraticElement{2, 9}, QuadraticElement{2, 9, Float64}),
         (LinearElement{3, 8}, LinearElement{3, 8, Float64}),
         (QuadraticElement{3, 27}, QuadraticElement{3, 27, Float64}),
+        (LinearElement{3, 4}, LinearElement{3, 4, Float64}),
+        (QuadraticElement{3, 10}, QuadraticElement{3, 10, Float64}),
+        (QuadraticElement{3, 11}, QuadraticElement{3, 11, Float64}),
     )
 
     for (Element, ConcreteElement) in cases
@@ -86,12 +102,16 @@ end
             LinearElement{2, 3, FP},
             LinearElement{2, 4, FP},
             LinearElement{3, 8, FP},
+            LinearElement{3, 4, FP},
         )
         quadratic_elements = (
             QuadraticElement{1, 3, FP},
             QuadraticElement{2, 6, FP},
+            QuadraticElement{2, 7, FP},
             QuadraticElement{2, 9, FP},
             QuadraticElement{3, 27, FP},
+            QuadraticElement{3, 10, FP},
+            QuadraticElement{3, 11, FP},
         )
 
         for Element in linear_elements
@@ -122,10 +142,14 @@ end
             (QuadraticElement{1, 3, FP}, 1, 3),
             (LinearElement{2, 3, FP}, 2, 3),
             (QuadraticElement{2, 6, FP}, 2, 6),
+            (QuadraticElement{2, 7, FP}, 2, 7),
             (LinearElement{2, 4, FP}, 2, 4),
             (QuadraticElement{2, 9, FP}, 2, 9),
             (LinearElement{3, 8, FP}, 3, 8),
             (QuadraticElement{3, 27, FP}, 3, 27),
+            (LinearElement{3, 4, FP}, 3, 1),
+            (QuadraticElement{3, 10, FP}, 3, 4),
+            (QuadraticElement{3, 11, FP}, 3, 15),
         )
 
         for (Element, nDim, nIp) in cases
@@ -138,6 +162,30 @@ end
             @test length(ip.ω) == nIp
             @test nDim == 1 ? ip.η === nothing : ip.η isa SVector{nIp, FP}
             @test nDim < 3 ? ip.ζ === nothing : ip.ζ isa SVector{nIp, FP}
+        end
+    end
+end
+
+@testset "generated triangle quadrature input validation" begin
+    @test_throws ArgumentError gauss_legendre_triangle(0)
+    @test_throws ArgumentError gauss_legendre_triangle(Float32, -1)
+end
+
+@testset "tetrahedron integration rules" begin
+    for FP in (FP64, FP32)
+        for (Element, degree) in ((QuadraticElement{3, 10, FP}, 2),
+                                  (QuadraticElement{3, 11, FP}, 5))
+            ip = IntegrationPoints(Element)
+            @test sum(ip.ω) ≈ FP(1/6) atol = 20eps(FP)
+            @test all(ip.ξ .>= 0) && all(ip.η .>= 0) && all(ip.ζ .>= 0)
+            @test all(ip.ξ .+ ip.η .+ ip.ζ .<= 1)
+
+            for i in 0:degree, j in 0:(degree - i), k in 0:(degree - i - j)
+                numerical = sum(ip.ω .* ip.ξ.^i .* ip.η.^j .* ip.ζ.^k)
+                exact = FP(factorial(i) * factorial(j) * factorial(k) /
+                           factorial(i + j + k + 3))
+                @test numerical ≈ exact atol = 100eps(FP)
+            end
         end
     end
 end

@@ -61,13 +61,13 @@ the boundary-conditioned transpose used by the adjoint residual assembly.
             v_arg, P_arg, P0loc, Tloc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
             η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γloc, MPloc,
-            τ_old_loc, plastic, Nq, NqP,
+            Nq, NqP, τ_old_loc, plastic,
         )
         Ry = integrate_momentum_y_residual(
             v_arg, P_arg, P0loc, Tloc, T0loc,
             geo_v_el, geo_P_el, phase_v, phase_P,
             η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γloc, MPloc,
-            τ_old_loc, plastic, Nq, NqP,
+            Nq, NqP, τ_old_loc, plastic,
         )
         Rp = integrate_PH_pressure_residual(
             v_arg, P_arg, P0loc, Tloc, T0loc,

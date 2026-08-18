@@ -37,11 +37,10 @@ function main(nels)
     mesh_cpu = Mesh(CPU(), Ω, element, nels)
 
     # --- two-phase material properties ---
-    k   = (3.0,    2.5)     # thermal conductivity   [W m⁻¹ K⁻¹]
-    Cp  = (1200.0, 1100.0)  # specific heat          [J kg⁻¹ K⁻¹]
-    ρ0  = (3300.0, 2700.0)  # reference density      [kg m⁻³]
-    α   = (3e-5,   2e-5)    # thermal expansivity    [K⁻¹]
-    K   = (1e11,   8e10)    # bulk modulus           [Pa]
+    material = ThermalMaterial(;
+        k = (3.0, 2.5), Cp = (1200.0, 1100.0), ρ0 = (3300.0, 2700.0),
+        α = (3e-5, 2e-5), K = (1e11, 8e10),
+    )
     Tref = 273.0            # reference temperature [K]
     Δt  = 1e3 * 365 * 24 * 3600 # time step           [s]
 
@@ -62,7 +61,7 @@ function main(nels)
     geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
 
     # --- ThermalDiffusionDR bundles all solver state and material properties ---
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, k, Cp, ρ0, α, K; CFL=0.9, ϵ=1e-8)
+    dr = ThermalDiffusionDR(backend, mesh.nnodes, material; CFL=0.9, ϵ=1e-8)
 
     # Phase assignment: dr.phases defaults to all-ones (single phase).
     # Overwrite to set a two-phase layout, e.g. upper half = phase 2:

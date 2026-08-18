@@ -5,66 +5,46 @@
 
 Launch the Stokes geometry precompute kernel and synchronize the backend.
 """
-function precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend::KA.Backend, workgroup) where N
-    precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KA.synchronize(backend)
-    return nothing
-end
-
-function precompute_stokes_geometry!(backend::KA.Backend, workgroup, geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    Base.depwarn(
-        "`precompute_stokes_geometry!(backend, workgroup, geo, …, nels)` is deprecated; pass `backend, workgroup` last: `precompute_stokes_geometry!(geo, …, nels, backend, workgroup)`.",
-        :precompute_stokes_geometry!,
-    )
-    return precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, Val(N), nels, backend, workgroup)
-end
+precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup) where {N} =
+    launch!(precompute_geometry_kernel!, backend, workgroup, nels,
+            geo, coords, el2n, ∂N∂ξq, ω, Val(N))
 
 """
     stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup)
 
 Advance a pseudo-transient velocity-rate field with diagonal preconditioning.
 """
-function stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup)
-    update_rate_kernel!(backend, workgroup)(
-        ∂u∂τ, R, PC, β;
-        ndrange = ndofs,
-    )
-    KA.synchronize(backend)
-    return nothing
-end
-
-function stokes_update_rate!(backend::KA.Backend, workgroup, ∂u∂τ, R, PC, β, ndofs)
-    Base.depwarn(
-        "`stokes_update_rate!(backend, workgroup, ∂u∂τ, R, PC, β, ndofs)` is deprecated; pass `backend, workgroup` last: `stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup)`.",
-        :stokes_update_rate!,
-    )
-    return stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup)
-end
+stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup) =
+    launch!(update_rate_kernel!, backend, workgroup, ndofs, ∂u∂τ, R, PC, β)
 
 """
     stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)
 
 Apply a damped pseudo-transient increment to a Stokes solution field.
 """
-function stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)
-    update_variable_kernel!(backend, workgroup)(
-        u, ∂u∂τ, α_dr;
-        ndrange = ndofs,
+stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup) =
+    launch!(update_variable_kernel!, backend, workgroup, ndofs, u, ∂u∂τ, α_dr)
+
+@kernel function update_stokes_velocity_kernel!(
+        rate_x, rate_y, vx, vy,
+        @Const(Rx), @Const(Ry), @Const(PCx), @Const(PCy),
+        βx, βy, αx, αy,
     )
-    KA.synchronize(backend)
-    return nothing
+    i = @index(Global)
+    new_rate_x = βx * rate_x[i] + Rx[i] / PCx[i]
+    new_rate_y = βy * rate_y[i] + Ry[i] / PCy[i]
+    rate_x[i] = new_rate_x
+    rate_y[i] = new_rate_y
+    vx[i] += αx * new_rate_x
+    vy[i] += αy * new_rate_y
 end
 
-function stokes_update_variable!(backend::KA.Backend, workgroup, u, ∂u∂τ, α_dr, ndofs)
-    Base.depwarn(
-        "`stokes_update_variable!(backend, workgroup, u, ∂u∂τ, α_dr, ndofs)` is deprecated; pass `backend, workgroup` last: `stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)`.",
-        :stokes_update_variable!,
-    )
-    return stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup)
-end
+update_stokes_velocity!(
+        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
+        βx, βy, αx, αy, ndofs, backend, workgroup,
+    ) =
+    launch!(update_stokes_velocity_kernel!, backend, workgroup, ndofs,
+            rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy, βx, βy, αx, αy)
 
 """
     remove_pressure_mean!(P, M_P) -> p_mean

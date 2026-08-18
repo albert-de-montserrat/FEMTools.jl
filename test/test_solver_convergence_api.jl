@@ -126,14 +126,14 @@ function _orphan_stokes_case()
     mesh = MixedMesh(mesh_v, element_P)
     cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
     nq = length(element_v.integration_points.ω)
+    material = StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,), α = (0.0,))
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
+        backend, mesh.nnodes, mesh.nnodesP, material;
         stress_size = (nq, mesh.nels),
     )
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache.geo_P, element_v, element_P,
-        1.0, 1.0, backend, workgroup,
+        γP, dr, mesh, cache, 1.0, 1.0; workgroup,
     )
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     return (; dr, mesh, cache, element_v, element_P, τ_old, γP, backend, workgroup)
@@ -179,6 +179,27 @@ end
     end
     @test litho_err isa ErrorException
     @test occursin("Lithostatic pressure DR solver did not converge", sprint(showerror, litho_err))
+end
+
+@testset "DR solvers accept mesh-owned geometry and BC objects" begin
+    element = ReferenceElement(LinearElement{2, 3, Float64})
+    coords = SVector{2, Float64}[
+        SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0), SVector(2.0, 2.0),
+    ]
+    mesh = Mesh(CPU(), coords, reshape(Int32[1, 2, 3], 3, 1), element; workgroup = 1)
+    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal_err = _caught_error() do
+        solver!(thermal, 1.0, mesh, bc; workgroup = 1, verbose = false)
+    end
+    @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
+
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho_err = _caught_error() do
+        solver!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
+    end
+    @test occursin("lithostatic pressure preconditioner produced invalid λmax", sprint(showerror, litho_err))
 end
 
 @testset "DR solvers reject zero preconditioners" begin

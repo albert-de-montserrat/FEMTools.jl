@@ -44,17 +44,29 @@ using the substitution
 
 where `s,t ∈ [0,1]`.  Because the Duffy Jacobian `(1−s)` costs one polynomial
 degree in the `s`-direction, the rule is exact for bivariate polynomials of
-total degree ≤ **2n−2**.  Use `n = ceil((d+4)/2)` to integrate degree `d`
+total degree ≤ **2n−2**.  Use `n = ceil((d+2)/2)` to integrate degree `d`
 exactly.  For straight-sided T6/T7 elements (affine Jacobian, degree-4
 integrands) `n=3` (9 points) suffices.
 
 The GL abscissas are computed via the Golub–Welsch algorithm (eigendecomposition
 of the symmetric tridiagonal Jacobi matrix); weights are exact to machine
 precision for any `n`.
+
+# Examples
+```jldoctest
+julia> ip = gauss_legendre_triangle(2);
+
+julia> length(ip.ω)
+4
+
+julia> sum(ip.ω) ≈ 0.5
+true
+```
 """
 gauss_legendre_triangle(n::Int) = gauss_legendre_triangle(Float64, n)
 
 function gauss_legendre_triangle(::Type{T}, n::Int) where {T <: AbstractFloat}
+    n > 0 || throw(ArgumentError("quadrature order must be positive, got $n"))
     s1d, w1d = _gauss_legendre_01(T, n)
 
     nq  = n^2
@@ -91,7 +103,8 @@ whose off-diagonal entries are `β_i = i/√(4i²−1)`, then shift from `[-1,1]
 and normalize. Weights sum to 1.
 """
 function _gauss_legendre_01(::Type{T}, n::Int) where {T <: AbstractFloat}
-    n == 1 && return (SVector{1,T}(T(1)/2),  SVector{1,T}(one(T)))
+    n > 0 || throw(ArgumentError("quadrature order must be positive, got $n"))
+    n == 1 && return (SVector{1, T}(T(1) / 2), SVector{1, T}(one(T)))
 
     # Off-diagonal entries of the symmetric Jacobi matrix for Legendre polys
     β = T[i / sqrt(T(4i^2 - 1)) for i in 1:(n - 1)]
@@ -209,11 +222,12 @@ quadrilateral.
 """
 function IntegrationPoints(::QuadraticElement{2, 9, T}) where T
     # Tensor-product ordering: ξ varies fastest, then η.
-    a = √(3 / 5)
-    ξ = SVector(-a, 0.0, +a, -a, 0.0, +a, -a, 0.0, +a)
-    η = SVector(-a, -a, -a, 0.0, 0.0, 0.0, +a, +a, +a)
+    a = √T(3 / 5)
+    z = zero(T)
+    ξ = SVector(-a, z, +a, -a, z, +a, -a, z, +a)
+    η = SVector(-a, -a, -a, z, z, z, +a, +a, +a)
     ζ = nothing
-    ω = SVector(
+    ω = SVector{9, T}(
         25 / 81,
         40 / 81,
         25 / 81,
@@ -238,6 +252,45 @@ function IntegrationPoints(::LinearElement{3, 4, T}) where T
     ζ = SVector(T(1/4))
     ω = SVector(T(1/6))
     return IntegrationPoints{3, 1, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{3, 10})
+
+Return the symmetric four-point degree-two rule on the reference tetrahedron.
+"""
+function IntegrationPoints(::QuadraticElement{3, 10, T}) where T
+    a, b = T((5 + 3sqrt(5)) / 20), T((5 - sqrt(5)) / 20)
+    ξ = SVector(a, b, b, b)
+    η = SVector(b, a, b, b)
+    ζ = SVector(b, b, a, b)
+    ω = SVector{4, T}(ntuple(_ -> T(1/24), Val(4)))
+    return IntegrationPoints{3, 4, T}(ξ, η, ζ, ω)
+end
+
+"""
+    IntegrationPoints(::QuadraticElement{3, 11})
+
+Return the symmetric fifteen-point degree-five rule for the T11 element.
+"""
+function IntegrationPoints(::QuadraticElement{3, 11, T}) where T
+    pairs = ((1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4))
+    points = (
+        ntuple(_ -> T(1 / 4), 4),
+        (ntuple(i -> ntuple(j -> j == i ? zero(T) : T(1 / 3), 4), 4))...,
+        (ntuple(i -> ntuple(j -> j == i ? T(8 / 11) : T(1 / 11), 4), 4))...,
+        (ntuple(6) do i
+            a, b = pairs[i]
+            ntuple(j -> (j == a || j == b) ? T(0.4334498464263357) : T(0.0665501535736643), 4)
+        end)...,
+    )
+    weights = (T(0.030283678097089), ntuple(_ -> T(0.006026785714286), 4)...,
+               ntuple(_ -> T(0.011645249086029), 4)...,
+               ntuple(_ -> T(0.010949141561386), 6)...)
+    ξ = SVector{15, T}(p[2] for p in points)
+    η = SVector{15, T}(p[3] for p in points)
+    ζ = SVector{15, T}(p[4] for p in points)
+    return IntegrationPoints{3, 15, T}(ξ, η, ζ, SVector{15, T}(weights))
 end
 
 """
@@ -270,7 +323,9 @@ function IntegrationPoints(::QuadraticElement{3, 27, T}) where T
     ξ = SVector{27, T}(ntuple(i -> points[mod1(i, 3)], Val(27)))
     η = SVector{27, T}(ntuple(i -> points[mod1(cld(i, 3), 3)], Val(27)))
     ζ = SVector{27, T}(ntuple(i -> points[cld(i, 9)], Val(27)))
-    ω = SVector{27, T}(ntuple(i -> weights[mod1(i, 3)] * weights[mod1(cld(i, 3), 3)] * weights[cld(i, 9)], Val(27)))
+    ω = SVector{27, T}(ntuple(Val(27)) do i
+        weights[mod1(i, 3)] * weights[mod1(cld(i, 3), 3)] * weights[cld(i, 9)]
+    end)
 
     return IntegrationPoints{3, 27, T}(ξ, η, ζ, ω)
 end

@@ -3,7 +3,6 @@ Pkg.activate(@__DIR__)
 
 using Printf
 using Statistics
-using StaticArrays
 using LinearAlgebra
 using DomainSets
 using DomainSets: ×
@@ -17,15 +16,6 @@ const YEAR = 365.25 * 24 * 3600
 const KYR = 1.0e3 * YEAR
 
 elastic_buildup_solution(ε̇, t, G, η) = 2 * ε̇ * η * (1 - exp(-G * t / η))
-
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
 
 function update_rate!(∂u∂τ, R, PC, β, ndofs)
     FEMTools.update_rate_kernel!(backend, workgroup)(
@@ -94,25 +84,12 @@ function main(;
     NV = length(element_v)
     NP = length(element_P)
 
-    ξq_v = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
-
+    material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
         CFL_v = 1 / sqrt(2.1),
         CFL_P = 1 / sqrt(2.1),
         c_fact = 0.9,
@@ -140,11 +117,10 @@ function main(;
 
     bc_vx_lr = Float64[ε̇_bg * (coords[n][1] - lx / 2) for n in lr_nodes]
     bc_vy_tb = Float64[-ε̇_bg * (coords[n][2] - ly / 2) for n in tb_nodes]
-    zero_vx_lr = zero(bc_vx_lr)
-    zero_vy_tb = zero(bc_vy_tb)
-
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, lr_nodes, bc_vx_lr))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, tb_nodes, bc_vy_tb))
+    bc_vx = DirichletBoundaryCondition(nothing, lr_nodes, bc_vx_lr)
+    bc_vy = DirichletBoundaryCondition(nothing, tb_nodes, bc_vy_tb)
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "Pure-shear free-slip BCs" n_lr=length(lr_nodes) n_tb=length(tb_nodes) max_vx=maximum(abs, bc_vx_lr) max_vy=maximum(abs, bc_vy_tb)
 
@@ -156,8 +132,8 @@ function main(;
 
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, cache, γfact, Δt;
+        workgroup, phases_v = phases_v_cpu,
     )
 
     _λmin(step, rate, ΔR, PC) = begin
@@ -205,9 +181,9 @@ function main(;
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, dr.M_P,
-            backend, workgroup,
+            backend, workgroup; τ_old, plastic,
         )
         λmax_vx0 = max(maximum(dr.∂Rv_x∂vx ./ dr.PC_vx), eps(Float64))
         λmax_vy0 = max(maximum(dr.∂Rv_y∂vy ./ dr.PC_vy), eps(Float64))
@@ -235,8 +211,8 @@ function main(;
                 phases_v_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
-            FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
-            FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, bc_vx.zero_vals, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, bc_vy.zero_vals, backend, workgroup)
 
             FEMTools.assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
@@ -307,16 +283,16 @@ function main(;
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, dr.M_P,
-                        backend, workgroup,
+                        backend, workgroup; τ_old, plastic,
                     )
                 end
 
-                FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, zero_vx_lr, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.∂vx∂τ, lr_nodes, zero_vx_lr, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, zero_vy_tb, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.∂vy∂τ, tb_nodes, zero_vy_tb, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_x, lr_nodes, bc_vx.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vx∂τ, lr_nodes, bc_vx.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_y, tb_nodes, bc_vy.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vy∂τ, tb_nodes, bc_vy.zero_vals, backend, workgroup)
 
                 update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
                 update_variable!(dr.vx, dr.∂vx∂τ, -α_vx, mesh_stokes.nnodes)

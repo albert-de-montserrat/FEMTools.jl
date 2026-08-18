@@ -178,7 +178,7 @@ end
         (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
         (η_element[iel],), (G_element[iel],), (α[phase],),
         (ρ_element[iel],), (K_element[iel],), g, Tref, Δt,
-        τ_old_e, nothing, Nq, NqP,
+        Nq, NqP, τ_old_e, nothing,
     )
     phase_P = SVector{NP, Int}(ntuple(_ -> 1, Val(NP)))
     RP_e = FEMTools.integrate_PH_pressure_residual(

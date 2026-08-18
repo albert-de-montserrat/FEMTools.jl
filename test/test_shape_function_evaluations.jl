@@ -175,6 +175,39 @@ for FP in (FP32, FP64)
             @test count(!iszero, values) == 1
         end
 
+        tetra_nodes = (
+            (zero(FP), zero(FP), zero(FP)), (one(FP), zero(FP), zero(FP)),
+            (zero(FP), one(FP), zero(FP)), (zero(FP), zero(FP), one(FP)),
+            (FP(1/2), zero(FP), zero(FP)), (FP(1/2), FP(1/2), zero(FP)),
+            (zero(FP), FP(1/2), zero(FP)), (zero(FP), zero(FP), FP(1/2)),
+            (FP(1/2), zero(FP), FP(1/2)), (zero(FP), FP(1/2), FP(1/2)),
+        )
+        for Element in (QuadraticElement{3, 10, FP}, QuadraticElement{3, 11, FP})
+            tetrahedron = ReferenceElement(Element)
+            nodes = Element.parameters[2] == 11 ? (tetra_nodes..., (FP(1/4), FP(1/4), FP(1/4))) : tetra_nodes
+            for (inode, coords) in pairs(nodes)
+                values = eval_shape_function(tetrahedron, coords)
+                @test values[inode] ≈ one(FP) atol = 20eps(FP)
+                @test sum(values) ≈ one(FP) atol = 100eps(FP)
+                @test all(isapprox(values[j], zero(FP); atol=20eps(FP)) for j in eachindex(values) if j != inode)
+            end
+            coords = (FP(0.1), FP(0.2), FP(0.3))
+            gradients = eval_shape_function_gradient(tetrahedron, coords)
+            jacobian = eval_shape_function_jacobian(tetrahedron, coords)
+            for j in 1:3
+                @test sum(g[j] for g in gradients) ≈ zero(FP) atol = 200eps(FP)
+                @test jacobian[:, j] ≈ [g[j] for g in gradients] atol = 200eps(FP)
+            end
+        end
+
+        bubble = ReferenceElement(QuadraticElement{3, 11, FP})
+        for coords in ((FP(0.2), FP(0.3), zero(FP)),
+                       (FP(0.2), zero(FP), FP(0.3)),
+                       (zero(FP), FP(0.2), FP(0.3)),
+                       (FP(0.2), FP(0.3), FP(0.5)))
+            @test eval_shape_function(bubble, coords)[11] == zero(FP)
+        end
+
         @testset "3D gradient partition of unity" begin
             coords = (FP(0.1), FP(0.2), FP(-0.3))
             hex_grads = eval_shape_function_gradient(hexahedron, coords)
@@ -206,10 +239,14 @@ for FP in (FP32, FP64)
         line = ReferenceElement(LinearElement{1, 2, FP})
         ξ = FP(0.25)
         @test eval_shape_function(line, SVector(ξ)) == eval_shape_function(line, (ξ,))
+        @test eval_shape_function_gradient(line, SVector(ξ)) ==
+            eval_shape_function_gradient(line, (ξ,))
 
         quad4 = ReferenceElement(LinearElement{2, 4, FP})
         ξ, η = FP(0.3), FP(-0.2)
         @test eval_shape_function(quad4, SVector(ξ, η)) == eval_shape_function(quad4, (ξ, η))
+        @test eval_shape_function_gradient(quad4, SVector(ξ, η)) ==
+            eval_shape_function_gradient(quad4, (ξ, η))
     end
 
     @testset "shape_function_values – $FP" begin

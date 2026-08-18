@@ -3,7 +3,6 @@ Pkg.activate(joinpath(@__DIR__, "../.."))
 
 using Printf
 using Statistics
-using StaticArrays
 using LinearAlgebra
 using DomainSets
 using DomainSets: ×
@@ -13,15 +12,6 @@ using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, Da
 
 const backend   = CPU()
 const workgroup = 128
-
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
 
 function update_rate!(∂u∂τ, R, PC, β, ndofs)
     FEMTools.update_rate_kernel!(backend, workgroup)(
@@ -94,7 +84,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     @info "Mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels
 
     # ---------------------------------------------------------------------------
-    # Geometry precompute  (both fields evaluated at velocity integration points)
+    # Geometry cache (both fields evaluated at velocity integration points)
     # ---------------------------------------------------------------------------
 
     ip_v  = element_v.integration_points
@@ -102,29 +92,16 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     NV    = length(element_v)
     NP    = length(element_P)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    geo_v = Vector{NTuple{NQ_v, Tuple{SMatrix{NV, 2, Float64, 2NV}, Float64}}}(undef, mesh_stokes.nels)
-    geo_P = Vector{NTuple{NQ_v, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}}(undef, mesh_stokes.nels)
-
-    precompute_geometry!(geo_v, mesh_stokes.coords, mesh_stokes.el2n, ∂N∂ξq_v, ip_v.ω, Val(NV), mesh_stokes.nels)
-    precompute_geometry!(geo_P, mesh_stokes.coords, mesh_stokes.el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP), mesh_stokes.nels)
+    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    geo_v, geo_P = cache.geo_v, cache.geo_P
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
         # CFL_v = 0.03, CFL_P = 0.9, c_fact = 0.5,
@@ -180,11 +157,10 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     copyto!(dr.vx, Float64[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
     copyto!(dr.vy, Float64[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
-
-    zero_vx_bc = zero(bc_vx_vals)
-    zero_vy_bc = zero(bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     constrained = falses(mesh_v.nnodes)
     constrained[vx_nodes] .= true
@@ -207,13 +183,12 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     #   γP      = local viscosity-weighted pressure update scale
     # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
     # adapts the pressure step to viscosity contrasts.
+    Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, geo_P, element_v, element_P,
-        γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, cache, γfact, Δt;
+        workgroup, phases_v = phases_v_cpu,
     )
-
-    Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
 
@@ -279,9 +254,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, M_P,
-            backend, workgroup,
+            backend, workgroup; τ_old, plastic,
         )
         λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
         λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
@@ -320,8 +295,8 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                 phases_v_cpu, τ_old, plastic, nothing, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
-            FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-            FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, bc_vx.zero_vals, backend, workgroup)
+            FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, bc_vy.zero_vals, backend, workgroup)
 
             # ── Outer convergence check ─────────────────────────────────────────────
             # Compare the FD-like, pointwise pressure residual RP/M_P, not the weak
@@ -391,10 +366,10 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                 )
 
                 # Enforce Dirichlet BCs on residuals and rates
-                FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.∂vx∂τ, vx_nodes, zero_vx_bc, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
-                FEMTools.apply_dirichlet!(dr.∂vy∂τ, vy_nodes, zero_vy_bc, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_x, vx_nodes, bc_vx.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vx∂τ, vx_nodes, bc_vx.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.Rv_y, vy_nodes, bc_vy.zero_vals, backend, workgroup)
+                FEMTools.apply_dirichlet!(dr.∂vy∂τ, vy_nodes, bc_vy.zero_vals, backend, workgroup)
 
                 # DYREL-style velocity update
                 update_rate!(dr.∂vx∂τ, dr.Rv_x, dr.PC_vx, β_vx, mesh_stokes.nnodes)
@@ -426,9 +401,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, M_P,
-                        backend, workgroup,
+                        backend, workgroup; τ_old, plastic,
                     )
 
                     # λmax → Δτ → damped step for velocity.
@@ -521,4 +496,4 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-main()
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()

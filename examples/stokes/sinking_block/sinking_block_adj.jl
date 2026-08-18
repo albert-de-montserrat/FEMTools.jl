@@ -174,8 +174,8 @@ end
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
         (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
         (η_element[iel],), (G_element[iel],), (α[phase],),
-        (ρ_element[iel],), (K_element[iel],), g, Tref, Δt,
-        τ_old_e, nothing, Nq, NqP,
+        (ρ_element[iel],), (K_element[iel],), g, Tref, Δt, Nq, NqP,
+        τ_old_e,
     )
     phase_P = SVector{NP, Int}(ntuple(_ -> 1, Val(NP)))
     RP_e = FEMTools.integrate_PH_pressure_residual(
@@ -268,7 +268,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    main(; backend=CPU(), max_area=1/64^2, Δt=1, show_plot=true, kwargs...) -> NamedTuple
+    main(; backend=CPU(), max_area=1/64^2, η_incl=1.0, Δt=1, show_plot=true, kwargs...) -> NamedTuple
 
 Solve one unstructured T7/P1-disc sinking-block Stokes problem and its discrete
 adjoint, then assemble the material sensitivities of the observation-box velocity
@@ -324,6 +324,7 @@ function main(;
     adjoint_max_ph_iterations = 100,
     adjoint_verbose = true,
     adjoint_verbose_inner = true,
+    adjoint_measure_λmax = true,
     # Powell-Hestenes augmentation strength and DYREL Chebyshev damping. A
     # stronger augmentation (γfact) and lighter damping (c_fact) than the historical
     # 20/0.9 cut the forward iteration count by ~15% on this problem without
@@ -336,7 +337,7 @@ function main(;
     Lx, Ly = 1.0, 1.0
 
     # Material (2 phases: matrix + inclusion)
-    η     = (1.0,     1e0)   # shear viscosity
+    η     = (1.0, η_incl)    # shear viscosity
     α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
     ρ0    = (1.0,     2e0)   # reference density
     K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
@@ -404,15 +405,9 @@ function main(;
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
+    stokes_material = StokesMaterial(; η, ηb, G = G_stokes, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        g,
-        Tref,
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, stokes_material;
         CFL_v, CFL_P = 0.9, c_fact,
         stress_size = (NQ_v, mesh_stokes.nels),
     )
@@ -447,30 +442,19 @@ function main(;
     @inbounds for iel in 1:mesh_stokes.nels, a in 1:3
         el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
     end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho)
-    ip_litho = element_P.integration_points
-    NQ_litho = length(ip_litho.ω)
-    ξq_litho = ntuple(q -> SVector(ip_litho.ξ[q], ip_litho.η[q]), NQ_litho)
-    ∂N∂ξq_litho = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_litho[q]), NQ_litho)
-    GeoLitho = NTuple{NQ_litho, Tuple{SMatrix{NP, 2, Float64, 2NP}, Float64}}
-    geo_litho = KernelAbstractions.allocate(backend, GeoLitho, mesh_litho.nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo_litho, mesh_litho.coords, mesh_litho.el2n,
-        ∂N∂ξq_litho, ip_litho.ω, Val(NP);
-        ndrange = mesh_litho.nels,
-    )
-    KernelAbstractions.synchronize(backend)
+    mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, ρ0, α, K; CFL = 0.9, ϵ = 1e-2)
+    material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
+    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly / 2) ≤ litho_tol]
-    top_nodes_dev = TDev(top_nodes_litho)
-    top_zero = KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho))
-    solver!(lp_dr, mesh_litho, geo_litho, element_P, top_nodes_dev, top_zero, top_zero,
-        backend, workgroup; ncheck = 50, verbose = false, Tref = Tref, g = g)
+    bc_litho = DirichletBoundaryCondition(
+        nothing, TDev(top_nodes_litho), KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho)),
+    )
+    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)
@@ -500,9 +484,11 @@ function main(;
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
+    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
-    apply_bc!(dr.vx, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.vy, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.vx, bc_vx)
+    apply_bc!(dr.vy, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_free_surface = length(free_surface_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
@@ -528,7 +514,7 @@ function main(;
     )
 
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor
-    verbose_PH    = true
+    verbose_PH    = verbose
     verbose_DR    = false
 
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
@@ -716,6 +702,7 @@ function main(;
         max_ph_iterations = adjoint_max_ph_iterations,
         verbose = adjoint_verbose,
         verbose_inner = adjoint_verbose_inner,
+        measure_λmax = adjoint_measure_λmax,
         collect_history = true,
     )
         adjoint_history = adjoint_stats.history

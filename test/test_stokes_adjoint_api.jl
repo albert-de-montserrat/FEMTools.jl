@@ -94,6 +94,23 @@ function _density_gradient_check(case, η, ηb, K, G;
         vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-12, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
         verbose = false, verbose_inner = false)
+    @test adj.converged
+    @test any(!iszero, λvy)          # nontrivial adjoint field
+    @test adj.λmax_iterations > 0
+    @test adj.λmax < adj.λmax_gershgorin
+
+    # Nonzero input fields are a warm start, not reset by the solver.
+    λ_before = (copy(λvx), copy(λvy), copy(λP))
+    warm = solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
+        vx_nodes, vy_nodes, adjoint_tol = 1.0e-9,
+        measure_λmax = false, verbose = false, verbose_inner = false)
+    @test warm.converged
+    @test warm.iter == 0
+    @test warm.λmax_iterations == 0
+    @test (λvx, λvy, λP) == λ_before
 
     function residual(ρ0_vec)
         Rx = zeros(mesh.nnodes)

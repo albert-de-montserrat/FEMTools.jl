@@ -1,13 +1,12 @@
 """
     solver!(dr::LithostaticPressureDR, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-            ncheck=100, iterMax=10_000, verbose=true, Tref=273, g=SVector(0, -9.81))
+            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
 
 Run the pseudo-transient dynamic-relaxation (DR) solver for the
 lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
 
-`dr.T` must be set to the current temperature field before calling.
-`Γ_dofs`, `Γ_zero`, `Γ_vals` enforce Dirichlet boundary conditions on `P`.
+`dr.T` must be set to the current temperature field before calling. Geometry,
+element, boundary arrays, backend, and workgroup size are supplied explicitly.
 `Tref` and `g` control the density equation of state and body-force vector.
 `g` is the gravitational acceleration vector; either an `SVector` or a plain
 `Tuple` of matching length (e.g. `SVector(0, -9.81)` or `(0.0, -9.81)` for
@@ -18,62 +17,32 @@ non-convergence error.
 Set `verbose = false` to suppress per-iteration residual output.
 
 Modifies `dr.P` in-place. Returns `nothing` on convergence.
+
 """
 function solver!(dr::LithostaticPressureDR, mesh, geo, element,
                  Γ_dofs, Γ_zero, Γ_vals,
                  backend, workgroup;
-                 ncheck = 100,
-                 iterMax = 10_000,
-                 verbose = true,
                  Tref = eltype(dr.P)(273),
-                 g = SVector(zero(eltype(dr.P)), -eltype(dr.P)(9.81)))
-    (; R, R0, ∂R∂P, PC, P, ∂P∂τ, T,
-       phases, ρ0, α, K,
-       CFL, c_fact, ϵ) = dr
-
-    α_dr = zero(eltype(R))
-    β    = zero(eltype(R))
-    nr0  = zero(eltype(R))
-
-    last_rel = NaN
-    λmax = zero(eltype(R))
-
-    for it in 1:iterMax
-        do_∂R∂P = (mod(it, ncheck) == 0) || (it == 1)
-        do_∂R∂P && copyto!(R0, R)
-
-        assemble_lithostatic_pressure_matrices_atomix!(
-            R, ∂R∂P, PC, T, P, mesh.el2n, geo, mesh.nels,
-            element, phases, ρ0, α, K, Tref, g,
-            backend, workgroup; compute_jacobian = do_∂R∂P,
-        )
-
-        apply_dirichlet!(R,    Γ_dofs, Γ_zero, backend, workgroup)
-        apply_dirichlet!(∂P∂τ, Γ_dofs, Γ_zero, backend, workgroup)
-
-        do_∂R∂P && (λmax = _checked_λmax(∂R∂P, PC, "lithostatic pressure"))
-
-        update_rate_kernel!(backend, workgroup)(∂P∂τ, R, PC, β; ndrange = mesh.nnodes)
-        update_variable_kernel!(backend, workgroup)(P, ∂P∂τ, α_dr; ndrange = mesh.nnodes)
-
-        apply_dirichlet!(P, Γ_dofs, Γ_vals, backend, workgroup)
-
-        if do_∂R∂P
-            nr = norm(R)
-            it == 1 && (nr0 = max(nr, eps(nr)))   # guard against exact-zero warm start
-            isnan(nr / nr0) && error("NaNs at PT iter $it")
-
-            Δτ    = 2 / √(λmax) * CFL
-            denom = sum((Δτ .* ∂P∂τ) .^ 2)
-            λmin  = (it == 1 || denom == 0) ? zero(eltype(R)) :
-                    abs(sum(Δτ .* ∂P∂τ .* ((R .- R0) ./ PC))) / denom
-            c    = 2 * √(λmin) * c_fact
-            α_dr = 2 * Δτ^2 / (2 + c * Δτ)
-            β    = (2 - c * Δτ) / (2 + c * Δτ)
-            last_rel = nr / nr0
-            verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
-            last_rel < ϵ && return nothing
-        end
-    end
-    error("Lithostatic pressure DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
+                 g = SVector(zero(eltype(dr.P)), -eltype(dr.P)(9.81)),
+                 kwargs...)
+    assemble!(compute_jacobian) = assemble_lithostatic_pressure_matrices_atomix!(
+        dr.R, dr.∂R∂P, dr.PC, dr.T, dr.P, mesh.el2n, geo, mesh.nels,
+        element, dr.phases, dr.ρ0, dr.α, dr.K, Tref, g,
+        backend, workgroup; compute_jacobian,
+    )
+    return solve_dynamic_relaxation!(
+        dr, assemble!, mesh.nnodes, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
+        kwargs...,
+    )
 end
+
+"""
+    solver!(dr, mesh, bc; workgroup=256, kwargs...)
+
+Solve for lithostatic pressure using the element and geometry stored in `mesh`
+and the prescribed values in `bc`. The backend is inferred from `mesh.coords`;
+remaining keywords are forwarded to the low-level solver.
+"""
+solver!(dr::LithostaticPressureDR, mesh::Mesh, bc::DirichletBoundaryCondition;
+        workgroup = 256, kwargs...) =
+    solver!(dr, _mesh_solver_arguments(mesh, bc, workgroup)...; kwargs...)

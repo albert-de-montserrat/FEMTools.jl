@@ -18,6 +18,29 @@ end
 
 """
     assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, cache, γfact, Δt; workgroup=256, kwargs...)
+
+Assemble pressure mass and scaling using the geometry and elements stored in
+`cache`. The backend is inferred from `mesh.coords`.
+"""
+function assemble_viscosity_weighted_pressure_scaling!(
+    γP,
+    dr::StokesDR,
+    mesh::MixedMesh{2},
+    cache::MixedMeshCache,
+    γfact,
+    Δt;
+    workgroup = 256,
+    kwargs...,
+)
+    return assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, cache.geo_P, cache.element_v, cache.element_P,
+        γfact, Δt, KA.get_backend(mesh.coords), workgroup; kwargs...,
+    )
+end
+
+"""
+    assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
         phases_v=dr.phases_v, η=dr.η, K=dr.K, η_mean=_finite_viscosity_mean(η),

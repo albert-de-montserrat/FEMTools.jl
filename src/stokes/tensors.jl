@@ -97,8 +97,9 @@ Base.getindex(A::SymmetricTensor3D, q::Int, iel::Int) = SA[
     rotate_stress!(dr, mesh_stokes, cache, element_v, Δt)
     rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 
-Advance the deviatoric-stress history by rotating the current stress `dr.τ` with
-the local vorticity over the time step `Δt`, writing the result into `dr.τ_old`.
+Advance the deviatoric-stress history by rotating the current stress
+(`dr.τxx`, `dr.τyy`, `dr.τxy`) with the local vorticity over the time step
+`Δt`, writing the result into the corresponding `dr.τ*_old` fields.
 Unpacks the solver state, connectivity (`mesh_stokes.el2n`), and element
 geometry (`cache.geo_v`) for a KernelAbstractions launch on the state array's
 backend. `element_v` supplies the velocity-node count `NV`.
@@ -158,9 +159,9 @@ function _rotate_stress!(
     nels = size(el2n_v, 2)
 
     for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
+        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+        vxloc = _gather_local(vx, local_nodes, Val(NV))
+        vyloc = _gather_local(vy, local_nodes, Val(NV))
         geo_el = geo_v[iel]
 
         for q in eachindex(geo_el)

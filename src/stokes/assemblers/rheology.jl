@@ -142,7 +142,8 @@ Drucker-Prager return mapping.
 Computes the trial viscoelastic stress, evaluates the yield function
 `F = τII − C·cos(ϕ) − P·sin(ϕ)`, and applies the plastic return
 `τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
-regularized formula `λ = F / (ηve + η_reg - Kb Δt ∂Q/∂P ∂F/∂P)`.
+regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`, whose
+denominator stays positive for any dilation angle.
 """
 @inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager)
     vxloc, vyloc = v
@@ -187,8 +188,13 @@ regularized formula `λ = F / (ηve + η_reg - Kb Δt ∂Q/∂P ∂F/∂P)`.
     ∂Q∂τ   = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
     ∂Q∂P   = -sinΨ
 
+    # Plastic dilation feeds back on the yield surface through the pressure: the
+    # volumetric plastic strain enters the mass balance as `P ← P - Kb Δt λ ∂Q/∂P`,
+    # shifting `F` by `-Kb Δt λ ∂F/∂P ∂Q/∂P`, which the consistency condition moves
+    # into the denominator with a positive sign. The product `∂Q/∂P ∂F/∂P = sinΨ sinϕ`
+    # is non-negative, so the denominator cannot vanish for any dilation angle.
     λ = if F > 0
-        F / (ηve + η_reg - Kb * Δt * ∂Q∂P * ∂F∂P)
+        F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P)
     else
         zero(F)
     end
