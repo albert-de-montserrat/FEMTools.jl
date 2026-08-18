@@ -17,5 +17,9 @@ TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
 
+[compat]
+# Stokes2D_Moutzouris_circle/_ellipse first appear in 0.2.2.
+ExactFieldSolutions = "0.2.2"
+
 [sources]
 FEMTools = {path = ".."}
