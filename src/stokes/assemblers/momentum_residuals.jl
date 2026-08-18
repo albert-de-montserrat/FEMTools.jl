@@ -264,7 +264,7 @@ differentiating one component with respect to one velocity field.
 
 """
     assemble_momentum_residual_matrices_atomix!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
-                                                el2n_v, el2nP, geo_v, nels,
+                                                el2n_v, dofs_P, geo_v, nels,
                                                 element_v, element_P,
                                                 phases, η, G, α, ρ0, K, g, Tref, Δt,
                                                 backend, workgroup)
@@ -282,7 +282,7 @@ function assemble_momentum_residual_matrices_atomix!(
     vx, vy,
     P, T,
     Pnum,
-    el2n_v, el2nP,
+    el2n_v, dofs_P,
     geo_v,
     nels,
     element_v::ReferenceElement{TV},
@@ -300,7 +300,7 @@ function assemble_momentum_residual_matrices_atomix!(
 
     return assemble_momentum_residual_kernel!(
         Rv_x, Rv_y, vx, vy, P, T, Pnum,
-        el2n_v, el2nP, geo_v, nels, phases,
+        el2n_v, dofs_P, geo_v, nels, phases,
         τ_old, plastic, τ_store, η, G, α, ρ0, K,
         g, Tref, Δt, Nq, NqP, Val(NV), Val(NP), workgroup,
     )
@@ -308,7 +308,7 @@ end
 
 """
     assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
-                                       el2n_v, el2nP, geo_v, nels, phases,
+                                       el2n_v, dofs_P, geo_v, nels, phases,
                                        τ_old, plastic, τ_store,
                                        η, G, α, ρ0, K, g, Tref, Δt,
                                        Nq, NqP, Val(NV), Val(NP), workgroup)
@@ -326,7 +326,7 @@ from `Rv_x`.
 function assemble_momentum_residual_kernel!(
     Rv_x, Rv_y,
     vx, vy, P, T, Pnum,
-    el2n_v, el2nP, geo_v, nels, phases,
+    el2n_v, dofs_P, geo_v, nels, phases,
     τ_old, plastic, τ_store,
     η, G, α, ρ0, K, g, Tref, Δt,
     Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
@@ -335,7 +335,7 @@ function assemble_momentum_residual_kernel!(
     fill!(Rv_y, 0)
     backend = KA.get_backend(Rv_x)
     momentum_residual_atomic_kernel!(backend, workgroup)(
-        Rv_x, Rv_y, vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
+        Rv_x, Rv_y, vx, vy, P, T, Pnum, el2n_v, dofs_P, geo_v, phases, τ_old, plastic,
         τ_store, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
@@ -348,7 +348,7 @@ end
     @Const(vx), @Const(vy),
     @Const(P), @Const(T),
     @Const(Pnum),
-    @Const(el2n_v), @Const(el2nP),
+    @Const(el2n_v), @Const(dofs_P),
     @Const(geo_v),
     @Const(phases),
     @Const(τ_old),
@@ -360,7 +360,7 @@ end
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Re_x, Re_y = momentum_element_residual(
-        vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+        vx, vy, P, T, Pnum, el2n_v, dofs_P, geo_v, phases,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, Val(NV), Val(NP),
         τ_old, plastic, τ_store,
     )
@@ -371,7 +371,7 @@ end
 end
 
 """
-    momentum_element_residual(vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+    momentum_element_residual(vx, vy, P, T, Pnum, el2n_v, dofs_P, geo_v, phases,
                               η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel,
                               Val(NV), Val(NP),
                               τ_old=nothing, plastic=nothing, τ_store=nothing)
@@ -381,7 +381,7 @@ Gather element-local nodal values and integrate the Stokes momentum residual for
 Returns `(local_nodes_v, Re_x, Re_y)` ready for global scatter into `Rv_x` and `Rv_y`.
 """
 @inline function momentum_element_residual(
-    vx, vy, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+    vx, vy, P, T, Pnum, el2n_v, dofs_P, geo_v, phases,
     η, G, α, ρ0, K, g, Tref, Δt,
     Nq, NqP, iel, ::Val{NV}, ::Val{NP},
     τ_old = nothing,
@@ -389,7 +389,7 @@ Returns `(local_nodes_v, Re_x, Re_y)` ready for global scatter into `Rv_x` and `
     τ_store = nothing,
 ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
@@ -537,7 +537,7 @@ velocities, so the returned blocks include the `vx↔vy` shear coupling.
 end
 
 """
-    element_momentum_jacobians(vx, vy, P, T, el2n_v, el2nP, geo, phases,
+    element_momentum_jacobians(vx, vy, P, T, el2n_v, dofs_P, geo, phases,
                                η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel,
                                Val(NV), Val(NP), τ_old=nothing, plastic=nothing)
 
@@ -550,13 +550,13 @@ and `diags_*[i]` is the absolute diagonal of the same-component block. The
 row sums provide a conservative smoother/preconditioner and spectral estimate.
 """
 @inline function element_momentum_jacobians(
-    vx, vy, P, T, el2n_v, el2nP, geo, phases,
+    vx, vy, P, T, el2n_v, dofs_P, geo, phases,
     η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
     τ_old = nothing,
     plastic = nothing,
 ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P,  iel, Val(NP))
     geo_el    = geo[iel]
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
@@ -582,7 +582,7 @@ end
 
 """
     assemble_momentum_jacobian_matrices_atomix!(∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
-                                                vx, vy, P, T, el2n_v, el2nP, geo_v, nels,
+                                                vx, vy, P, T, el2n_v, dofs_P, geo_v, nels,
                                                 element_v, element_P,
                                                 phases, η, G, α, ρ0, K, g, Tref, Δt,
                                                 backend, workgroup)
@@ -599,7 +599,7 @@ function assemble_momentum_jacobian_matrices_atomix!(
     ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
     vx, vy,
     P, T,
-    el2n_v, el2nP,
+    el2n_v, dofs_P,
     geo_v,
     nels,
     element_v::ReferenceElement{TV},
@@ -620,7 +620,7 @@ function assemble_momentum_jacobian_matrices_atomix!(
     fill!(PC_vy,    0)
     momentum_jacobian_atomic_kernel!(backend, workgroup)(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
-        vx, vy, P, T, el2n_v, el2nP, geo_v, phases,
+        vx, vy, P, T, el2n_v, dofs_P, geo_v, phases,
         τ_old, plastic, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
@@ -629,7 +629,7 @@ end
 
 """
     element_augmented_momentum_jacobians(vx, vy, P, P0, T, T0,
-                                          el2n_v, el2nP, geo_v, geo_P,
+                                          el2n_v, dofs_P, geo_v, geo_P,
                                           phases_v, phases_P,
                                           η, G, α, ρ0, K, g, Tref,
                                           ηb, Δt, γ_eff, MP, Nq, NqP,
@@ -656,14 +656,14 @@ approximation.
 `jacobian_rowsums_and_diagonal` reduces them to the preconditioner diagnostics.
 """
 @inline function element_augmented_momentum_jacobians(
-    vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+    vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
     phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
     τ_old = nothing,
     plastic = nothing,
 ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     geo_P_el  = geo_P[iel]
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
@@ -694,7 +694,7 @@ end
 """
     assemble_augmented_momentum_jacobian_matrices_atomix!(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, nels,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P, nels,
         element_v, element_P, phases_v, phases_P,
         η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP,
         backend, workgroup)
@@ -715,7 +715,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     vx, vy,
     P, P0,
     T, T0,
-    el2n_v, el2nP,
+    el2n_v, dofs_P,
     geo_v, geo_P,
     nels,
     element_v::ReferenceElement{TV},
@@ -737,7 +737,7 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
     fill!(PC_vy,    0)
     augmented_momentum_jacobian_atomic_kernel!(backend, workgroup)(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases_v, phases_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P, phases_v, phases_P,
         τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP, Nq, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
@@ -750,7 +750,7 @@ end
     @Const(vx), @Const(vy),
     @Const(P), @Const(P0),
     @Const(T), @Const(T0),
-    @Const(el2n_v), @Const(el2nP),
+    @Const(el2n_v), @Const(dofs_P),
     @Const(geo_v), @Const(geo_P),
     @Const(phases_v), @Const(phases_P),
     τ_old,
@@ -761,7 +761,7 @@ end
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy = element_augmented_momentum_jacobians(
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
@@ -780,7 +780,7 @@ end
     ∂Rv_y∂vy, PC_vy,
     @Const(vx), @Const(vy),
     @Const(P), @Const(T),
-    @Const(el2n_v), @Const(el2nP),
+    @Const(el2n_v), @Const(dofs_P),
     @Const(geo_v),
     @Const(phases),
     τ_old,
@@ -790,7 +790,7 @@ end
 ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_momentum_jacobians(
-        vx, vy, P, T, el2n_v, el2nP, geo_v, phases,
+        vx, vy, P, T, el2n_v, dofs_P, geo_v, phases,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     for (i, inod) in enumerate(local_nodes_v)

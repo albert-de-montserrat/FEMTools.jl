@@ -37,14 +37,14 @@ end
 @kernel function velocity_operator_assembly_kernel!(
         Ablocks, ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
-        @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(geo_P),
+        @Const(el2n_v), @Const(dofs_P), @Const(geo_v), @Const(geo_P),
         @Const(phases_v), @Const(phases_P), τ_old, plastic,
         η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, @Const(MP),
         Nq, NqP, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Axx, Axy, Ayx, Ayy = element_augmented_momentum_jacobians(
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt,
         γ_eff, MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
@@ -157,19 +157,19 @@ Build the three transposed-operator blocks for element `iel` at the current
 forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
 """
 @inline function element_adjoint_operator_blocks(
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy =
         element_augmented_momentum_jacobians(
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     A = vcat(hcat(∂RVx∂vx, ∂RVx∂vy), hcat(∂RVy∂vx, ∂RVy∂vy))
 
-    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P, iel, Val(NP))
     geo_v_el = geo_v[iel]
     geo_P_el = geo_P[iel]
     vxloc = _gather_local(vx, local_nodes_v, Val(NV))
@@ -215,7 +215,7 @@ end
         @Const(vx), @Const(vy),
         @Const(P), @Const(P0),
         @Const(T), @Const(T0),
-        @Const(el2n_v), @Const(el2nP),
+        @Const(el2n_v), @Const(dofs_P),
         @Const(geo_v), @Const(geo_P),
         @Const(phases_v), @Const(phases_P),
         τ_old, plastic,
@@ -225,7 +225,7 @@ end
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, _, A, B, C = element_adjoint_operator_blocks(
-        vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP),
     )
@@ -292,12 +292,12 @@ end
         dvx, dvy, dP,
         @Const(Ablocks), @Const(Bblocks), @Const(Cblocks),
         @Const(λvx), @Const(λvy), @Const(λP),
-        @Const(el2n_v), @Const(el2nP),
+        @Const(el2n_v), @Const(dofs_P),
         ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P, iel, Val(NP))
 
     λv = vcat(
         _gather_local(λvx, local_nodes_v, Val(NV)),

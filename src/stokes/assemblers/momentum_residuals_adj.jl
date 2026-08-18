@@ -28,7 +28,7 @@ function assemble_momentum_residual_matrices_atomix_adj!(
     Nq  = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     el2n_v = mesh_stokes.el2n
-    el2nP  = mesh_stokes.DoFsP
+    dofs_P  = mesh_stokes.DoFsP
     nels   = mesh_stokes.nels
 
     Enzyme.autodiff_deferred(
@@ -43,7 +43,7 @@ function assemble_momentum_residual_matrices_atomix_adj!(
         Enzyme.Const(T),
         Enzyme.Duplicated(Pnum, dPnum),
         Enzyme.Const(el2n_v),
-        Enzyme.Const(el2nP),
+        Enzyme.Const(dofs_P),
         Enzyme.Const(geo_v),
         Enzyme.Const(nels),
         Enzyme.Const(phases),

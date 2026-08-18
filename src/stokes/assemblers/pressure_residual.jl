@@ -71,14 +71,16 @@ end
 
 """
     assemble_pressure_residual_matrices_atomix!(RP, vx, vy, P, P0, T, T0,
-                                                el2n_v, el2nP, geo_v, geo_P, nels,
+                                                el2n_v, dofs_P, geo_v, geo_P, nels,
                                                 element_v, element_P,
                                                 phases, α, ηb, Δt, backend, workgroup)
 
 Assemble the Stokes pressure residual `RP` using Atomix-backed atomic scatter.
 
-`RP` is indexed over pressure DoFs (connectivity `el2nP`). Velocity fields
-`vx`, `vy` are indexed over velocity DoFs (`el2n_v`). `P`, `P0`, `T`, `T0`
+`RP` is indexed over pressure DoFs, whose element map `dofs_P` is
+`MixedMesh.DoFsP` — not `MixedMesh.el2nP`, which numbers the pressure
+element's vertices in the coordinate array. Velocity fields `vx`, `vy` are
+indexed over velocity DoFs (`el2n_v`). `P`, `P0`, `T`, `T0`
 are current and previous pressure and temperature fields on pressure nodes.
 `phases` is a nodal integer array (pressure-node indexed) selecting the phase
 for material interpolation. `α` and `ηb` are per-phase thermal expansion and
@@ -89,7 +91,7 @@ function assemble_pressure_residual_matrices_atomix!(
     vx, vy,
     P, P0,
     T, T0,
-    el2n_v, el2nP,
+    el2n_v, dofs_P,
     geo_v, geo_P,
     nels,
     element_v::ReferenceElement{TV},
@@ -105,7 +107,7 @@ function assemble_pressure_residual_matrices_atomix!(
 
     return assemble_pressure_residual_kernel!(
         RP, vx, vy, P, P0, T, T0,
-        el2n_v, el2nP, geo_v, geo_P, nels,
+        el2n_v, dofs_P, geo_v, geo_P, nels,
         phases, α, ηb, Δt, NqP,
         Val(NV), Val(NP), workgroup,
     )
@@ -113,7 +115,7 @@ end
 
 """
     assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
-                                       el2n_v, el2nP, geo_v, geo_P, nels,
+                                       el2n_v, dofs_P, geo_v, geo_P, nels,
                                        phases, α, ηb, Δt, NqP,
                                        Val(NV), Val(NP), workgroup)
 
@@ -129,7 +131,7 @@ from `RP`.
 """
 function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0,
-    el2n_v, el2nP, geo_v, geo_P, nels,
+    el2n_v, dofs_P, geo_v, geo_P, nels,
     phases, α, ηb, Δt, NqP,
     ::Val{NV}, ::Val{NP}, workgroup
 ) where {NV, NP}
@@ -137,7 +139,7 @@ function assemble_pressure_residual_kernel!(
     backend = KA.get_backend(RP)
     pressure_residual_atomic_kernel!(backend, workgroup)(
         RP, vx, vy, P, P0, T, T0,
-        el2n_v, el2nP, geo_v, geo_P,
+        el2n_v, dofs_P, geo_v, geo_P,
         phases, α, ηb, Δt, NqP, Val(NV), Val(NP);
         ndrange = nels,
     )
@@ -150,29 +152,29 @@ end
     @Const(vx), @Const(vy),
     @Const(P), @Const(P0),
     @Const(T), @Const(T0),
-    @Const(el2n_v), @Const(el2nP),
+    @Const(el2n_v), @Const(dofs_P),
     @Const(geo_v), @Const(geo_P),
     @Const(phases),
     α, ηb, Δt, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
+    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, dofs_P, geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
     # P is discontinuous here, so element pressure DoFs are not shared.
     _add_local!(RP, local_nodes_P, Re, Val(false))
 end
 
 """
-    pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
+    pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, dofs_P,
                                geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
 
 Gather element-local nodal values and integrate the Stokes pressure residual for element `iel`.
 
 Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
 """
-@inline function pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
+@inline function pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, dofs_P,
         geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
+    local_nodes_P = local_nodes_of(dofs_P,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     geo_P_el  = geo_P[iel]
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))

@@ -13,12 +13,23 @@ Fields:
 - `coords`  : vertex coordinates (`AbstractVector{SVector{nDim, T}}`).
 - `normals` : outward nodal normals; interior nodes store the zero vector.
 - `nels`    : number of elements.
-- `DoFs`    : primary-field degree-of-freedom indices.
-- `el2n`    : primary element-to-node connectivity (`N1 × nels`).
+- `DoFs`    : primary element-to-DoF map, indexing primary solution vectors.
+- `el2n`    : primary element-to-node connectivity (`N1 × nels`), indexing `coords`.
 - `nnodes`  : number of primary-field nodes.
-- `DoFsP`   : secondary-field degree-of-freedom indices.
-- `el2nP`   : secondary element-to-node connectivity (`N2 × nels`).
+- `DoFsP`   : secondary element-to-DoF map, indexing secondary solution vectors.
+- `el2nP`   : secondary element-to-node connectivity (`N2 × nels`), indexing `coords`.
 - `nnodesP` : number of secondary-field nodes.
+
+The two maps of a field answer different questions and are not
+interchangeable: `el2n`/`el2nP` give the nodes an element occupies in
+`coords`, while `DoFs`/`DoFsP` give the entries an element owns in that
+field's solution vector. They agree for a continuous space, where each node
+carries exactly one degree of freedom, which is why `el2n` serves as the
+velocity DoF map. They differ for a discontinuous space: with `P1-disc`
+pressure every element owns private degrees of freedom, so `DoFsP` runs over
+`nnodesP = N2 * nels` entries while `el2nP` still reports the shared vertices.
+Read and write pressure through `DoFsP`; reach for `el2nP` only for geometry
+and for output topology.
 """
 struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     coords::T1  # vertex coordinates
@@ -29,8 +40,8 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     el2n::T3    # element-to-node connectivity
     nnodes::Int # number of nodes
     # Field 2: Pressure
-    DoFsP::T4    # degrees of freedom
-    el2nP::T5    # element-to-node connectivity
+    DoFsP::T4    # element-to-DoF map; indexes pressure solution vectors
+    el2nP::T5    # element-to-node connectivity; indexes coords
     nnodesP::Int # number of nodes
 
     function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6}(
