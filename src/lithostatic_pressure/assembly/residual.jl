@@ -29,8 +29,7 @@ Return element node indices, absolute Jacobian row sums, and absolute diagonal.
     J = ForwardDiff.jacobian(Ploc) do p
         lp_integrate_residual(p, Tloc, geo[iel], phase_loc, ρ0, α, K, Tref, g, Nq, Val(N))
     end
-    rowsums = SVector{N}(ntuple(i -> sum(abs(J[i, j]) for j in 1:N), Val(N)))
-    diags = SVector{N}(ntuple(i -> abs(J[i, i]), Val(N)))
+    rowsums, diags = jacobian_rowsums_and_diagonal(J)
     return nodes, rowsums, diags
 end
 
@@ -42,15 +41,24 @@ Integrate one element of `∫ (ρ(T, P) ∇Nᵢ⋅g - ∇Nᵢ⋅∇P) dΩ`, wher
 """
 @inline function lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, ::Val{N}) where N
     Re = zero(Ploc)
+    # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
+    # interp2ip_phase when quadratic shape functions are negative.
+    β = map(inv, K)
     for q in eachindex(geo_el)
         ∂N∂x, dΩ = geo_el[q]
         Nv = Nq[q]
         Tq = dot(Nv, Tloc)
         Pq = dot(Nv, Ploc)
         αq = interp2ip_phase(Nv, α, phase_loc)
-        Kq = interp2ip_phase(Nv, K, phase_loc)
-        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + Pq / Kq)
+        βq = interp2ip_phase(Nv, β, phase_loc)
+        ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + βq * Pq)
         Re += (ρq * (∂N∂x * SVector(g)) - ∂N∂x * (∂N∂x' * Ploc)) * dΩ
     end
     return Re
 end
+
+# Argument bundle shared by the atomic and colored lithostatic-pressure
+# assemblers, in the order `lp_element_residual` and `lp_element_jacobian`
+# consume it.
+@inline lithostatic_element_arguments(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, element) =
+    (T, P, el2n, geo, phases, ρ0, α, K, Tref, g, shape_function_values(element))

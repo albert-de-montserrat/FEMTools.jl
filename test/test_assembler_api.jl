@@ -31,15 +31,6 @@ end
         backend, workgroup; compute_jacobian = true,
     )
 
-    R_old = zeros(2); J_old = zeros(2); PC_old = zeros(2)
-    @test_deprecated FEMTools.assemble_diffusion_matrices_atomix!(
-        R_old, J_old, PC_old, T, T0, el2n, geo, 1, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, true,
-        backend, workgroup,
-    )
-    @test R_old ≈ R_kw
-    @test J_old ≈ J_kw
-    @test PC_old ≈ PC_kw
-
     R_col = zeros(2); J_col = zeros(2); PC_col = zeros(2)
     FEMTools.assemble_diffusion_matrices_colored!(
         R_col, J_col, PC_col, T, T0, el2n, geo, groups, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref,
@@ -49,14 +40,14 @@ end
     @test J_col ≈ J_kw
     @test PC_col ≈ PC_kw
 
-    R_col_old = zeros(2); J_col_old = zeros(2); PC_col_old = zeros(2)
-    @test_deprecated FEMTools.assemble_diffusion_matrices_colored!(
-        R_col_old, J_col_old, PC_col_old, T, T0, el2n, geo, groups, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref, true,
+    R_only = zeros(2); J_untouched = fill(NaN, 2); PC_untouched = fill(NaN, 2)
+    FEMTools.assemble_diffusion_matrices_atomix!(
+        R_only, J_untouched, PC_untouched, T, T0, el2n, geo, 1, element, phases, k, Cp, ρ0, α, K, P, Δt, source, Tref,
         backend, workgroup,
     )
-    @test R_col_old ≈ R_col
-    @test J_col_old ≈ J_col
-    @test PC_col_old ≈ PC_col
+    @test R_only ≈ R_kw
+    @test all(isnan, J_untouched)
+    @test all(isnan, PC_untouched)
 end
 
 @testset "lithostatic assemblers accept compute_jacobian keyword" begin
@@ -76,15 +67,6 @@ end
         backend, workgroup; compute_jacobian = true,
     )
 
-    R_old = zeros(2); J_old = zeros(2); PC_old = zeros(2)
-    @test_deprecated FEMTools.assemble_lithostatic_pressure_matrices_atomix!(
-        R_old, J_old, PC_old, T, P, el2n, geo, 1, element, phases, ρ0, α, K, Tref, g, true,
-        backend, workgroup,
-    )
-    @test R_old ≈ R_kw
-    @test J_old ≈ J_kw
-    @test PC_old ≈ PC_kw
-
     R_col = zeros(2); J_col = zeros(2); PC_col = zeros(2)
     FEMTools.assemble_lithostatic_pressure_matrices_colored!(
         R_col, J_col, PC_col, T, P, el2n, geo, groups, element, phases, ρ0, α, K, Tref, g,
@@ -94,12 +76,12 @@ end
     @test J_col ≈ J_kw
     @test PC_col ≈ PC_kw
 
-    R_col_old = zeros(2); J_col_old = zeros(2); PC_col_old = zeros(2)
-    @test_deprecated FEMTools.assemble_lithostatic_pressure_matrices_colored!(
-        R_col_old, J_col_old, PC_col_old, T, P, el2n, geo, groups, element, phases, ρ0, α, K, Tref, g, true,
+    R_only = zeros(2); J_untouched = fill(NaN, 2); PC_untouched = fill(NaN, 2)
+    FEMTools.assemble_lithostatic_pressure_matrices_atomix!(
+        R_only, J_untouched, PC_untouched, T, P, el2n, geo, 1, element, phases, ρ0, α, K, Tref, g,
         backend, workgroup,
     )
-    @test R_col_old ≈ R_col
-    @test J_col_old ≈ J_col
-    @test PC_col_old ≈ PC_col
+    @test R_only ≈ R_kw
+    @test all(isnan, J_untouched)
+    @test all(isnan, PC_untouched)
 end

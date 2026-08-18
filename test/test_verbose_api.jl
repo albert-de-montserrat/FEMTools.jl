@@ -126,7 +126,4 @@ end
     @test_logs (:info, "Initial momentum preconditioner") begin
         @test occursin("itPH", _stokes_output(verbose = true, verbose_inner = false))
     end
-
-    @test (@test_deprecated _stokes_output(verbose_PH = false, verbose_inner = false)) == ""
-    @test (@test_deprecated _stokes_output(verbose = false, verbose_DR = false)) == ""
 end

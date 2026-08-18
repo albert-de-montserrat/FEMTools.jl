@@ -239,11 +239,37 @@ end
     ∂Q∂τxx = (2 * τxx_trial + τyy_trial) / (2 * τII)
     ∂Q∂τyy = (τxx_trial + 2 * τyy_trial) / (2 * τII)
     ∂Q∂τxy = τxy_trial / τII
-    λ = τII / (1.0 + 3.0 - 2.0 * sin(π / 6) * sin(π / 6))
+    λ = τII / (1.0 + 3.0 + 2.0 * sin(π / 6) * sin(π / 6))
 
     @test τxx ≈ τxx_trial - 2 * λ * ∂Q∂τxx
     @test τyy ≈ τyy_trial - 2 * λ * ∂Q∂τyy
     @test τxy ≈ τxy_trial - 2 * λ * ∂Q∂τxy
+end
+
+@testset "Dilation stiffens the plastic return for a stiff bulk modulus" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    vx = SA[2.0, 0.0, 0.0]
+    vy = SA[0.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    τ_old = (0.0, 0.0, 0.0)
+    Δt = 0.1
+
+    # Kb Δt sinΨ sinϕ exceeds ηve here, so the dilation term dominates the
+    # denominator of the plastic multiplier. The point must still yield, and
+    # dilation must only stiffen the return, leaving more stress rather than less.
+    τII(Ψ) = FEMTools.second_invariant(
+        FEMTools.deviatoric_stress(
+            (vx, vy), dNdx, Nv, (1.0,), (1.0,), phase_loc, Δt, τ_old, 0.0,
+            DruckerPrager((deg2rad(30),), (Ψ,), (0.1,), (1.0e-3,), (100.0,)),
+        )
+    )
+    τII_trial = FEMTools.second_invariant(
+        FEMTools.deviatoric_stress((vx, vy), dNdx, Nv, (1.0,), (1.0,), phase_loc, Δt, τ_old)
+    )
+
+    @test τII(deg2rad(3)) < τII_trial
+    @test τII(deg2rad(3)) > τII(0.0)
 end
 
 # ---------------------------------------------------------------------------
@@ -468,7 +494,7 @@ let
         )
         Rτ_x, Rτ_y = FEMTools.integrate_momentum_residual(
             (vx0, vy0), P0_loc, nothing, T_loc,
-            geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, τ_old, Nq, NqP_v,
+            geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, Nq, NqP_v, τ_old,
         )
         @test !isapprox(Rτ_x, R0_x)
         @test !isapprox(Rτ_y, R0_y)

@@ -66,6 +66,11 @@ include("mesh/coloring.jl")
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
+# Dynamic relaxation: the scatter kernels, Dirichlet enforcement, update
+# kernels, and pseudo-transient loop shared by every DR problem.
+include("dynamic_relaxation/solver.jl")
+include("dynamic_relaxation/assembly.jl")
+
 # Heat-diffusion solver: types, assembly, and PT solver.
 include("heat_diffusion/types/heat_diffusion_types.jl")
 include("heat_diffusion/assembly/residual.jl")

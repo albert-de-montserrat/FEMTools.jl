@@ -76,7 +76,7 @@ The tuple-based constructors remain available for compatibility.
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
 The float type `FP` and phase count are inferred from `material`.
 """
-struct ThermalDiffusionDR{nphases, _T, _TI, FP}
+struct ThermalDiffusionDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     # preallocated work arrays
     R::_T
     R0::_T
@@ -123,6 +123,10 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP}
 end
 
 temperature(dr::ThermalDiffusionDR) = dr.T
+
+dr_fields(dr::ThermalDiffusionDR) =
+    (R = dr.R, R0 = dr.R0, ∂R∂u = dr.∂R∂T, PC = dr.PC, u = dr.T, ∂u∂τ = dr.∂T∂τ)
+dr_name(::ThermalDiffusionDR) = "thermal diffusion"
 
 ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K; kwargs...) =
     ThermalDiffusionDR(CPU(), nnodes, k, Cp, ρ0, α, K; kwargs...)

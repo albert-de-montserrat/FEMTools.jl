@@ -16,23 +16,6 @@ const backend   = CPU()
 const workgroup = 128
 
 """
-    precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) -> Nothing
-
-Fill per-element geometry data on the configured backend.
-
-This wrapper launches `precompute_geometry_kernel!` with the example-wide
-`backend` and `workgroup` constants, then synchronizes before returning.
-"""
-function precompute_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels) where N
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(
-        geo, coords, el2n, ∂N∂ξq, ω, Val(N);
-        ndrange = nels,
-    )
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
-
-"""
     build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
 
 Build an unstructured T7 velocity mesh around a circular inclusion.
@@ -198,7 +181,7 @@ function main(;
     NP    = length(element_P)
 
     cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    geo_v = cache.geo_v
 
     # ---------------------------------------------------------------------------
     # StokesDR struct

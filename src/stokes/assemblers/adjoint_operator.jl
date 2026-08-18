@@ -45,8 +45,8 @@ end
     iel = @index(Global)
     local_nodes_v, Axx, Axy, Ayx, Ayy = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt,
-        γ_eff, MP, Nq, NqP, iel, Val(NV), Val(NP),
+        phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt,
+        γ_eff, MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     A = vcat(hcat(Axx, Axy), hcat(Ayx, Ayy))
     Ablocks[iel] = A
@@ -164,8 +164,8 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
     local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy =
         element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-        phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-        MP, Nq, NqP, iel, Val(NV), Val(NP),
+        phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     A = vcat(hcat(∂RVx∂vx, ∂RVx∂vy), hcat(∂RVy∂vx, ∂RVy∂vy))
 
@@ -189,8 +189,8 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
         P_arg -> begin
             Rx, Ry = integrate_momentum_residual(
                 (vxloc, vyloc), P_arg, Pnum_loc, T_loc,
-                geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt,
-                τ_old_loc, plastic, nothing, Nq, NqP,
+                geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP,
+                τ_old_loc, plastic,
             )
             vcat(Rx, Ry)
         end,

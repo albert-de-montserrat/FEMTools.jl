@@ -128,9 +128,9 @@ function _rotate_stress!(
     nels = size(el2n_v, 2)
 
     for iel in 1:nels
-        local_nodes = SVector{NV}(ntuple(i -> el2n_v[i, iel], Val(NV)))
-        vxloc = SVector{NV}(ntuple(i -> vx[local_nodes[i]], Val(NV)))
-        vyloc = SVector{NV}(ntuple(i -> vy[local_nodes[i]], Val(NV)))
+        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+        vxloc = _gather_local(vx, local_nodes, Val(NV))
+        vyloc = _gather_local(vy, local_nodes, Val(NV))
         geo_el = geo_v[iel]
 
         for q in eachindex(geo_el)

@@ -244,9 +244,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+            phases_v_cpu, phases_P_cpu, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, M_P,
-            backend, workgroup,
+            backend, workgroup; τ_old, plastic,
         )
         λmax_vx = maximum(dr.∂Rv_x∂vx ./ dr.PC_vx)
         λmax_vy = maximum(dr.∂Rv_y∂vy ./ dr.PC_vy)
@@ -391,9 +391,9 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
                         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
                         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
-                        phases_v_cpu, phases_P_cpu, τ_old, plastic, nothing, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                        phases_v_cpu, phases_P_cpu, dr.η, G_stokes, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, M_P,
-                        backend, workgroup,
+                        backend, workgroup; τ_old, plastic,
                     )
 
                     # λmax → Δτ → damped step for velocity.
@@ -486,4 +486,4 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-main()
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()

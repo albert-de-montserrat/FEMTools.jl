@@ -49,7 +49,6 @@ function color_mesh_greedy(mesh)
 
     return colors
 end
-
 """
     color_mesh(mesh)
 
@@ -80,5 +79,3 @@ function generate_element_groups(backend, colors)
     ncolors = maximum(colors)
     return [TDev(findall(==(c), colors)) for c in 1:ncolors]
 end
-
-Base.@deprecate build_element_groups generate_element_groups false

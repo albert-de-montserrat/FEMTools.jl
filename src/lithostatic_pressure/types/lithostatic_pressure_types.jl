@@ -44,7 +44,7 @@ The tuple-based constructors remain available for compatibility.
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
 `T` should be filled via `copyto!(dr.T, ...)` before calling `solver!`.
 """
-struct LithostaticPressureDR{nphases, _T, _TI, FP}
+struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     # preallocated work arrays
     R::_T
     R0::_T
@@ -86,6 +86,10 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP}
 end
 
 pressure(dr::LithostaticPressureDR) = dr.P
+
+dr_fields(dr::LithostaticPressureDR) =
+    (R = dr.R, R0 = dr.R0, ∂R∂u = dr.∂R∂P, PC = dr.PC, u = dr.P, ∂u∂τ = dr.∂P∂τ)
+dr_name(::LithostaticPressureDR) = "lithostatic pressure"
 
 LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, ρ0, α, K; kwargs...)
