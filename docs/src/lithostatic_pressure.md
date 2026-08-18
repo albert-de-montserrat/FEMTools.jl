@@ -7,9 +7,9 @@ GPU execution through KernelAbstractions.jl.
 
 Two complete examples accompany this page:
 
-- `examples/lithosttic_pressure/lithostatic_pressure2D.jl` uses an unstructured
+- `examples/lithostatic_pressure/lithostatic_pressure2D.jl` uses an unstructured
   triangular mesh derived from the sinking-block example.
-- `examples/lithosttic_pressure/lithostatic_pressure3D.jl` uses Gmsh.jl to
+- `examples/lithostatic_pressure/lithostatic_pressure3D.jl` uses Gmsh.jl to
   create an unstructured quadrilateral base and extrudes it into linear Hex8
   elements.
 
@@ -152,22 +152,23 @@ profile around the centre of the domain.
 Run the example from the repository root with
 
 ```sh
-julia --project=examples examples/lithosttic_pressure/lithostatic_pressure2D.jl
+julia --project=examples examples/lithostatic_pressure/lithostatic_pressure2D.jl
 ```
 
 ## Three-dimensional example
 
-The 3-D domain is ``[0,1]\times[-1,0]\times[0,1]``. Gmsh creates an
-unstructured recombined quadrilateral mesh in the ``x``-``y`` plane, then
-extrudes it through eight layers in ``z``. The resulting mesh contains only
-Gmsh type-5 linear hexahedra; the example rejects mixed volume-element output.
-The dense block is centred at ``(0.5,-0.5,0.5)`` with half-width `0.15`.
+The 3-D domain is the unit cube ``[0,1]^3``, with ``z`` vertical and gravity
+along ``-z``. Gmsh creates an unstructured recombined quadrilateral mesh in the
+horizontal ``x``-``y`` plane, then extrudes it upward through eight layers. The
+resulting mesh contains only Gmsh type-5 linear hexahedra; the example rejects
+mixed volume-element output. The dense block is centred at ``(0.5,0.5,0.5)``
+with half-width `0.15`, and the pressure is pinned on the top face ``z=1``.
 
 ```julia
 element = ReferenceElement(LinearElement{3, 8, Float64})
 mesh = Mesh(backend, coords, el2n, element; workgroup)
 
-g = SA[0.0, -1.0, 0.0]
+g = SA[0.0, 0.0, -1.0]
 dr = LithostaticPressureDR(backend, mesh.nnodes, material;
                            CFL=0.9, c_fact=0.9, ϵ=1e-6)
 solver!(dr, mesh, bc; workgroup, ncheck=25, Tref=0.0, g=g)
@@ -184,7 +185,7 @@ The default mesh has 1,260 nodes and 952 Hex8 elements. The script writes
 for inspection in ParaView:
 
 ```sh
-julia --project=examples examples/lithosttic_pressure/lithostatic_pressure3D.jl
+julia --project=examples examples/lithostatic_pressure/lithostatic_pressure3D.jl
 ```
 
 ## Solver API

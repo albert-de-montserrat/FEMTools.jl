@@ -207,8 +207,8 @@ sensitivity density.
 The 3-D viscous operator is symmetric, so its adjoint DYREL method reuses the
 3-D forward residual and preconditioner with the objective derivative as the
 momentum load. `stokes_material_gradient_3d` then contracts the forward and
-adjoint velocity fields analytically. The 3-D sinking-block example validates
-those contractions against its opt-in sparse finite-difference oracle.
+adjoint velocity fields analytically. `test/test_stokes_3d_reference.jl`
+validates those contractions against a sparse finite-difference oracle.
 
 ### Why the discrete transpose matters
 

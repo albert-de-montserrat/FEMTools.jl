@@ -26,85 +26,9 @@ sensitivities.
 
 ## Three-dimensional example
 
-The 3-D domain is
-``[0,1]\times[-1,0]\times[0,1]``. Gmsh creates a recombined quadrilateral
-surface mesh, extrudes it vertically, and raises the resulting hexahedra to
-Hex27. A fixed permutation converts Gmsh's type-12 node ordering to the
-[`QuadraticElement{3,27}`](@ref) ordering used by FEMTools.
-
-Velocity uses continuous Q2 functions with 27 nodes per cell. Pressure uses
-the four discontinuous P1 modes
-
-```math
-(1,\xi,\eta,\zeta),
-```
-
-so every cell owns four pressure unknowns. The example applies free slip on all
-six walls and calls the package's `solve_stokes_dyrel!` solver, matching the
-solver entry point used by the 2-D example. Multiple dispatch selects the 3-D
-array layout for three velocity components and four cell-local pressure modes.
-
-```sh
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
-```
-
-The default problem contains 225 Hex27 cells and 2,255 velocity nodes. The
-script writes `stokes_3D_sinking_block.vtk` with
-the three velocity components, cell-centre pressure, and material phase.
-
-The 3-D `solve_stokes_dyrel!` method updates caller-owned velocity and pressure
-arrays with the same residual-driven solver interface as the 2-D method.
-[`solve_stokes_3d!`](@ref) remains as a compatibility wrapper; the sparse
-matrix assembly is retained only as a regression and discrete-adjoint oracle.
-
-The 3-D [`solve_stokes_adjoint_dyrel!`](@ref) method reuses this symmetric
-operator through the same public adjoint solver entry point as the 2-D example.
-[`solve_stokes_adjoint_3d!`](@ref) remains as a compatibility wrapper, and
-[`stokes_material_gradient_3d`](@ref) contracts its fields for phase density
-and viscosity sensitivities.
-
-![Orthogonal volume slices through the 3-D vertical-velocity field at the block centre. The orange wireframe marks the dense, viscous block.](assets/stokes_sinking_block_3d.png)
-
-The blue region around the block has negative vertical velocity, while the
-wall-normal velocity is exactly zero on every boundary face. For this figure,
-the unstructured nodal field is sampled to a regular ``51^3`` visualization
-grid and sliced through the block centre.
-
-### Discrete adjoint
-
-For the linear system
-
-```math
-A(m)u=b(m), \qquad J=c^T u,
-```
-
-the 3-D adjoint solves the transpose system matrix-free with
-`solve_stokes_adjoint_dyrel!`:
-
-```math
-A^T\lambda=c.
-```
-
-The material gradient is
-
-```math
-\frac{\mathrm dJ}{\mathrm dm}
-=\lambda^T\left(\frac{\partial b}{\partial m}
--\frac{\partial A}{\partial m}u\right).
-```
-
-Density changes the gravity load, whereas viscosity changes the phase-2
-viscous matrix contribution. The executable uses the opt-in sparse reference
-only to check both matrix-free contractions against centred finite differences:
-
-```sh
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
-```
-
-The adjoint command raises an error if the iterative solve does not converge or
-if either gradient check exceeds its tolerance.
+The 3-D pair has its own page: [Three-dimensional sinking block](@ref).
 
 ## Choosing an example
 
-Use the 2-D pair for rheology. The 3-D pair provides matrix-free viscous
-forward/adjoint solvers plus exact sparse references.
+Use the 2-D pair for rheology. The 3-D pair is linear viscous and provides
+matrix-free forward and adjoint solvers.

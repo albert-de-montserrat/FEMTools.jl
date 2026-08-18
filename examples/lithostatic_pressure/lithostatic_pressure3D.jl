@@ -13,10 +13,12 @@ function build_hex_mesh(; Lx = 1.0, Ly = 1.0, Lz = 1.0, mesh_size = 0.12, nz = 8
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)
         gmsh.model.add("lithostatic_pressure_3d")
 
-        p1 = gmsh.model.geo.addPoint(0, -Ly, 0, mesh_size)
-        p2 = gmsh.model.geo.addPoint(Lx, -Ly, 0, mesh_size)
-        p3 = gmsh.model.geo.addPoint(Lx, 0, 0, mesh_size)
-        p4 = gmsh.model.geo.addPoint(0, 0, 0, mesh_size)
+        # Counterclockwise base rectangle in the horizontal x-y plane at z = 0;
+        # the extrusion below raises it to z = Lz.
+        p1 = gmsh.model.geo.addPoint(0, 0, 0, mesh_size)
+        p2 = gmsh.model.geo.addPoint(Lx, 0, 0, mesh_size)
+        p3 = gmsh.model.geo.addPoint(Lx, Ly, 0, mesh_size)
+        p4 = gmsh.model.geo.addPoint(0, Ly, 0, mesh_size)
         lines = [
             gmsh.model.geo.addLine(p1, p2), gmsh.model.geo.addLine(p2, p3),
             gmsh.model.geo.addLine(p3, p4), gmsh.model.geo.addLine(p4, p1),
@@ -54,17 +56,18 @@ function main(; mesh_size = 0.12, nz = 8, CFL = 0.9, c_fact = 0.9,
     mesh = Mesh(backend, coords, el2n, element; workgroup)
 
     ρ0, α, K = (1.0, 2.0), (0.0, 0.0), (Inf, Inf)
-    g, Tref = SA[0.0, -1.0, 0.0], 0.0
+    g, Tref = SA[0.0, 0.0, -1.0], 0.0
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
     dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL, c_fact, ϵ)
 
-    center, half_width = SA[Lx / 2, -Ly / 2, Lz / 2], 0.15
+    center, half_width = SA[Lx / 2, Ly / 2, Lz / 2], 0.15
     in_block(c) = all(abs.(c .- center) .≤ half_width)
     copyto!(dr.phases, Int[in_block(c) ? 2 : 1 for c in coords])
-    copyto!(dr.P, [ρ0[1] * abs(g[2]) * (-c[2]) for c in coords])
+    # Hydrostatic initial guess for the matrix phase, measured down from the top.
+    copyto!(dr.P, [ρ0[1] * abs(g[3]) * (Lz - c[3]) for c in coords])
 
     tol = max(Lx, Ly, Lz) * eps(Float64) * 32
-    top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][2]) ≤ tol]
+    top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][3] - Lz) ≤ tol]
     bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
     solver!(dr, mesh, bc; workgroup, ncheck, verbose, Tref, g)
 
