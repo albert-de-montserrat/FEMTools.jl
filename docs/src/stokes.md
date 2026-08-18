@@ -1,7 +1,8 @@
 # Stokes
 
-FEMTools.jl includes an incompressible Stokes-flow solver for mixed
-velocity–pressure elements (e.g. a T6/P1-disc Taylor–Hood-like pair). The
+FEMTools.jl includes a Stokes-flow solver for mixed velocity–pressure
+elements (e.g. a T6/P1-disc Taylor–Hood-like pair), incompressible in the
+limit of infinite bulk viscosity `ηb`. The
 rheology is viscoelastic, with optional Drucker–Prager elasto-viscoplasticity,
 and a temperature-dependent buoyancy body force. Like the other solvers it runs
 on both CPU and GPU via KernelAbstractions.jl.
@@ -127,6 +128,20 @@ julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.
+
+The compressible host-inclusion benchmark under `examples/stokes/benchmarks/`
+verifies the solver against a closed-form solution instead of a reference run,
+and is the check to reach for after touching the pressure residual, the mixed
+element pair, or the curved-element geometry:
+
+```sh
+julia --project=examples examples/stokes/benchmarks/run_convergence_sweep.jl
+julia --project=examples examples/stokes/benchmarks/plot_compressible_inclusion.jl
+```
+
+See the [Compressible inclusion](compressible_inclusion.md) page for the
+analytical solution, the mapping of its bulk viscosity onto `ηb`, the
+interface-conforming mesh, and the error figure.
 
 The adjoint sinking-block example accepts an explicit backend. It builds the
 Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,
