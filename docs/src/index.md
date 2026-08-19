@@ -8,7 +8,7 @@ handling. Array operations are backend-agnostic via
 optional GPU support through package extensions for CUDA, AMDGPU, and Metal.
 
 ```@contents
-Pages = ["elements.md", "mesh.md", "boundary_conditions.md", "heat_diffusion.md", "lithostatic_pressure.md", "stokes.md", "api.md"]
+Pages = ["elements.md", "mesh.md", "boundary_conditions.md", "heat_diffusion.md", "lithostatic_pressure.md", "stokes.md", "sinking_block.md", "compressible_inclusion.md", "api.md"]
 Depth = 2
 ```
 
