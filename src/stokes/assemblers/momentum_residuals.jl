@@ -481,7 +481,7 @@ end
 end
 
 function stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup = 256)
-    diagonal = ntuple(_ -> similar(mesh.coords, eltype(first(mesh.coords)), mesh.nnodes), 3)
+    diagonal = ntuple(_ -> similar(mesh.coords, eltype(eltype(mesh.coords)), mesh.nnodes), 3)
     pressure_mass = similar(first(diagonal), 4, mesh.nels)
     foreach(x -> fill!(x, 0), diagonal)
     fill!(pressure_mass, 0)
