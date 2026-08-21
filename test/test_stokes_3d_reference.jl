@@ -1,4 +1,4 @@
-include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinking_block_3D_adj.jl"))
+include(joinpath(pkgdir(FEMTools), "examples", "miniapps", "stokes", "sinking_block_3D_adj", "sinking_block_3D_adj.jl"))
 
 using LinearAlgebra
 using SparseArrays
@@ -96,20 +96,20 @@ end
         verbose = false,
     )
     (; A, dA_dη₂, rhs, free) = sparse_stokes_reference(forward)
-    solution = vcat(vec(stack(forward.velocity; dims = 1)), vec(forward.pressure))
+    solution = vcat(vec(stack(Tuple(forward.velocity); dims = 1)), vec(forward.pressure))
     residual = A * solution - rhs
     @test forward.solve_stats.converged
     @test forward.solve_stats.err < 1e-6
     @test forward.solve_stats.iterations == forward.solve_stats.iter
     @test norm(residual[free]) < 2e-5
     @test Set(forward.cell_phase) == Set((1, 2))
-    @test all(iszero, forward.velocity[1][forward.fixed_nodes[1]])
-    @test all(iszero, forward.velocity[2][forward.fixed_nodes[2]])
-    @test all(iszero, forward.velocity[3][forward.fixed_nodes[3]])
+    @test all(iszero, forward.velocity.x[forward.fixed_nodes[1]])
+    @test all(iszero, forward.velocity.y[forward.fixed_nodes[2]])
+    @test all(iszero, forward.velocity.z[forward.fixed_nodes[3]])
 
     momentum = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
     continuity = zeros(4, forward.mesh.nels)
-    velocity = forward.velocity
+    velocity = Tuple(forward.velocity)
     FEMTools.assemble_stokes_momentum_residual_3d!(
         momentum, velocity, forward.pressure, forward.mesh,
         forward.cell_phase, forward.η, forward.ρ, forward.g,
@@ -129,14 +129,14 @@ end
     @test stats.converged
     @test stats.iterations == stats.iter
     @test norm(vec(stack(iterative_velocity; dims = 1)) -
-               vec(stack(forward.velocity; dims = 1))) < 2e-4
+               vec(stack(Tuple(forward.velocity); dims = 1))) < 2e-4
 
     adjoint = solve_sinking_block_adjoint_3d(forward)
-    objective_load = vcat(vec(stack(adjoint.objective_velocity; dims = 1)), zeros(4forward.mesh.nels))
+    objective_load = vcat(vec(stack(Tuple(adjoint.objective_velocity); dims = 1)), zeros(4forward.mesh.nels))
     iterative_adjoint = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
     iterative_adjoint_pressure = zeros(4, forward.mesh.nels)
     adjoint_stats = solve_stokes_adjoint_3d!(
-        iterative_adjoint, iterative_adjoint_pressure, adjoint.objective_velocity,
+        iterative_adjoint, iterative_adjoint_pressure, Tuple(adjoint.objective_velocity),
         forward.mesh, forward.cell_phase, forward.η, fixed_nodes,
         maxiter = 5000,
     )

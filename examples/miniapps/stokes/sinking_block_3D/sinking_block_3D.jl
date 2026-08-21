@@ -4,7 +4,8 @@
 #
 # The solve runs on any KernelAbstractions backend. For CUDA, `using CUDA` and
 # call `run_sinking_block_3d(; backend = CUDABackend())`.
-const isGPU = true
+# Flip to `true`, with CUDA installed, to run the solve on a CUDA device.
+const isGPU = false
 
 @static if isGPU
     using CUDA
@@ -18,7 +19,7 @@ using Gmsh
 import KernelAbstractions as KA
 using StaticArrays
 
-include("mesher.jl")
+include(joinpath(@__DIR__, "..", "mesher", "mesher.jl"))
 
 """
     run_sinking_block_3d(; backend=CPU(), mesh_size=0.06, nz=12, half_width=0.15,
@@ -88,12 +89,12 @@ function run_sinking_block_3d(;
     ]), 3)
     # The solver updates both in place, starting from this zero initial guess.
     # Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
-    velocity = ntuple(_ -> KA.zeros(backend, Float64, mesh.nnodes), 3)
+    velocity = FEMTools.VectorField3D(backend, Float64, mesh.nnodes)
     pressure = KA.zeros(backend, Float64, 4, mesh.nels)
     # `ncheck` sets how often the residual norms are recomputed and reported;
     # the iteration budget the 3-D method actually enforces is `total_iterMax`.
     solve_stats = solve_stokes_dyrel!(
-        velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+        Tuple(velocity), pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
         ncheck = 50, ϵ_tol = solver_tol, iterMax = 50_000, total_iterMax = 50_000,
         workgroup, verbose,
     )
@@ -102,12 +103,14 @@ function run_sinking_block_3d(;
         # `pressure[1, :]` is the cell-constant mode; the three linear modes have
         # no single cell-centre value and are dropped from the output.
         write_vtk(joinpath(@__DIR__, "stokes_3D_sinking_block.vtk"), mesh;
-            point_data = (; vx = velocity[1], vy = velocity[2], vz = velocity[3]),
+            point_data = (; vx = velocity.x, vy = velocity.y, vz = velocity.z),
             cell_data = (; pressure = pressure[1, :], phase = cell_phase),
             title = "FEMTools 3D Q2/P1-disc sinking block")
     end
     return (; mesh, velocity, pressure, cell_phase, fixed_nodes, solve_stats, η, ρ, g)
 end
 
-result = run_sinking_block_3d(backend = backend)
-# @info "3D sinking-block forward solve" result.mesh.nnodes result.mesh.nels result.solve_stats.err
+if abspath(PROGRAM_FILE) == abspath(@__FILE__)
+    result = run_sinking_block_3d(backend = backend)
+    @info "3D sinking-block forward solve" result.mesh.nnodes result.mesh.nels result.solve_stats.err
+end

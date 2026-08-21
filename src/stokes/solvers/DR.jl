@@ -17,9 +17,13 @@ Solve the Stokes system using geometry and elements from `cache`, material and
 stress history from `dr`, and one Dirichlet boundary-condition object per
 velocity component. Phase layouts and stress history may be overridden with
 the `phases_v`, `phases_P`, and `τ_old` keywords.
+
+This mixed-mesh method is two-dimensional and takes `StokesDR{<:Any, 2}`; a
+three-dimensional state is a `MethodError` rather than a solve that ignores the
+third component.
 """
 function solve_stokes_dyrel!(
-    dr::StokesDR,
+    dr::StokesDR{<:Any, 2},
     mesh::MixedMesh,
     cache::MixedMeshCache,
     bc_vx::DirichletBoundaryCondition,
@@ -29,7 +33,7 @@ function solve_stokes_dyrel!(
     plastic = nothing,
     phases_v = dr.phases_v,
     phases_P = dr.phases_P,
-    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
     workgroup = 256,
     kwargs...,
 )
@@ -158,10 +162,10 @@ function solve_stokes_dyrel!(
     zero_vx_bc = zero(bc_vx_vals)
     zero_vy_bc = zero(bc_vy_vals)
 
-    fill!(dr.∂vx∂τ, 0)
-    fill!(dr.∂vy∂τ, 0)
-    fill!(dr.Rv_x0, 0)
-    fill!(dr.Rv_y0, 0)
+    fill!(dr.∂v∂τ.x, 0)
+    fill!(dr.∂v∂τ.y, 0)
+    fill!(dr.Rv0.x, 0)
+    fill!(dr.Rv0.y, 0)
 
     velocity_op = if measure_λmax
         assemble_velocity_operator(
@@ -169,8 +173,8 @@ function solve_stokes_dyrel!(
             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
-            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
@@ -178,20 +182,20 @@ function solve_stokes_dyrel!(
         nothing
     end
     λmax_gershgorin = max(
-        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
-        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+        _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx"),
+        _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy"))
     λmax_iterations = 0
     jacobian_assemblies = 1
     power_x = power_y = nothing
     if measure_λmax
         λmax_measured, λmax_iterations, power_x, power_y = estimate_velocity_λmax(
-            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
+            velocity_op, mesh_stokes, element_v, dr.PC_v.x, dr.PC_v.y,
             vx_nodes, vy_nodes, backend, workgroup;
             max_iterations = λmax_power_iterations, rtol = λmax_power_rtol)
         λmax_vx = λmax_vy = min(λmax_gershgorin, spectral_safety * λmax_measured)
     else
-        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+        λmax_vx = _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx")
+        λmax_vy = _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy")
     end
     Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
@@ -200,7 +204,7 @@ function solve_stokes_dyrel!(
     verbose && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
     err_min = Inf
-    ϵ = eltype(dr.Rv_x)(ϵ_tol)
+    ϵ = eltype(dr.Rv.x)(ϵ_tol)
     err = 2 * ϵ
     err_abs = Inf
     err_rel = Inf
@@ -221,7 +225,7 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_matrices_atomix!(
             dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_P, dr.α, dr.ηb, Δt,
@@ -229,18 +233,18 @@ function solve_stokes_dyrel!(
         )
 
         assemble_momentum_residual_matrices_atomix!(
-            dr.Rv_x, dr.Rv_y,
-            dr.vx, dr.vy, dr.P, dr.T, nothing,
+            dr.Rv.x, dr.Rv.y,
+            dr.v.x, dr.v.y, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             element_v, element_P,
             phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             backend, workgroup,
         )
-        apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-        apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+        apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
+        apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
 
         err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
-        err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
+        err_v = max(norm(dr.Rv.x), norm(dr.Rv.y)) / (2 * sqrt(mesh_stokes.nnodes))
         if itPH == 1
             err_P0 = err_P + eps(err_P)
             err_v0 = err_v + eps(err_v)
@@ -276,13 +280,13 @@ function solve_stokes_dyrel!(
             do_check = iszero(iter % nout)
 
             if do_check
-                copyto!(dr.Rv_x0, dr.Rv_x)
-                copyto!(dr.Rv_y0, dr.Rv_y)
+                copyto!(dr.Rv0.x, dr.Rv.x)
+                copyto!(dr.Rv0.y, dr.Rv.y)
             end
 
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
-                dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
                 phases_P, dr.α, dr.ηb, Δt,
@@ -292,30 +296,30 @@ function solve_stokes_dyrel!(
             @. dr.Pnum = γP * dr.RP / M_P
 
             assemble_momentum_residual_matrices_atomix!(
-                dr.Rv_x, dr.Rv_y,
-                dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                dr.Rv.x, dr.Rv.y,
+                dr.v.x, dr.v.y, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
                 phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
 
-            apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-            apply_dirichlet!(dr.∂vx∂τ, vx_nodes, zero_vx_bc, backend, workgroup)
-            apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
-            apply_dirichlet!(dr.∂vy∂τ, vy_nodes, zero_vy_bc, backend, workgroup)
+            apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
+            apply_dirichlet!(dr.∂v∂τ.x, vx_nodes, zero_vx_bc, backend, workgroup)
+            apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
+            apply_dirichlet!(dr.∂v∂τ.y, vy_nodes, zero_vy_bc, backend, workgroup)
 
             update_stokes_velocity!(
-                dr.∂vx∂τ, dr.∂vy∂τ, dr.vx, dr.vy,
-                dr.Rv_x, dr.Rv_y, dr.PC_vx, dr.PC_vy,
+                dr.∂v∂τ.x, dr.∂v∂τ.y, dr.v.x, dr.v.y,
+                dr.Rv.x, dr.Rv.y, dr.PC_v.x, dr.PC_v.y,
                 β_vx, β_vy, -α_vx, -α_vy,
                 mesh_stokes.nnodes, backend, workgroup)
 
-            apply_dirichlet!(dr.vx, vx_nodes, bc_vx_vals, backend, workgroup)
-            apply_dirichlet!(dr.vy, vy_nodes, bc_vy_vals, backend, workgroup)
+            apply_dirichlet!(dr.v.x, vx_nodes, bc_vx_vals, backend, workgroup)
+            apply_dirichlet!(dr.v.y, vy_nodes, bc_vy_vals, backend, workgroup)
 
             if do_check
-                err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
+                err_v_inner = max(norm(dr.Rv.x), norm(dr.Rv.y)) / (2 * sqrt(mesh_stokes.nnodes))
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
@@ -327,8 +331,8 @@ function solve_stokes_dyrel!(
 
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
-                λmin_vx = _stokes_λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
-                λmin_vy = _stokes_λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+                λmin_vx = _stokes_λmin(α_vx, dr.∂v∂τ.x, dr.Rv.x .- dr.Rv0.x, dr.PC_v.x)
+                λmin_vy = _stokes_λmin(α_vy, dr.∂v∂τ.y, dr.Rv.y .- dr.Rv0.y, dr.PC_v.y)
 
                 if !freeze_jacobian
                     jacobian_assemblies += 1
@@ -338,8 +342,8 @@ function solve_stokes_dyrel!(
                             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
-                            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-                            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                            dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+                            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
@@ -348,12 +352,12 @@ function solve_stokes_dyrel!(
                     end
 
                     λmax_gershgorin = max(
-                        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
-                        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+                        _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx"),
+                        _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy"))
                     if measure_λmax
                         λmax_measured, power_iterations, power_x, power_y =
                             estimate_velocity_λmax(
-                            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
+                            velocity_op, mesh_stokes, element_v, dr.PC_v.x, dr.PC_v.y,
                             vx_nodes, vy_nodes, backend, workgroup;
                             max_iterations = λmax_power_iterations, rtol = λmax_power_rtol,
                             x = power_x, y = power_y)
@@ -361,8 +365,8 @@ function solve_stokes_dyrel!(
                         λmax_vx = λmax_vy =
                             min(λmax_gershgorin, spectral_safety * λmax_measured)
                     else
-                        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-                        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+                        λmax_vx = _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx")
+                        λmax_vy = _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy")
                     end
                 end
                 Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
@@ -405,17 +409,19 @@ end
                                   plastic=nothing, workgroup=256)
 
 Refresh integration-point stresses using cache-owned elements, solver-owned
-material and stress history, and optional phase-layout overrides.
+material and stress history, and optional phase-layout overrides. `τ` receives
+the in-plane components in Voigt order; the history defaults to the components
+of `dr.τ_old`. Two-dimensional states only.
 """
 function update_stokes_current_stress!(
-    dr::StokesDR,
+    dr::StokesDR{<:Any, 2},
     mesh::MixedMesh,
     cache::MixedMeshCache,
     τ,
     Δt;
     plastic = nothing,
     phases_v = dr.phases_v,
-    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
     workgroup = 256,
 )
     backend = KA.get_backend(mesh.coords)
@@ -470,8 +476,8 @@ function update_stokes_current_stress!(
     workgroup,
 )
     assemble_momentum_residual_matrices_atomix!(
-        dr.Rv_x, dr.Rv_y,
-        dr.vx, dr.vy, dr.P, dr.T, nothing,
+        dr.Rv.x, dr.Rv.y,
+        dr.v.x, dr.v.y, dr.P, dr.T, nothing,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,

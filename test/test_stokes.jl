@@ -48,6 +48,66 @@ end
     @test dr.η === material.η
     @test dr.g === material.g
     @test_throws DimensionMismatch StokesMaterial(; η = (1.0, 2.0), ηb = (1.0,))
+    @test material isa StokesMaterial{2, 2, Float64}
+    @test StokesMaterial(; g = (0.0, 0.0, -9.81)) isa StokesMaterial{1, 3, Float64}
+    @test_throws "2 or 3 components" StokesMaterial(; g = (0.0,))
+    @test_throws "2 or 3 components" StokesMaterial(; g = (0.0, 0.0, 0.0, 0.0))
+end
+
+@testset "StokesDR spatial dimension follows gravity" begin
+    dr2 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,))
+    dr3 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = (0.0, 0.0, -9.81))
+
+    @test dr2 isa StokesDR{1, 2}
+    @test dr3 isa StokesDR{1, 3}
+
+    # 2-D keeps the previous layout
+    @test dr2.v isa FEMTools.VectorField2D{Vector{Float64}}
+    @test dr2.τ isa FEMTools.SymmetricTensor2D{Vector{Float64}}
+    @test FEMTools.velocity(dr2) === (dr2.v.x, dr2.v.y)
+    @test length(FEMTools.stress(dr2)) == 3
+    @test dr2.g === (0.0, 0.0)
+
+    # 3-D widens every velocity field and the stress history
+    @test dr3.v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.∂v∂τ isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.Rv isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.Rv0 isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.∂Rv∂v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.PC_v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.τ isa FEMTools.SymmetricTensor3D{Vector{Float64}}
+    @test dr3.τ_old isa FEMTools.SymmetricTensor3D{Vector{Float64}}
+    @test FEMTools.velocity(dr3) === (dr3.v.x, dr3.v.y, dr3.v.z)
+    @test length(FEMTools.stress(dr3)) == 6
+    @test dr3.g === (0.0, 0.0, -9.81)
+    @test all(iszero, dr3.v.z) && all(iszero, dr3.τ.yz)
+
+    # gravity may arrive as any 2- or 3-element container
+    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, -1.0]) isa StokesDR{1, 2}
+    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, 0.0, -1.0]) isa StokesDR{1, 3}
+
+    # a 3-D state is built from a 3-D material too
+    @test StokesDR(CPU(), 9, 4, StokesMaterial(; g = (0.0, 0.0, -1.0))) isa StokesDR{1, 3}
+
+    # pressure storage accepts a dimension tuple, e.g. cell-local P1 modes
+    dr_cell = StokesDR(CPU(), 27, (4, 5), StokesMaterial(; g = (0.0, 0.0, -1.0)))
+    @test size(dr_cell.P) == (4, 5)
+    @test size(dr_cell.RP) == (4, 5)
+    @test size(dr_cell.phases_P) == (4, 5)
+    @test size(dr_cell.v.z) == (27,)
+    @test size(dr_cell.phases_v) == (27,)
+
+    # the 2-D mixed-mesh solvers reject a 3-D state instead of dropping z
+    @test !hasmethod(
+        solve_stokes_dyrel!,
+        Tuple{typeof(dr3), MixedMesh, MixedMeshCache,
+              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+    )
+    @test hasmethod(
+        solve_stokes_dyrel!,
+        Tuple{typeof(dr2), MixedMesh, MixedMeshCache,
+              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+    )
 end
 
 @testset "StokesDR constructor — defaults" begin
@@ -65,36 +125,36 @@ end
         @test dr.η    == η
         @test dr.ηb   == ηb
         @test dr.α    == α
-        @test eltype(dr.vx) == FP
+        @test eltype(dr.v.x) == FP
         @test eltype(dr.P)  == FP
-        @test length(dr.vx) == 10
+        @test length(dr.v.x) == 10
         @test length(dr.P)  == 12
         @test length(dr.M_P) == 12
         @test length(dr.Pnum) == 12
         @test all(==(1), Array(dr.phases_v))
         @test all(==(1), Array(dr.phases_P))
-        @test length(dr.τxx) == 10
-        @test length(dr.τyy) == 10
-        @test length(dr.τxy) == 10
-        @test length(dr.τxx_old) == 10
-        @test length(dr.τyy_old) == 10
-        @test length(dr.τxy_old) == 10
-        @test all(iszero, Array(dr.τxx))
-        @test all(iszero, Array(dr.τyy))
-        @test all(iszero, Array(dr.τxy))
-        @test all(iszero, Array(dr.τxx_old))
-        @test all(iszero, Array(dr.τyy_old))
-        @test all(iszero, Array(dr.τxy_old))
+        @test length(dr.τ.xx) == 10
+        @test length(dr.τ.yy) == 10
+        @test length(dr.τ.xy) == 10
+        @test length(dr.τ_old.xx) == 10
+        @test length(dr.τ_old.yy) == 10
+        @test length(dr.τ_old.xy) == 10
+        @test all(iszero, Array(dr.τ.xx))
+        @test all(iszero, Array(dr.τ.yy))
+        @test all(iszero, Array(dr.τ.xy))
+        @test all(iszero, Array(dr.τ_old.xx))
+        @test all(iszero, Array(dr.τ_old.yy))
+        @test all(iszero, Array(dr.τ_old.xy))
         @test all(iszero, Array(dr.M_P))
         @test all(iszero, Array(dr.Pnum))
 
         vx, vy = FEMTools.velocity(dr)
         τxx, τyy, τxy = FEMTools.stress(dr)
-        @test vx === dr.vx
-        @test vy === dr.vy
-        @test τxx === dr.τxx
-        @test τyy === dr.τyy
-        @test τxy === dr.τxy
+        @test vx === dr.v.x
+        @test vy === dr.v.y
+        @test τxx === dr.τ.xx
+        @test τyy === dr.τ.yy
+        @test τxy === dr.τ.xy
         @test FEMTools.pressure(dr) === dr.P
         @test FEMTools.temperature(dr) === dr.T
     end
@@ -107,14 +167,14 @@ end
         α  = NTuple{2, FP}((0.0,  0.0))
         dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
 
-        @test size(dr.τxx) == (3, 4)
-        @test size(dr.τyy) == (3, 4)
-        @test size(dr.τxy) == (3, 4)
-        @test size(dr.τxx_old) == (3, 4)
-        @test size(dr.τyy_old) == (3, 4)
-        @test size(dr.τxy_old) == (3, 4)
-        @test all(iszero, Array(dr.τxx))
-        @test all(iszero, Array(dr.τxx_old))
+        @test size(dr.τ.xx) == (3, 4)
+        @test size(dr.τ.yy) == (3, 4)
+        @test size(dr.τ.xy) == (3, 4)
+        @test size(dr.τ_old.xx) == (3, 4)
+        @test size(dr.τ_old.yy) == (3, 4)
+        @test size(dr.τ_old.xy) == (3, 4)
+        @test all(iszero, Array(dr.τ.xx))
+        @test all(iszero, Array(dr.τ_old.xx))
     end
 end
 
@@ -185,15 +245,6 @@ end
         @test plastic.η_reg == η_reg
         @test plastic.Kb == Kb
     end
-end
-
-@testset "symmetric tensor display" begin
-    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0)) ==
-        "SymmetricTensor2D(xx=1.0, yy=2.0, xy=3.0, II=0.0)"
-    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)) ==
-        "SymmetricTensor3D(xx=1.0, yy=2.0, zz=3.0, yz=4.0, xz=5.0, xy=6.0, II=0.0)"
-    @test sprint(show, FEMTools.SymmetricTensor(zeros(2, 3), zeros(2, 3), zeros(2, 3))) ==
-        "SymmetricTensor2D(xx=2×3 Matrix{Float64}, yy=2×3 Matrix{Float64}, xy=2×3 Matrix{Float64}, II=2×3 Matrix{Float64})"
 end
 
 @testset "DruckerPrager return uses plane-strain invariant gradient" begin

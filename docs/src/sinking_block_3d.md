@@ -7,8 +7,8 @@ solver, and the discrete adjoint that differentiates the result with respect to
 material properties.
 
 ```sh
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl
 ```
 
 ## Geometry and mesh
@@ -71,6 +71,17 @@ The forward problem calls `solve_stokes_dyrel!`, the same public entry point the
 components plus cell-local pressure modes. Velocity and pressure are
 caller-owned and updated in place from the supplied initial guess.
 
+The example holds velocity in a
+[`VectorField3D`](field_containers.md) and passes `Tuple(velocity)` to the
+solver, which takes the three component arrays positionally. The tuple shares
+those arrays, so the in-place updates land back in the container.
+
+It deliberately does not build a [`StokesDR`](stokes.md). That state is
+dimension-generic and a three-dimensional one is constructible, but it also
+carries a stress history, temperature, and the pseudo-transient and
+preconditioner work arrays that this matrix-free method never touches. The bare
+velocity container is the whole of the state the 3-D solver needs.
+
 `ncheck` sets how often the residual norms are recomputed and reported, `ϵ_tol`
 the absolute combined tolerance, and `total_iterMax` the iteration budget the
 3-D method enforces. `velocity_step` and `γP` scale the velocity and pressure
@@ -81,7 +92,9 @@ compatibility wrapper mapping `maxiter`, `tolerance`, and `pressure_step` onto
 those keywords.
 
 `run_sinking_block_3d` returns the mesh, velocity and pressure, cell phases,
-constrained nodes, solver statistics, and the material inputs. With
+constrained nodes, solver statistics, and the material inputs. The returned
+`velocity` is the `VectorField3D`, so components are reached as `velocity.x`,
+`velocity.y`, `velocity.z`. With
 `write_output=true` it also writes `stokes_3D_sinking_block.vtk` holding the
 three velocity components, cell-centre pressure, and material phase.
 

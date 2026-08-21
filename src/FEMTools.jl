@@ -48,6 +48,10 @@ TA(::CPU) = Array
 
 include("utils.jl")
 
+# Field containers are used by the physics modules below.
+include("tensor_fields/symmetric_tensor.jl")
+include("vector_fields/vector_fields.jl")
+
 # Reference-element definitions come first because the remaining source files
 # extend constructors and methods specialized on these tags.
 include("elements/elements.jl")
@@ -95,7 +99,7 @@ include("stokes/assemblers/momentum_residuals.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
-include("stokes/tensors.jl")
+include("stokes/stress_rotation.jl")
 include("stokes/solvers/DR.jl")
 include("stokes/solvers/DR_adjoint.jl")
 

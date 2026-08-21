@@ -49,6 +49,42 @@ pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
 
+Velocity-node quantities are grouped as [field containers](field_containers.md).
+The velocity is `dr.v`, its pseudo-transient rate `dr.∂v∂τ`, the momentum
+residual `dr.Rv` with snapshot `dr.Rv0`, the row-sum Jacobian estimate
+`dr.∂Rv∂v`, and the diagonal preconditioner `dr.PC_v` — each a vector field
+whose `.x` and `.y` are the arrays for the x- and y-momentum equation. The
+current and previous deviatoric stress are `dr.τ` and `dr.τ_old`, with
+components `.xx`, `.yy`, `.xy`. Pressure quantities remain plain arrays.
+`velocity(dr)` and `stress(dr)` return the component arrays as tuples for code
+that wants them positionally.
+
+### Spatial dimension
+
+`StokesDR` carries its dimension as the type parameter `ndim`, taken from the
+length of the gravity vector. The default `g` has two components and gives the
+two-dimensional state above. A three-component `g` — including
+`(0.0, 0.0, 0.0)` for a gravity-free problem — gives `VectorField3D` velocity
+fields and a `SymmetricTensor3D` stress history with the six independent
+components, so `stress(dr)` returns six arrays instead of three:
+
+```julia
+material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = (0.0, 0.0, -9.81), Tref)
+dr = StokesDR(backend, nnodes_v, nnodes_P, material)
+dr.v.z          # the third velocity component
+dr.τ.yz         # a stress component that has no two-dimensional counterpart
+```
+
+`nnodes_v` and `nnodes_P` accept a dimension tuple as well as a node count, so
+a cell-local pressure layout is expressed as `StokesDR(backend, nnodes_v,
+(4, nels), material)`.
+
+The mixed-mesh solvers on this page are two-dimensional and accept only
+`StokesDR{<:Any, 2}`; passing a three-dimensional state is a `MethodError`
+rather than a silent solve that ignores the third component. The existing
+matrix-free 3-D method takes its arrays positionally and does not consume a
+`StokesDR` — see [Sinking block (3-D)](sinking_block_3d.md).
+
 ### Compact setup
 
 ```julia
@@ -144,8 +180,8 @@ viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl
 ```
 
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D

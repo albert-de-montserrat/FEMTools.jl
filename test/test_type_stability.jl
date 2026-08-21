@@ -306,7 +306,9 @@ end
     @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int}, Float32}
     @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
     @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
-    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, <:Vector{Float64}, <:Vector{Int}, <:Matrix{Float64}, Float64}
+    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, 2, <:FEMTools.VectorField2D{<:Vector{Float64}},
+        <:FEMTools.SymmetricTensor2D{<:Matrix{Float64}}, <:Vector{Int},
+        <:Vector{Float64}, <:Vector{Int}, Float64}
     @test (@inferred _mixed_mesh_cache_case()) isa MixedMeshCache
     @test (@inferred _heat_assembly_case()) === nothing
     @test (@inferred _lithostatic_assembly_case()) === nothing

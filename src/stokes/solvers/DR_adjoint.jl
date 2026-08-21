@@ -10,7 +10,8 @@ store the adjoint fields in `λvx`, `λvy`, `λP` (modified in place).
 
 The adjoint is assembled on the *same* T7/P1-disc spaces, quadrature, and element
 operators as the forward problem and transposed exactly, so `-λᵀ ∂R/∂m` is the
-exact gradient of the discrete objective. The forward state in `dr` must already
+exact gradient of the discrete objective. `dr` is a two-dimensional `StokesDR`,
+matching the forward method. The forward state in `dr` must already
 be converged: the transpose Jacobian, its diagonal preconditioner, and λmax are
 frozen at that state, so only λmin (hence the Chebyshev pair) is re-estimated
 during the solve.
@@ -54,7 +55,7 @@ that invariant. The Enzyme transpose assemblers execute on the backend inferred
 from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
-    dr,
+    dr::StokesDR{<:Any, 2},
     mesh_stokes,
     geo_v,
     geo_P,
@@ -91,21 +92,21 @@ function solve_stokes_adjoint_dyrel!(
     M_P = dr.M_P
 
     # Scratch: adjoint residuals, DYREL rates, and the reverse-pass seeds/pullbacks.
-    ResλVx = zero(dr.Rv_x)
-    ResλVy = zero(dr.Rv_y)
+    ResλVx = zero(dr.Rv.x)
+    ResλVy = zero(dr.Rv.y)
     ResλP  = zero(dr.P)
-    ResλVx0 = zero(dr.Rv_x)
-    ResλVy0 = zero(dr.Rv_y)
-    λrate_vx = zero(dr.vx)
-    λrate_vy = zero(dr.vy)
+    ResλVx0 = zero(dr.Rv.x)
+    ResλVy0 = zero(dr.Rv.y)
+    λrate_vx = zero(dr.v.x)
+    λrate_vy = zero(dr.v.y)
 
-    Rv_x_buf = zero(dr.Rv_x)
-    Rv_y_buf = zero(dr.Rv_y)
-    seed_Rv_x = zero(dr.Rv_x)
-    seed_Rv_y = zero(dr.Rv_y)
+    Rv_x_buf = zero(dr.Rv.x)
+    Rv_y_buf = zero(dr.Rv.y)
+    seed_Rv_x = zero(dr.Rv.x)
+    seed_Rv_y = zero(dr.Rv.y)
     seed_RP   = zero(dr.RP)
-    dvx = zero(dr.vx)
-    dvy = zero(dr.vy)
+    dvx = zero(dr.v.x)
+    dvy = zero(dr.v.y)
     dP  = zero(dr.P)
     dP_scratch = zero(dr.P)
     # Real augmented-pressure array so its adjoint (∂Rv/∂Pnum)ᵀλv is obtained
@@ -128,8 +129,8 @@ function solve_stokes_adjoint_dyrel!(
     ) : nothing
     if op === nothing
         assemble_augmented_momentum_jacobian_matrices_atomix!(
-            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
@@ -141,19 +142,19 @@ function solve_stokes_adjoint_dyrel!(
     # spectral radius. Where an operator apply is available the eigenvalue itself
     # can be measured, which shortens the pseudo-time step correspondingly.
     λmax_gershgorin = max(
-        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx"),
-        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy"),
+        _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "adjoint vx"),
+        _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "adjoint vy"),
     )
     λmax_iterations = 0
     if measure_λmax && op !== nothing
         λmax_measured, λmax_iterations = estimate_adjoint_λmax(
-            op, mesh_stokes, element_v, element_P, dr.PC_vx, dr.PC_vy,
+            op, mesh_stokes, element_v, element_P, dr.PC_v.x, dr.PC_v.y,
             vx_nodes, vy_nodes, backend, workgroup,
         )
         λmax_vx = λmax_vy = λmax_measured
     else
-        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "adjoint vx")
-        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "adjoint vy")
+        λmax_vx = _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "adjoint vx")
+        λmax_vy = _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "adjoint vy")
     end
     Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
     Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
@@ -178,7 +179,7 @@ function solve_stokes_adjoint_dyrel!(
         # and (∂Rv/∂Pnum)ᵀλv → dPnum.
         assemble_momentum_residual_matrices_atomix_adj!(
             Rv_x_buf, seed_Rv_x, Rv_y_buf, seed_Rv_y,
-            dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum, dPnum,
+            dr.v.x, dvx, dr.v.y, dvy, dr.P, dP, dr.T, Pnum, dPnum,
             mesh_stokes, geo_v, element_v, element_P,
             phases_v, τ_old, plastic,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
@@ -262,11 +263,11 @@ function solve_stokes_adjoint_dyrel!(
             copyto!(ResλVx0, ResλVx)
             copyto!(ResλVy0, ResλVy)
 
-            stokes_update_rate!(λrate_vx, ResλVx, dr.PC_vx, β_vx,
+            stokes_update_rate!(λrate_vx, ResλVx, dr.PC_v.x, β_vx,
                 mesh_stokes.nnodes, backend, workgroup)
             stokes_update_variable!(λvx, λrate_vx, -α_vx,
                 mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_rate!(λrate_vy, ResλVy, dr.PC_vy, β_vy,
+            stokes_update_rate!(λrate_vy, ResλVy, dr.PC_v.y, β_vy,
                 mesh_stokes.nnodes, backend, workgroup)
             stokes_update_variable!(λvy, λrate_vy, -α_vy,
                 mesh_stokes.nnodes, backend, workgroup)
@@ -287,8 +288,8 @@ function solve_stokes_adjoint_dyrel!(
                 # iteration refills from ResλVx/ResλVy before reading them again.
                 @. ResλVx0 = ResλVx - ResλVx0
                 @. ResλVy0 = ResλVy - ResλVy0
-                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx0, dr.PC_vx)
-                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy0, dr.PC_vy)
+                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx0, dr.PC_v.x)
+                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy0, dr.PC_v.y)
                 α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
 

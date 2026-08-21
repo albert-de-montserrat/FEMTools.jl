@@ -7,7 +7,7 @@ Assemble pressure mass and scaling using the geometry and elements stored in
 """
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
-    dr::StokesDR,
+    dr::StokesDR{<:Any, 2},
     mesh::MixedMesh{2},
     cache::MixedMeshCache,
     γfact,
@@ -36,7 +36,7 @@ element-wise phase layouts or alternate pressure-scaling material properties.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
-    dr::StokesDR,
+    dr::StokesDR{<:Any, 2},
     mesh::MixedMesh{2},
     geo_P,
     element_v::ReferenceElement,

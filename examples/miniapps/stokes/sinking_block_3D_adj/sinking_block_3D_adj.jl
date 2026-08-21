@@ -1,4 +1,4 @@
-include("sinking_block_3D.jl")
+include(joinpath(@__DIR__, "..", "sinking_block_3D", "sinking_block_3D.jl"))
 
 using LinearAlgebra
 
@@ -30,20 +30,20 @@ function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_o
     block_nodes = unique(vec(Array(mesh.el2n)[:, cell_phase .== 2]))
     # The load `c = ∂J/∂v`. `J` averages the vertical velocity over those nodes,
     # so component 3 carries 1/N there and every other entry is zero.
-    objective_velocity = ntuple(i -> begin
+    objective_velocity = FEMTools.VectorField3D(ntuple(i -> begin
         load = zeros(mesh.nnodes)
         i == 3 && (load[block_nodes] .= 1 / length(block_nodes))
         load
-    end, 3)
+    end, 3)...)
 
     # The linear viscous operator is symmetric, so `Aᵀ = A` and the transpose
     # solve reuses the forward residual and preconditioner with `c` as its
     # momentum load. The constrained nodes carry over unchanged for the same
     # reason: `Aᵀ` eliminates the same rows and columns.
-    adjoint_velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
+    adjoint_velocity = FEMTools.VectorField3D(ntuple(_ -> zeros(mesh.nnodes), 3)...)
     adjoint_pressure = zeros(4, mesh.nels)
     adjoint_stats = solve_stokes_adjoint_dyrel!(
-        adjoint_velocity, adjoint_pressure, objective_velocity,
+        Tuple(adjoint_velocity), adjoint_pressure, Tuple(objective_velocity),
         mesh, cell_phase, forward.η, forward.fixed_nodes;
         ncheck = 50, adjoint_tol = 1e-6, iterMax = 50_000,
         total_iterMax = 50_000, verbose = false,
@@ -53,12 +53,14 @@ function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_o
     # default. Both derivatives are applied as residual evaluations with unit
     # material properties, so neither derivative matrix is ever assembled.
     gradients = stokes_material_gradient_3d(
-        forward.velocity, adjoint_velocity, mesh, cell_phase,
+        Tuple(forward.velocity), Tuple(adjoint_velocity), mesh, cell_phase,
         forward.η, forward.ρ, forward.g,
     )
 
     # `J = cᵀu`: the mean vertical velocity over the block, i.e. its sinking rate.
-    objective = sum(dot(objective_velocity[i], forward.velocity[i]) for i in 1:3)
+    objective = sum(
+        dot(c, u) for (c, u) in zip(Tuple(objective_velocity), Tuple(forward.velocity))
+    )
     return (;
         forward, objective_velocity, adjoint_velocity, adjoint_pressure,
         adjoint_stats, objective, gradients...,

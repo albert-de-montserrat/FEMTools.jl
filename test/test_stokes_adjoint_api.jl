@@ -123,7 +123,7 @@ end
         Rx = zeros(mesh.nnodes)
         Ry = zeros(mesh.nnodes)
         FEMTools.assemble_momentum_residual_matrices_atomix!(
-            Rx, Ry, dr.vx, dr.vy, dr.P, dr.T, nothing,
+            Rx, Ry, dr.v.x, dr.v.y, dr.P, dr.T, nothing,
             mesh.el2n, mesh.DoFsP, cache.geo_v, mesh.nels, element_v, element_P,
             phases, τ_old, nothing, nothing, η, G, α, ρ0_vec, K, g, Tref, Δt, backend, wg)
         return Rx, Ry
@@ -140,7 +140,7 @@ end
     δ = 1.0e-4
     dr_plus, = solve_forward(ρ2 + δ)
     dr_minus, = solve_forward(ρ2 - δ)
-    grad_fd = (objective(Array(dr_plus.vy)) - objective(Array(dr_minus.vy))) / (2δ)
+    grad_fd = (objective(Array(dr_plus.v.y)) - objective(Array(dr_minus.v.y))) / (2δ)
 
     @test grad_adjoint ≈ grad_fd rtol = 1.0e-4
 end
