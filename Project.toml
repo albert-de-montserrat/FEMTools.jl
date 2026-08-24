@@ -5,9 +5,11 @@ authors = ["Albert de Montserrat <albert.de.montserrat@gmail.com>"]
 
 [deps]
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Gmsh = "705231aa-382f-11e9-3f0c-b7cb4346fdeb"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
@@ -16,7 +18,6 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
 AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 
 [extensions]
@@ -32,8 +33,8 @@ CUDA = "6.1"
 DomainSets = "0.8"
 Enzyme = "0.13"
 ForwardDiff = "1.4.1"
-JET = "0.11.5"
 Gmsh = "0.3"
+JET = "0.11.5"
 KernelAbstractions = "0.9"
 LinearAlgebra = "1.11"
 Metal = "1"
@@ -46,8 +47,8 @@ julia = "1.11"
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
-JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Gmsh = "705231aa-382f-11e9-3f0c-b7cb4346fdeb"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
