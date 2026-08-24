@@ -4,3 +4,8 @@
 *.gif
 *.html
 Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+Manifest-v*.toml
+docs/build/
