@@ -125,9 +125,14 @@ stats = solve_stokes_dyrel!(
 ```
 
 `fixed_nodes` is an `NTuple{3}` containing the constrained nodes for each
-velocity component. The matching `solve_stokes_adjoint_dyrel!` method accepts
-the same storage plus a three-component objective load. `solve_stokes_3d!` and
+velocity component, held at zero unless `bc_values` supplies one velocity per
+entry of `fixed_nodes`, which is how a far-field flow is imposed on the
+boundary. The matching `solve_stokes_adjoint_dyrel!` method accepts the same
+storage plus a three-component objective load. `solve_stokes_3d!` and
 `solve_stokes_adjoint_3d!` remain compatibility wrappers.
+
+`mesh.geometry` is shared by every kernel above and indexed
+`geometry[q, cell]`; see [Geometry Precomputation](mesh.md#Geometry-Precomputation).
 
 ### Two-dimensional spectral estimate and frozen Jacobian
 

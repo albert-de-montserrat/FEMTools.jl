@@ -32,6 +32,10 @@ as nodes on mesh edges shared by exactly one element. `Ω` and `Γ` are set to
 `nothing`. Passing `element` also stores the reference element and precomputes
 the geometry used by single-field solvers. Constructors without `element`
 retain `nothing` for both fields.
+
+`geometry` is the `NQ × nels` matrix built by [`precompute_geometry`](@ref):
+`geometry[q, iel]` is the `(∂N∂x, dΩ)` pair of quadrature point `q` in element
+`iel`, and [`element_geometry`](@ref) views one element's column.
 """
 struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
     Ω::D        # model domain

@@ -63,10 +63,16 @@ generate_element_groups
 
 ## Geometry Precomputation
 
+Element geometry is an `NQ × nels` matrix, quadrature point first:
+`geo[q, iel]` holds the physical shape-function gradients and the weighted
+measure `|det J| ωq` of quadrature point `q` in element `iel`. Kernels that
+work one element at a time take `FEMTools.element_geometry(geo, iel)`, a view
+of that element's column, rather than copying the column into the thread.
+
 ```@docs
 precompute_geometry
 FEMTools.precompute_geometry_kernel!
-element_geometry
+FEMTools.element_geometry
 ```
 
 ## VTK Output
