@@ -50,3 +50,16 @@ end
     @test sum(last, geo) ≈ 0.5
     @test all(∂N∂x ≈ geo[1, 1][1] for (∂N∂x, _) in geo)
 end
+
+@testset "remove_pressure_mean! removes the mass-weighted gauge" begin
+    P = [1.0, -3.0, 5.0, 2.0]
+    M_P = [0.5, 1.5, 2.0, 1.0]
+    expected = sum(P .* M_P) / sum(M_P)
+
+    p_mean = FEMTools.remove_pressure_mean!(P, M_P)
+
+    @test p_mean ≈ expected
+    @test sum(P .* M_P) ≈ 0 atol = 1.0e-12
+    # A second pass has nothing left to remove.
+    @test FEMTools.remove_pressure_mean!(copy(P), M_P) ≈ 0 atol = 1.0e-12
+end

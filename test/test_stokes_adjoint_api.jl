@@ -143,4 +143,29 @@ end
     grad_fd = (objective(Array(dr_plus.v.y)) - objective(Array(dr_minus.v.y))) / (2δ)
 
     @test grad_adjoint ≈ grad_fd rtol = 1.0e-4
+
+    # The reverse-mode path rebuilds the same transpose products by automatic
+    # differentiation instead of storing element blocks, so it must reach the
+    # same adjoint field and the same gradient.
+    λ_frozen = (copy(λvx), copy(λvy), copy(λP))
+    fill!(λvx, 0)
+    fill!(λvy, 0)
+    fill!(λP, 0)
+    adj_rev = solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
+        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
+        frozen_operator = false, measure_λmax = false,
+        verbose = false, verbose_inner = false)
+    @test adj_rev.converged
+    @test adj_rev.λmax_iterations == 0        # power iteration needs the frozen operator
+    @test adj_rev.λmax == adj_rev.λmax_gershgorin
+    @test λvx ≈ λ_frozen[1] rtol = 1.0e-5
+    @test λvy ≈ λ_frozen[2] rtol = 1.0e-5
+    @test λP ≈ λ_frozen[3] rtol = 1.0e-5
+
+    grad_reverse = dot(λvx, ∂R∂ρ2_x) + dot(λvy, ∂R∂ρ2_y)
+    @test grad_reverse ≈ grad_fd rtol = 1.0e-4
 end

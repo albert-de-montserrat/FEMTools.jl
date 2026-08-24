@@ -707,3 +707,124 @@ end
     # ∑ᵢ Rv_y[i] = −ρ·g_y·Area (partition of unity: ∑ᵢ Nᵢ = 1 over the domain)
     @test sum(Rv_y) ≈ -ρ0 * gy * 1.0   atol = 1e-10
 end
+
+# ---------------------------------------------------------------------------
+# Non-augmented momentum Jacobian
+# ---------------------------------------------------------------------------
+
+# `single_element = true` isolates one T7 cell. The assembler accumulates
+# absolute row sums per element before scattering, so element-wise and global
+# row sums agree only when no node is shared, which is what makes the dense
+# finite-difference reference below an exact comparison rather than a bound.
+function _jacobian_fixture(; single_element = false)
+    backend, wg = CPU(), 1
+    element_v = ReferenceElement(QuadraticElement{2, 7, FP64})
+    element_P = ReferenceElement(LinearElement{2, 3, FP64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    if single_element
+        nodes = mesh_v.el2n[:, 1]
+        mesh_v = Mesh(backend, mesh_v.coords[nodes], reshape(Int32.(1:7), 7, 1), element_v)
+    end
+    mesh = MixedMesh(mesh_v, element_P)
+    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+
+    # A non-trivial velocity keeps the shear blocks away from zero; the purely
+    # viscous residual is linear in it, so central differences are exact.
+    vx = [sin(c[1]) * c[2] for c in mesh.coords]
+    vy = [c[1] * cos(c[2]) for c in mesh.coords]
+    P = [0.3 * c[1] - 0.2 * c[2] for c in mesh.coords[1:(mesh.nnodesP)]]
+    T = zeros(mesh.nnodesP)
+    phases = ones(Int, mesh.nnodes)
+
+    return (; backend, wg, element_v, element_P, mesh, cache, vx, vy, P, T, phases,
+        η = (2.0,), G = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (Inf,),
+        g = (0.0, 0.0), Tref = 0.0, Δt = 1.0)
+end
+
+function _momentum_residual(f, vx, vy)
+    Rv_x = zeros(f.mesh.nnodes)
+    Rv_y = zeros(f.mesh.nnodes)
+    assemble_momentum_residual_matrices_atomix!(
+        Rv_x, Rv_y, vx, vy, f.P, f.T, nothing,
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.element_v, f.element_P, f.phases, nothing, nothing, nothing,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
+    )
+    return Rv_x, Rv_y
+end
+
+function _plain_momentum_jacobian(f)
+    blocks = ntuple(_ -> zeros(f.mesh.nnodes), 4)
+    FEMTools.assemble_momentum_jacobian_matrices_atomix!(
+        blocks..., f.vx, f.vy, f.P, f.T,
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.element_v, f.element_P, f.phases,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
+    )
+    return blocks
+end
+
+@testset "assemble_momentum_jacobian_matrices_atomix! matches finite differences" begin
+    f = _jacobian_fixture(; single_element = true)
+    n = f.mesh.nnodes
+    ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy = _plain_momentum_jacobian(f)
+
+    # Dense reference: column j of each block, by central differences.
+    h = 1.0e-6
+    ∂Rx∂vx = zeros(n, n); ∂Rx∂vy = zeros(n, n)
+    ∂Ry∂vx = zeros(n, n); ∂Ry∂vy = zeros(n, n)
+    for j in 1:n
+        vx_p = copy(f.vx); vx_p[j] += h
+        vx_m = copy(f.vx); vx_m[j] -= h
+        Rx_p, Ry_p = _momentum_residual(f, vx_p, f.vy)
+        Rx_m, Ry_m = _momentum_residual(f, vx_m, f.vy)
+        @. ∂Rx∂vx[:, j] = (Rx_p - Rx_m) / 2h
+        @. ∂Ry∂vx[:, j] = (Ry_p - Ry_m) / 2h
+
+        vy_p = copy(f.vy); vy_p[j] += h
+        vy_m = copy(f.vy); vy_m[j] -= h
+        Rx_p, Ry_p = _momentum_residual(f, f.vx, vy_p)
+        Rx_m, Ry_m = _momentum_residual(f, f.vx, vy_m)
+        @. ∂Rx∂vy[:, j] = (Rx_p - Rx_m) / 2h
+        @. ∂Ry∂vy[:, j] = (Ry_p - Ry_m) / 2h
+    end
+
+    # Row sums couple both velocity components; the diagonal is same-component.
+    expected_rowsum_x = vec(sum(abs, ∂Rx∂vx; dims = 2) .+ sum(abs, ∂Rx∂vy; dims = 2))
+    expected_rowsum_y = vec(sum(abs, ∂Ry∂vy; dims = 2) .+ sum(abs, ∂Ry∂vx; dims = 2))
+
+    @test maximum(∂Rv_x∂vx) > 0
+    @test ∂Rv_x∂vx ≈ expected_rowsum_x rtol = 1.0e-6
+    @test ∂Rv_y∂vy ≈ expected_rowsum_y rtol = 1.0e-6
+    @test PC_vx ≈ [abs(∂Rx∂vx[i, i]) for i in 1:n] rtol = 1.0e-6
+    @test PC_vy ≈ [abs(∂Ry∂vy[i, i]) for i in 1:n] rtol = 1.0e-6
+end
+
+@testset "momentum Jacobian row sums bound the assembled Jacobian" begin
+    # With shared nodes the per-element absolute sums stay conservative.
+    f = _jacobian_fixture()
+    ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy = _plain_momentum_jacobian(f)
+
+    @test all(∂Rv_x∂vx .>= PC_vx)
+    @test all(∂Rv_y∂vy .>= PC_vy)
+    @test all(PC_vx .> 0)
+    @test all(PC_vy .> 0)
+end
+
+@testset "augmented momentum Jacobian reduces to the plain one at γ_eff = 0" begin
+    f = _jacobian_fixture()
+    plain = _plain_momentum_jacobian(f)
+
+    augmented = ntuple(_ -> zeros(f.mesh.nnodes), 4)
+    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+        augmented..., f.vx, f.vy, f.P, zero(f.P), f.T, zero(f.T),
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.cache.geo_P, f.mesh.nels,
+        f.element_v, f.element_P, f.phases, f.phases,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref,
+        (Inf,), f.Δt, 0.0, ones(f.mesh.nnodesP), f.backend, f.wg,
+    )
+
+    for (a, b) in zip(plain, augmented)
+        @test a ≈ b
+    end
+end
