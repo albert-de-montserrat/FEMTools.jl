@@ -443,6 +443,11 @@ _geometry_jacobian(element::ReferenceElement{T}, point, ::Val{1}) where {N, T <:
 
 Precompute physical shape-function gradients and weighted element volumes for
 all integration points of `element`.
+
+The result is an `NQ × nels` matrix of `(∂N∂x, dΩ)` pairs, quadrature point
+first. A kernel thread working on one element reads a single column entry at a
+time, so its thread-local footprint is one pair rather than a whole element's
+worth of them; see [`element_geometry`](@ref).
 """
 function precompute_geometry(
     coords,
@@ -455,15 +460,15 @@ function precompute_geometry(
     NQ = length(ip.ω)
     points = ntuple(q -> _integration_coordinates(ip, q), Val(NQ))
     jacobians = ntuple(q -> _geometry_jacobian(element, points[q], Val(nDim)), Val(NQ))
-    Geometry = NTuple{NQ, Tuple{SMatrix{N, nDim, FP, N * nDim}, FP}}
-    geometry = KA.allocate(backend, Geometry, size(el2n, 2))
+    Geometry = Tuple{SMatrix{N, nDim, FP, N * nDim}, FP}
+    geometry = KA.allocate(backend, Geometry, NQ, size(el2n, 2))
     if backend isa CPU
         for iel in axes(el2n, 2)
             local_nodes = local_nodes_of(el2n, iel, Val(N))
             c = element_coordinate_matrix(coords, local_nodes)
-            geometry[iel] = ntuple(Val(NQ)) do q
+            for q in eachindex(jacobians)
                 J = c' * jacobians[q]
-                (jacobians[q] * inv(J), abs(det(J)) * ip.ω[q])
+                geometry[q, iel] = (jacobians[q] * inv(J), abs(det(J)) * ip.ω[q])
             end
         end
         return geometry
@@ -478,12 +483,15 @@ end
 """
     precompute_geometry_kernel!(geo, coords, el2n, ∂N∂ξq, ω, Val(N))
 
-KernelAbstractions kernel that fills `geo` with per-element geometry data.
+KernelAbstractions kernel that fills the `NQ × nels` matrix `geo` with
+per-element geometry data.
 
 For each element `iel`, computes `(∂N∂x_q, dΩ_q)` at every quadrature point `q`
-and stores the result as a tuple at `geo[iel]`. Here `∂N∂x_q` is the matrix of
-physical-space shape-function gradients (`N × nDim`) and `dΩ_q` is the
-quadrature weight scaled by `|det J|`.
+and stores it at `geo[q, iel]`. Here `∂N∂x_q` is the matrix of physical-space
+shape-function gradients (`N × nDim`) and `dΩ_q` is the quadrature weight scaled
+by `|det J|`. The pairs are written one at a time: a thread that assembled the
+whole column as a tuple would hold `NQ` gradient matrices at once, which for
+Hex27 spills tens of kilobytes per thread into local memory.
 
 Because this kernel depends only on mesh geometry, it only needs to be called
 once per mesh and the result can be reused across nonlinear or pseudo-transient
@@ -493,8 +501,20 @@ iterations.
     iel = @index(Global)
     local_nodes = local_nodes_of(el2n, iel, Val(N))
     c = element_coordinate_matrix(coords, local_nodes)
-    geo[iel] = ntuple(Val(length(ω))) do q
+    for q in eachindex(ω)
         J = c' * ∂N∂ξq[q]
-        (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
+        geo[q, iel] = (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
     end
 end
+
+"""
+    element_geometry(geo, iel) -> AbstractVector
+
+View of the quadrature-point geometry of element `iel` in the `NQ × nels`
+matrix `geo`, indexable as `element_geometry(geo, iel)[q]` and iterable over
+`eachindex`.
+
+The view holds no geometry of its own, so a kernel thread that keeps one pays
+for a single `(∂N∂x, dΩ)` pair at a time rather than for the whole element.
+"""
+@inline element_geometry(geo, iel) = view(geo, :, iel)

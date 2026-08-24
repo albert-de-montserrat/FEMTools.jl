@@ -66,6 +66,7 @@ import FEMTools
         :update_rate_kernel!,
         :update_variable_kernel!,
         :precompute_geometry_kernel!,
+        :element_geometry,
         :stokes_update_rate!,
         :stokes_update_variable!,
         :precompute_stokes_geometry!,

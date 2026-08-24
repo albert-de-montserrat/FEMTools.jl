@@ -36,7 +36,7 @@ function _rotate_stress!(
         local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
-        geo_el = geo_v[iel]
+        geo_el = element_geometry(geo_v, iel)
 
         for q in eachindex(geo_el)
             ∂N∂x, = geo_el[q]

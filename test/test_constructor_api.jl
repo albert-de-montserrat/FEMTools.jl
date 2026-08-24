@@ -48,8 +48,8 @@ end
     mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
 
     @test mesh.element === element
-    @test length(mesh.geometry) == mesh.nels
-    @test eltype(mesh.geometry) == NTuple{3, Tuple{SMatrix{3, 2, Float32, 6}, Float32}}
+    @test size(mesh.geometry) == (3, mesh.nels)
+    @test eltype(mesh.geometry) == Tuple{SMatrix{3, 2, Float32, 6}, Float32}
 end
 
 @testset "unstructured Mesh accepts abstract array types" begin

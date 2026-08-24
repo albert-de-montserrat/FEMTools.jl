@@ -40,13 +40,13 @@ end
     coords = [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
     nels = 1
-    geotype = NTuple{NQ, Tuple{SMatrix{3, 2, Float64, 6}, Float64}}
+    geotype = Tuple{SMatrix{3, 2, Float64, 6}, Float64}
 
-    geo = KernelAbstractions.allocate(backend, geotype, nels)
+    geo = KernelAbstractions.allocate(backend, geotype, NQ, nels)
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(3), nels, backend, workgroup)
 
     # Unit reference triangle: quadrature weights sum to its area, and the
     # linear shape-function gradients are the same at every point.
-    @test sum(last, geo[1]) ≈ 0.5
-    @test all(∂N∂x ≈ first(geo[1])[1] for (∂N∂x, _) in geo[1])
+    @test sum(last, geo) ≈ 0.5
+    @test all(∂N∂x ≈ geo[1, 1][1] for (∂N∂x, _) in geo)
 end

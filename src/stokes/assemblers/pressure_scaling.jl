@@ -159,7 +159,7 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_dofs_P  = local_nodes_of(dofs_P,  iel, Val(NP))
     phase_loc = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
-    geo_P_el = geo_P[iel]
+    geo_P_el = element_geometry(geo_P, iel)
 
     for q in eachindex(geo_P_el)
         _, dΩ = geo_P_el[q]

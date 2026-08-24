@@ -9,6 +9,7 @@ using StaticArrays
 
 const TRI_DNDX = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
 const TRI_GEO = ((TRI_DNDX, 0.5),)
+const TRI_GEO_MESH = reshape(collect(TRI_GEO), :, 1)
 const TRI_NQ = (SVector(1 / 3, 1 / 3, 1 / 3),)
 
 function _element_eval_case(::Type{FP}) where FP
@@ -111,7 +112,7 @@ function _heat_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.element_jacobian(
         T, T0, source, el2n, geo, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
@@ -124,7 +125,7 @@ function _lithostatic_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.lp_element_jacobian(
         T, P, el2n, geo, phases,
         (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), TRI_NQ, 1, Val(3),
@@ -161,7 +162,7 @@ function _pressure_element_residual_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.pressure_element_residual(
         vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, phases,
         (0.0,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
@@ -211,7 +212,7 @@ function _heat_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_diffusion_matrices_atomix!(
         R, ∂R∂T, PC, T, T0, el2n, geo, 1, element, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
@@ -228,7 +229,7 @@ function _lithostatic_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_lithostatic_pressure_matrices_atomix!(
         R, ∂R∂P, PC, T, P, el2n, geo, 1, element, phases,
         (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), CPU(), 1;
@@ -247,7 +248,7 @@ function _stokes_assembly_case()
     Pnum = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_momentum_residual_matrices_atomix!(
         Rvx, Rvy, vx, vy, P, T, Pnum, el2n, el2n, geo, 1,
         element, element, phases, nothing, nothing, nothing,
@@ -267,7 +268,7 @@ function _pressure_assembly_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_pressure_residual_matrices_atomix!(
         RP, vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, 1,
         element, element, phases, (0.0,), (Inf,), 1.0, CPU(), 1,
@@ -280,7 +281,7 @@ function _pressure_scaling_assembly_case()
     γP = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n, el2n, geo, 1, element, element, phases,
         (1.0,), 0.5, (Inf,), 1.0, CPU(), 1,

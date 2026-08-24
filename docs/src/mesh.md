@@ -66,6 +66,7 @@ generate_element_groups
 ```@docs
 precompute_geometry
 FEMTools.precompute_geometry_kernel!
+element_geometry
 ```
 
 ## VTK Output

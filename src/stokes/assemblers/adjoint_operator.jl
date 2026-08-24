@@ -170,8 +170,8 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
     A = vcat(hcat(∂RVx∂vx, ∂RVx∂vy), hcat(∂RVy∂vx, ∂RVy∂vy))
 
     local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
-    geo_v_el = geo_v[iel]
-    geo_P_el = geo_P[iel]
+    geo_v_el = element_geometry(geo_v, iel)
+    geo_P_el = element_geometry(geo_P, iel)
     vxloc = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc = _gather_local(vy, local_nodes_v, Val(NV))
     P_loc = _gather_local(P, local_nodes_P, Val(NP))
