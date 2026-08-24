@@ -498,8 +498,10 @@ velocity and pressure are updated in place.
 
 `ncheck` controls residual checks, `ϵ_tol` the absolute combined tolerance,
 and `total_iterMax` the iteration budget (`iterMax` supplies its default).
-`velocity_step` and `γP` scale the velocity and pressure updates. `load`, when
-provided, is an `NTuple{3}` momentum right-hand side used by the adjoint method.
+`velocity_step` and `γP` scale the velocity and pressure updates. `bc_values`
+prescribes the constrained velocities, one value per entry of `fixed_nodes`;
+`nothing` holds them all at zero. `load`, when provided, is an `NTuple{3}`
+momentum right-hand side used by the adjoint method.
 Returns convergence statistics including `iter`, `err`, `err_v`, `err_P`,
 `converged`, and `reached_total_iter`.
 """
@@ -507,14 +509,25 @@ function solve_stokes_dyrel!(
     velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
     η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
     ncheck = 100, ϵ_tol = 1e-5, iterMax = 3000, total_iterMax = iterMax,
-    velocity_step = 0.6, γP = 0.2, load = nothing, workgroup = 256,
-    verbose = true,
+    velocity_step = 0.6, γP = 0.2, bc_values = nothing, load = nothing,
+    workgroup = 256, verbose = true,
 )
     residual_v = ntuple(i -> similar(velocity[i]), 3)
     residual_p = similar(pressure)
     diagonal, pressure_mass = stokes_preconditioner_3d(mesh, cell_phase, η; workgroup)
     backend = KA.get_backend(first(velocity))
+    # The residual is always zeroed on constrained nodes, whereas the velocity is
+    # reset to its prescribed value there, which is zero only for `bc_values === nothing`.
     zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
+    velocity_bc = if bc_values === nothing
+        zero_bc
+    else
+        ntuple(3) do i
+            length(bc_values[i]) == length(fixed_nodes[i]) ||
+                throw(DimensionMismatch("bc_values[$i] has $(length(bc_values[i])) entries but fixed_nodes[$i] has $(length(fixed_nodes[i]))"))
+            bc_values[i]
+        end
+    end
     err_v = err_P = err = Inf
     iter = 0
     for iteration in 1:total_iterMax
@@ -535,7 +548,7 @@ function solve_stokes_dyrel!(
         for component in 1:3
             apply_dirichlet!(residual_v[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
             @. velocity[component] -= velocity_step * residual_v[component] / diagonal[component]
-            apply_dirichlet!(velocity[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
+            apply_dirichlet!(velocity[component], fixed_nodes[component], velocity_bc[component], backend, workgroup)
         end
         (iszero(iter % ncheck) || iter == total_iterMax) || continue
         err_v = maximum(norm, residual_v)
