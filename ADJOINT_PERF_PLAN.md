@@ -12,7 +12,7 @@ Scope:
 - `src/stokes/assemblers/momentum_residuals_adj.jl` — momentum transpose
 - `src/stokes/assemblers/pressure_residual_adj.jl` — pressure transpose
 - `src/stokes/assemblers/momentum_residuals.jl` — Jacobian blocks reused below
-- `examples/stokes/sinking_block/sinking_block_adj.jl` — driver and benchmark case
+- `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` — driver and benchmark case
 - `test/test_stokes_adjoint_api.jl` — finite-difference gradient gate
 
 ---
@@ -472,7 +472,7 @@ says nothing about how the system is actually solved or how to drive it. Add:
   `max_ph_iterations`, `γP`), and how to diagnose a stalling solve.
 - Cost and memory characteristics, including the cached-operator footprint and
   when to prefer the fallback path.
-- A worked pointer to `examples/stokes/sinking_block/sinking_block_adj.jl` and to
+- A worked pointer to `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` and to
   the finite-difference gradient check as the way to validate a new objective.
 
 Update the docstring of `solve_stokes_adjoint_dyrel!` in step, and keep both
@@ -503,10 +503,10 @@ finite-difference validation test.
 
 ## 5. Harness
 
-- `examples/benchmarks/adjoint_perf.jl` — `run_adjoint_benchmark` sweeps mesh
+- `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` — `run_adjoint_benchmark` sweeps mesh
   refinement against viscosity contrast and prints one row per case;
   `compare_adjoint_benchmarks(baseline, candidate)` reports iteration, wall-time,
   and per-iteration ratios between two sweeps.
-- `examples/stokes/sinking_block/sinking_block_adj.jl` gained `η_incl` (inclusion
+- `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` gained `η_incl` (inclusion
   viscosity against a unit matrix viscosity, hence the contrast), a `verbose`
   switch for the forward trace, and `t_forward`/`t_adjoint` in its return value.
