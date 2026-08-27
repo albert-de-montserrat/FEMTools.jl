@@ -65,14 +65,14 @@ function assemble_velocity_operator(
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
-    Ablocks = similar(dr.vx, SMatrix{2NV, 2NV, eltype(dr.vx), 4NV * NV}, mesh_stokes.nels)
-    fill!(dr.∂Rv_x∂vx, 0)
-    fill!(dr.PC_vx, 0)
-    fill!(dr.∂Rv_y∂vy, 0)
-    fill!(dr.PC_vy, 0)
+    Ablocks = similar(dr.v.x, SMatrix{2NV, 2NV, eltype(dr.v.x), 4NV * NV}, mesh_stokes.nels)
+    fill!(dr.∂Rv∂v.x, 0)
+    fill!(dr.PC_v.x, 0)
+    fill!(dr.∂Rv∂v.y, 0)
+    fill!(dr.PC_v.y, 0)
     velocity_operator_assembly_kernel!(backend, workgroup)(
-        Ablocks, dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        Ablocks, dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+        dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, phases_v, phases_P,
         τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
         Δt, γP, dr.M_P, Nq, NqP, Val(NV), Val(NP);
@@ -170,8 +170,8 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
     A = vcat(hcat(∂RVx∂vx, ∂RVx∂vy), hcat(∂RVy∂vx, ∂RVy∂vy))
 
     local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
-    geo_v_el = geo_v[iel]
-    geo_P_el = geo_P[iel]
+    geo_v_el = element_geometry(geo_v, iel)
+    geo_P_el = element_geometry(geo_P, iel)
     vxloc = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc = _gather_local(vy, local_nodes_v, Val(NV))
     P_loc = _gather_local(P, local_nodes_P, Val(NP))
@@ -264,20 +264,20 @@ function assemble_adjoint_operator(
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     nels = mesh_stokes.nels
-    Tv = eltype(dr.vx)
+    Tv = eltype(dr.v.x)
 
-    Ablocks = similar(dr.vx, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
-    Bblocks = similar(dr.vx, SMatrix{2NV, NP, Tv, 2NV * NP}, nels)
-    Cblocks = similar(dr.vx, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
+    Ablocks = similar(dr.v.x, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
+    Bblocks = similar(dr.v.x, SMatrix{2NV, NP, Tv, 2NV * NP}, nels)
+    Cblocks = similar(dr.v.x, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
 
-    fill!(dr.∂Rv_x∂vx, 0)
-    fill!(dr.PC_vx, 0)
-    fill!(dr.∂Rv_y∂vy, 0)
-    fill!(dr.PC_vy, 0)
+    fill!(dr.∂Rv∂v.x, 0)
+    fill!(dr.PC_v.x, 0)
+    fill!(dr.∂Rv∂v.y, 0)
+    fill!(dr.PC_v.y, 0)
     adjoint_operator_assembly_kernel!(backend, workgroup)(
         Ablocks, Bblocks, Cblocks,
-        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+        dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, dr.M_P,

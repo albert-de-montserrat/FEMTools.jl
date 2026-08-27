@@ -17,6 +17,7 @@ makedocs(;
         "Home" => "index.md",
         "Elements" => "elements.md",
         "Mesh" => "mesh.md",
+        "Field Containers" => "field_containers.md",
         "Boundary Conditions" => "boundary_conditions.md",
         "Heat Diffusion" => "heat_diffusion.md",
         "Lithostatic Pressure" => "lithostatic_pressure.md",

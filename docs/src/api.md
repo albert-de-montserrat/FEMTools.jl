@@ -3,7 +3,8 @@
 Complete index of documented symbols. Solver-specific entry points and
 assembly routines are documented on the [Heat Diffusion](heat_diffusion.md),
 [Lithostatic Pressure](lithostatic_pressure.md), and [Stokes](stokes.md) pages;
-element, mesh, and boundary-condition symbols are on their respective pages.
+element, mesh, boundary-condition, and
+[field-container](field_containers.md) symbols are on their respective pages.
 
 ```@index
 Modules = [FEMTools]

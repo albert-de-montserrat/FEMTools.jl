@@ -7,9 +7,9 @@ GPU execution through KernelAbstractions.jl.
 
 Two complete examples accompany this page:
 
-- `examples/lithostatic_pressure/lithostatic_pressure2D.jl` uses an unstructured
+- `examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl` uses an unstructured
   triangular mesh derived from the sinking-block example.
-- `examples/lithostatic_pressure/lithostatic_pressure3D.jl` uses Gmsh.jl to
+- `examples/miniapps/stokes/lithostatic_pressure3D/lithostatic_pressure3D.jl` uses Gmsh.jl to
   create an unstructured quadrilateral base and extrudes it into linear Hex8
   elements.
 
@@ -152,7 +152,7 @@ profile around the centre of the domain.
 Run the example from the repository root with
 
 ```sh
-julia --project=examples examples/lithostatic_pressure/lithostatic_pressure2D.jl
+julia --project=examples examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl
 ```
 
 ## Three-dimensional example
@@ -185,7 +185,7 @@ The default mesh has 1,260 nodes and 952 Hex8 elements. The script writes
 for inspection in ParaView:
 
 ```sh
-julia --project=examples examples/lithostatic_pressure/lithostatic_pressure3D.jl
+julia --project=examples examples/miniapps/stokes/lithostatic_pressure3D/lithostatic_pressure3D.jl
 ```
 
 ## Solver API

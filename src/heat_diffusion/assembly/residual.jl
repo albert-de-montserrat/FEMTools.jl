@@ -10,7 +10,7 @@ global node indices.
     args = (
         Tloc,
         _gather_local(T0, nodes, Val(N)),
-        geo[iel],
+        element_geometry(geo, iel),
         _gather_local(source, nodes, Val(N)),
         _gather_phase(phases, nodes, iel, Val(N)),
         k, Cp, ρ0, α, K,
@@ -34,7 +34,7 @@ Return element node indices, absolute Jacobian row sums, and absolute diagonal.
     phase_loc = _gather_phase(phases, nodes, iel, Val(N))
     J = ForwardDiff.jacobian(Tloc) do u
         integrate_residual(
-            u, T0loc, geo[iel], sloc, phase_loc, k, Cp, ρ0, α, K, Ploc,
+            u, T0loc, element_geometry(geo, iel), sloc, phase_loc, k, Cp, ρ0, α, K, Ploc,
             Δt, Tref, Nq, Val(N),
         )
     end

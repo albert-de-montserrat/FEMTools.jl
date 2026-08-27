@@ -54,3 +54,21 @@ using SparseArrays
     @test_throws BoundsError apply_bc!(zeros(4, 4), bad_dof)
     @test_throws BoundsError apply_bc!(zeros(4, 4), zeros(4), bad_dof)
 end
+
+@testset "apply_bc! on a matrix alone" begin
+    Γ = boundary(0.0 .. 1.0)
+    ΓD = DirichletBoundaryCondition(Γ, Int32[1, 4], [10.0, -2.0])
+
+    A = fill(2.0, 4, 4)
+    @test apply_bc!(A, ΓD) === nothing
+    # Constrained rows are pinned to the identity; columns are left alone, so
+    # this form is for systems whose constrained unknowns are already known.
+    @test A[1, :] == [1.0, 0.0, 0.0, 0.0]
+    @test A[4, :] == [0.0, 0.0, 0.0, 1.0]
+    @test A[2, :] == fill(2.0, 4)
+    @test A[3, :] == fill(2.0, 4)
+
+    S = sparse(fill(2.0, 4, 4))
+    apply_bc!(S, ΓD)
+    @test Matrix(S) == A
+end

@@ -127,6 +127,15 @@ per-phase `k`, `Cp`, `ρ0`, `α`, and `K` tuples.
 The Stokes solver similarly accepts a typed `StokesMaterial` containing its
 per-phase rheology, elastic, density, and equation-of-state properties.
 
+`StokesDR` groups its vector- and tensor-valued fields into struct-of-arrays
+containers — `VectorField2D`/`VectorField3D` for velocity and the
+dynamic-relaxation work arrays, `SymmetricTensor2D`/`SymmetricTensor3D` for the
+deviatoric-stress history — so components are reached as `dr.v.x` and
+`dr.τ.xy`. Each component remains a plain array that a kernel can take
+unchanged. The spatial dimension follows the length of the gravity vector, so a
+three-component `g` yields a three-dimensional state; the mixed-mesh Stokes
+solver itself is two-dimensional.
+
 Runnable scripts live under [`examples/`](examples/); see the
 [documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the
 physical models, solver-state fields, and worked examples.

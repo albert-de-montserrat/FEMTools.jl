@@ -49,6 +49,42 @@ pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
 
+Velocity-node quantities are grouped as [field containers](field_containers.md).
+The velocity is `dr.v`, its pseudo-transient rate `dr.∂v∂τ`, the momentum
+residual `dr.Rv` with snapshot `dr.Rv0`, the row-sum Jacobian estimate
+`dr.∂Rv∂v`, and the diagonal preconditioner `dr.PC_v` — each a vector field
+whose `.x` and `.y` are the arrays for the x- and y-momentum equation. The
+current and previous deviatoric stress are `dr.τ` and `dr.τ_old`, with
+components `.xx`, `.yy`, `.xy`. Pressure quantities remain plain arrays.
+`velocity(dr)` and `stress(dr)` return the component arrays as tuples for code
+that wants them positionally.
+
+### Spatial dimension
+
+`StokesDR` carries its dimension as the type parameter `ndim`, taken from the
+length of the gravity vector. The default `g` has two components and gives the
+two-dimensional state above. A three-component `g` — including
+`(0.0, 0.0, 0.0)` for a gravity-free problem — gives `VectorField3D` velocity
+fields and a `SymmetricTensor3D` stress history with the six independent
+components, so `stress(dr)` returns six arrays instead of three:
+
+```julia
+material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = (0.0, 0.0, -9.81), Tref)
+dr = StokesDR(backend, nnodes_v, nnodes_P, material)
+dr.v.z          # the third velocity component
+dr.τ.yz         # a stress component that has no two-dimensional counterpart
+```
+
+`nnodes_v` and `nnodes_P` accept a dimension tuple as well as a node count, so
+a cell-local pressure layout is expressed as `StokesDR(backend, nnodes_v,
+(4, nels), material)`.
+
+The mixed-mesh solvers on this page are two-dimensional and accept only
+`StokesDR{<:Any, 2}`; passing a three-dimensional state is a `MethodError`
+rather than a silent solve that ignores the third component. The existing
+matrix-free 3-D method takes its arrays positionally and does not consume a
+`StokesDR` — see [Sinking block (3-D)](sinking_block_3d.md).
+
 ### Compact setup
 
 ```julia
@@ -89,9 +125,14 @@ stats = solve_stokes_dyrel!(
 ```
 
 `fixed_nodes` is an `NTuple{3}` containing the constrained nodes for each
-velocity component. The matching `solve_stokes_adjoint_dyrel!` method accepts
-the same storage plus a three-component objective load. `solve_stokes_3d!` and
+velocity component, held at zero unless `bc_values` supplies one velocity per
+entry of `fixed_nodes`, which is how a far-field flow is imposed on the
+boundary. The matching `solve_stokes_adjoint_dyrel!` method accepts the same
+storage plus a three-component objective load. `solve_stokes_3d!` and
 `solve_stokes_adjoint_3d!` remain compatibility wrappers.
+
+`mesh.geometry` is shared by every kernel above and indexed
+`geometry[q, cell]`; see [Geometry Precomputation](mesh.md#Geometry-Precomputation).
 
 ### Two-dimensional spectral estimate and frozen Jacobian
 
@@ -137,16 +178,22 @@ convergence checks.
 
 ## Example
 
-The scripts under `examples/stokes/` set up complete problems, including a
+The scripts under `examples/miniapps/stokes/` set up complete problems, including a
 viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 
 ```sh
-julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
+julia --project=examples examples/miniapps/stokes/stokes_2D_pure_shear/stokes_2D_pure_shear.jl
+julia --project=examples examples/miniapps/stokes/sinking_block/sinking_block.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl
+julia --project=examples examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl
 ```
+
+The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
+4 km-radius semicircular opening cut into its bottom, then applies gravity and
+linear visco-elastic ice rheology. Mesh advection is enabled by default and
+rebuilds the geometric cache after each Lagrangian update.
 
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.
@@ -157,7 +204,7 @@ geometry caches, phase indices, and boundary data before launching kernels:
 
 ```julia
 using CUDA
-include("examples/stokes/sinking_block/sinking_block_adj.jl")
+include("examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl")
 
 result = main(backend = CUDABackend(), show_plot = false)
 ```
@@ -256,11 +303,11 @@ memory footprint is unsuitable, notably for larger three-dimensional elements.
 The fallback reconstructs the same transpose products with Enzyme on every
 iteration and is therefore slower but avoids the block storage.
 
-See `examples/stokes/sinking_block/sinking_block_adj.jl` for a complete solve
-and `examples/benchmarks/adjoint_perf.jl` for a headless mesh/contrast sweep.
+See `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` for a complete solve
+and `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` for a headless mesh/contrast sweep.
 Forward comparisons are available in
-`examples/benchmarks/forward_lambda_perf.jl` and
-`examples/benchmarks/forward_lambda_shear_band_perf.jl`.
+`examples/benchmarks/stokes/forward_lambda_perf/forward_lambda_perf.jl` and
+`examples/benchmarks/stokes/forward_lambda_shear_band_perf/forward_lambda_shear_band_perf.jl`.
 
 ## Assembly
 

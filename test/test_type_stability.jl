@@ -9,6 +9,7 @@ using StaticArrays
 
 const TRI_DNDX = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
 const TRI_GEO = ((TRI_DNDX, 0.5),)
+const TRI_GEO_MESH = reshape(collect(TRI_GEO), :, 1)
 const TRI_NQ = (SVector(1 / 3, 1 / 3, 1 / 3),)
 
 function _element_eval_case(::Type{FP}) where FP
@@ -111,7 +112,7 @@ function _heat_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.element_jacobian(
         T, T0, source, el2n, geo, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
@@ -124,7 +125,7 @@ function _lithostatic_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.lp_element_jacobian(
         T, P, el2n, geo, phases,
         (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), TRI_NQ, 1, Val(3),
@@ -161,7 +162,7 @@ function _pressure_element_residual_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.pressure_element_residual(
         vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, phases,
         (0.0,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
@@ -211,7 +212,7 @@ function _heat_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_diffusion_matrices_atomix!(
         R, ∂R∂T, PC, T, T0, el2n, geo, 1, element, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
@@ -228,7 +229,7 @@ function _lithostatic_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_lithostatic_pressure_matrices_atomix!(
         R, ∂R∂P, PC, T, P, el2n, geo, 1, element, phases,
         (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), CPU(), 1;
@@ -247,7 +248,7 @@ function _stokes_assembly_case()
     Pnum = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_momentum_residual_matrices_atomix!(
         Rvx, Rvy, vx, vy, P, T, Pnum, el2n, el2n, geo, 1,
         element, element, phases, nothing, nothing, nothing,
@@ -267,7 +268,7 @@ function _pressure_assembly_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_pressure_residual_matrices_atomix!(
         RP, vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, 1,
         element, element, phases, (0.0,), (Inf,), 1.0, CPU(), 1,
@@ -280,7 +281,7 @@ function _pressure_scaling_assembly_case()
     γP = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = [TRI_GEO]
+    geo = TRI_GEO_MESH
     return FEMTools.assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n, el2n, geo, 1, element, element, phases,
         (1.0,), 0.5, (Inf,), 1.0, CPU(), 1,
@@ -306,7 +307,9 @@ end
     @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int}, Float32}
     @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
     @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
-    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, <:Vector{Float64}, <:Vector{Int}, <:Matrix{Float64}, Float64}
+    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, 2, <:FEMTools.VectorField2D{<:Vector{Float64}},
+        <:FEMTools.SymmetricTensor2D{<:Matrix{Float64}}, <:Vector{Int},
+        <:Vector{Float64}, <:Vector{Int}, Float64}
     @test (@inferred _mixed_mesh_cache_case()) isa MixedMeshCache
     @test (@inferred _heat_assembly_case()) === nothing
     @test (@inferred _lithostatic_assembly_case()) === nothing
@@ -334,34 +337,35 @@ end
 
 @testset "maintained example scripts parse" begin
     scripts = [
-        "examples/1D_diffusion_FEMTools.jl",
-        "examples/1D_diffusion_FEMTools_color.jl",
-        "examples/2D_diffusion_FEMTools.jl",
-        "examples/3D_diffusion_FEMTools.jl",
-        "examples/Poisson/1D_Poisson.jl",
-        "examples/Poisson/1D_Poisson_AD.jl",
-        "examples/Poisson/1D_Poisson_Q2.jl",
-        "examples/Poisson/2D_Poisson.jl",
-        "examples/Poisson/2D_Poisson_AD.jl",
-        "examples/Poisson/2D_Poisson_AD_KA.jl",
-        "examples/Poisson/3D_Poisson.jl",
-        "examples/Poisson/3D_Poisson_AD.jl",
-        "examples/Poisson/3D_Poisson_AD_KA.jl",
-        "examples/elasticity/2D_Elasticity_stress_postprocess.jl",
-        "examples/elasticity/2D_Elasticiy_DR_KA.jl",
-        "examples/elasticity/2D_Elasticiy_Direct_KA.jl",
-        "examples/heat_diffusion/2D_heat_diffusion.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_triangles.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_unstructured.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_unstructured_T6.jl",
-        "examples/heat_diffusion/3D_heat_diffusion_unstructured_hex.jl",
-        "examples/stokes/buildup/stokes_2D_elastic_buildup.jl",
-        "examples/stokes/buildup/stokes_2D_elastic_buildup_hole.jl",
-        "examples/stokes/sinking_block/sinking_block.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl",
-        "examples/stokes_2D_pure_shear_triangle_hole.jl",
+        "examples/miniapps/thermal/1D_diffusion_FEMTools/1D_diffusion_FEMTools.jl",
+        "examples/miniapps/thermal/1D_diffusion_FEMTools_color/1D_diffusion_FEMTools_color.jl",
+        "examples/miniapps/thermal/2D_diffusion_FEMTools/2D_diffusion_FEMTools.jl",
+        "examples/miniapps/thermal/3D_diffusion_FEMTools/3D_diffusion_FEMTools.jl",
+        "examples/miniapps/thermal/1D_Poisson/1D_Poisson.jl",
+        "examples/miniapps/thermal/1D_Poisson_AD/1D_Poisson_AD.jl",
+        "examples/miniapps/thermal/1D_Poisson_Q2/1D_Poisson_Q2.jl",
+        "examples/miniapps/thermal/2D_Poisson/2D_Poisson.jl",
+        "examples/miniapps/thermal/2D_Poisson_AD/2D_Poisson_AD.jl",
+        "examples/miniapps/thermal/2D_Poisson_AD_KA/2D_Poisson_AD_KA.jl",
+        "examples/miniapps/thermal/3D_Poisson/3D_Poisson.jl",
+        "examples/miniapps/thermal/3D_Poisson_AD/3D_Poisson_AD.jl",
+        "examples/miniapps/thermal/3D_Poisson_AD_KA/3D_Poisson_AD_KA.jl",
+        "examples/miniapps/stokes/2D_Elasticity_stress_postprocess/2D_Elasticity_stress_postprocess.jl",
+        "examples/miniapps/stokes/2D_Elasticiy_DR_KA/2D_Elasticiy_DR_KA.jl",
+        "examples/miniapps/stokes/2D_Elasticiy_Direct_KA/2D_Elasticiy_Direct_KA.jl",
+        "examples/miniapps/thermal/2D_heat_diffusion/2D_heat_diffusion.jl",
+        "examples/miniapps/thermal/2D_heat_diffusion_triangles/2D_heat_diffusion_triangles.jl",
+        "examples/miniapps/thermal/2D_heat_diffusion_unstructured/2D_heat_diffusion_unstructured.jl",
+        "examples/miniapps/thermal/2D_heat_diffusion_unstructured_T6/2D_heat_diffusion_unstructured_T6.jl",
+        "examples/miniapps/thermal/3D_heat_diffusion_unstructured_hex/3D_heat_diffusion_unstructured_hex.jl",
+        "examples/miniapps/stokes/stokes_2D_elastic_buildup/stokes_2D_elastic_buildup.jl",
+        "examples/miniapps/stokes/stokes_2D_elastic_buildup_hole/stokes_2D_elastic_buildup_hole.jl",
+        "examples/miniapps/stokes/sinking_block/sinking_block.jl",
+        "examples/miniapps/stokes/stokes_2D_pure_shear/stokes_2D_pure_shear.jl",
+        "examples/miniapps/stokes/stokes_2D_pure_shear_triangle/stokes_2D_pure_shear_triangle.jl",
+        "examples/miniapps/stokes/stokes_2D_pure_shear_triangle_adv/stokes_2D_pure_shear_triangle_adv.jl",
+        "examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl",
+        "examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl",
     ]
     for script in scripts
         @test Meta.parseall(read(joinpath(pkgdir(FEMTools), script), String)) isa Expr

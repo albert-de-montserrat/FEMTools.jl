@@ -48,6 +48,10 @@ TA(::CPU) = Array
 
 include("utils.jl")
 
+# Field containers are used by the physics modules below.
+include("tensor_fields/symmetric_tensor.jl")
+include("vector_fields/vector_fields.jl")
+
 # Reference-element definitions come first because the remaining source files
 # extend constructors and methods specialized on these tags.
 include("elements/elements.jl")
@@ -95,7 +99,7 @@ include("stokes/assemblers/momentum_residuals.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
-include("stokes/tensors.jl")
+include("stokes/stress_rotation.jl")
 include("stokes/solvers/DR.jl")
 include("stokes/solvers/DR_adjoint.jl")
 
@@ -174,6 +178,7 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
+public element_geometry
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public velocity, stress, pressure, temperature

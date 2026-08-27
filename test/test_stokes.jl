@@ -25,7 +25,7 @@ function _stokes_geo(coords, el2n, nels, element::ReferenceElement{E}) where {E 
     FP    = eltype(ip.ω)
     ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
     ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = Vector{NTuple{NQ, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}}(undef, nels)
+    geo   = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
     FEMTools.precompute_geometry_kernel!(CPU(), 1)(
         geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV); ndrange = nels,
     )
@@ -48,6 +48,66 @@ end
     @test dr.η === material.η
     @test dr.g === material.g
     @test_throws DimensionMismatch StokesMaterial(; η = (1.0, 2.0), ηb = (1.0,))
+    @test material isa StokesMaterial{2, 2, Float64}
+    @test StokesMaterial(; g = (0.0, 0.0, -9.81)) isa StokesMaterial{1, 3, Float64}
+    @test_throws "2 or 3 components" StokesMaterial(; g = (0.0,))
+    @test_throws "2 or 3 components" StokesMaterial(; g = (0.0, 0.0, 0.0, 0.0))
+end
+
+@testset "StokesDR spatial dimension follows gravity" begin
+    dr2 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,))
+    dr3 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = (0.0, 0.0, -9.81))
+
+    @test dr2 isa StokesDR{1, 2}
+    @test dr3 isa StokesDR{1, 3}
+
+    # 2-D keeps the previous layout
+    @test dr2.v isa FEMTools.VectorField2D{Vector{Float64}}
+    @test dr2.τ isa FEMTools.SymmetricTensor2D{Vector{Float64}}
+    @test FEMTools.velocity(dr2) === (dr2.v.x, dr2.v.y)
+    @test length(FEMTools.stress(dr2)) == 3
+    @test dr2.g === (0.0, 0.0)
+
+    # 3-D widens every velocity field and the stress history
+    @test dr3.v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.∂v∂τ isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.Rv isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.Rv0 isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.∂Rv∂v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.PC_v isa FEMTools.VectorField3D{Vector{Float64}}
+    @test dr3.τ isa FEMTools.SymmetricTensor3D{Vector{Float64}}
+    @test dr3.τ_old isa FEMTools.SymmetricTensor3D{Vector{Float64}}
+    @test FEMTools.velocity(dr3) === (dr3.v.x, dr3.v.y, dr3.v.z)
+    @test length(FEMTools.stress(dr3)) == 6
+    @test dr3.g === (0.0, 0.0, -9.81)
+    @test all(iszero, dr3.v.z) && all(iszero, dr3.τ.yz)
+
+    # gravity may arrive as any 2- or 3-element container
+    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, -1.0]) isa StokesDR{1, 2}
+    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, 0.0, -1.0]) isa StokesDR{1, 3}
+
+    # a 3-D state is built from a 3-D material too
+    @test StokesDR(CPU(), 9, 4, StokesMaterial(; g = (0.0, 0.0, -1.0))) isa StokesDR{1, 3}
+
+    # pressure storage accepts a dimension tuple, e.g. cell-local P1 modes
+    dr_cell = StokesDR(CPU(), 27, (4, 5), StokesMaterial(; g = (0.0, 0.0, -1.0)))
+    @test size(dr_cell.P) == (4, 5)
+    @test size(dr_cell.RP) == (4, 5)
+    @test size(dr_cell.phases_P) == (4, 5)
+    @test size(dr_cell.v.z) == (27,)
+    @test size(dr_cell.phases_v) == (27,)
+
+    # the 2-D mixed-mesh solvers reject a 3-D state instead of dropping z
+    @test !hasmethod(
+        solve_stokes_dyrel!,
+        Tuple{typeof(dr3), MixedMesh, MixedMeshCache,
+              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+    )
+    @test hasmethod(
+        solve_stokes_dyrel!,
+        Tuple{typeof(dr2), MixedMesh, MixedMeshCache,
+              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+    )
 end
 
 @testset "StokesDR constructor — defaults" begin
@@ -65,36 +125,36 @@ end
         @test dr.η    == η
         @test dr.ηb   == ηb
         @test dr.α    == α
-        @test eltype(dr.vx) == FP
+        @test eltype(dr.v.x) == FP
         @test eltype(dr.P)  == FP
-        @test length(dr.vx) == 10
+        @test length(dr.v.x) == 10
         @test length(dr.P)  == 12
         @test length(dr.M_P) == 12
         @test length(dr.Pnum) == 12
         @test all(==(1), Array(dr.phases_v))
         @test all(==(1), Array(dr.phases_P))
-        @test length(dr.τxx) == 10
-        @test length(dr.τyy) == 10
-        @test length(dr.τxy) == 10
-        @test length(dr.τxx_old) == 10
-        @test length(dr.τyy_old) == 10
-        @test length(dr.τxy_old) == 10
-        @test all(iszero, Array(dr.τxx))
-        @test all(iszero, Array(dr.τyy))
-        @test all(iszero, Array(dr.τxy))
-        @test all(iszero, Array(dr.τxx_old))
-        @test all(iszero, Array(dr.τyy_old))
-        @test all(iszero, Array(dr.τxy_old))
+        @test length(dr.τ.xx) == 10
+        @test length(dr.τ.yy) == 10
+        @test length(dr.τ.xy) == 10
+        @test length(dr.τ_old.xx) == 10
+        @test length(dr.τ_old.yy) == 10
+        @test length(dr.τ_old.xy) == 10
+        @test all(iszero, Array(dr.τ.xx))
+        @test all(iszero, Array(dr.τ.yy))
+        @test all(iszero, Array(dr.τ.xy))
+        @test all(iszero, Array(dr.τ_old.xx))
+        @test all(iszero, Array(dr.τ_old.yy))
+        @test all(iszero, Array(dr.τ_old.xy))
         @test all(iszero, Array(dr.M_P))
         @test all(iszero, Array(dr.Pnum))
 
         vx, vy = FEMTools.velocity(dr)
         τxx, τyy, τxy = FEMTools.stress(dr)
-        @test vx === dr.vx
-        @test vy === dr.vy
-        @test τxx === dr.τxx
-        @test τyy === dr.τyy
-        @test τxy === dr.τxy
+        @test vx === dr.v.x
+        @test vy === dr.v.y
+        @test τxx === dr.τ.xx
+        @test τyy === dr.τ.yy
+        @test τxy === dr.τ.xy
         @test FEMTools.pressure(dr) === dr.P
         @test FEMTools.temperature(dr) === dr.T
     end
@@ -107,14 +167,14 @@ end
         α  = NTuple{2, FP}((0.0,  0.0))
         dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
 
-        @test size(dr.τxx) == (3, 4)
-        @test size(dr.τyy) == (3, 4)
-        @test size(dr.τxy) == (3, 4)
-        @test size(dr.τxx_old) == (3, 4)
-        @test size(dr.τyy_old) == (3, 4)
-        @test size(dr.τxy_old) == (3, 4)
-        @test all(iszero, Array(dr.τxx))
-        @test all(iszero, Array(dr.τxx_old))
+        @test size(dr.τ.xx) == (3, 4)
+        @test size(dr.τ.yy) == (3, 4)
+        @test size(dr.τ.xy) == (3, 4)
+        @test size(dr.τ_old.xx) == (3, 4)
+        @test size(dr.τ_old.yy) == (3, 4)
+        @test size(dr.τ_old.xy) == (3, 4)
+        @test all(iszero, Array(dr.τ.xx))
+        @test all(iszero, Array(dr.τ_old.xx))
     end
 end
 
@@ -185,15 +245,6 @@ end
         @test plastic.η_reg == η_reg
         @test plastic.Kb == Kb
     end
-end
-
-@testset "symmetric tensor display" begin
-    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0)) ==
-        "SymmetricTensor2D(xx=1.0, yy=2.0, xy=3.0, II=0.0)"
-    @test sprint(show, FEMTools.SymmetricTensor(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)) ==
-        "SymmetricTensor3D(xx=1.0, yy=2.0, zz=3.0, yz=4.0, xz=5.0, xy=6.0, II=0.0)"
-    @test sprint(show, FEMTools.SymmetricTensor(zeros(2, 3), zeros(2, 3), zeros(2, 3))) ==
-        "SymmetricTensor2D(xx=2×3 Matrix{Float64}, yy=2×3 Matrix{Float64}, xy=2×3 Matrix{Float64}, II=2×3 Matrix{Float64})"
 end
 
 @testset "DruckerPrager return uses plane-strain invariant gradient" begin
@@ -655,4 +706,125 @@ end
     @test all(Rv_y .>= 0)
     # ∑ᵢ Rv_y[i] = −ρ·g_y·Area (partition of unity: ∑ᵢ Nᵢ = 1 over the domain)
     @test sum(Rv_y) ≈ -ρ0 * gy * 1.0   atol = 1e-10
+end
+
+# ---------------------------------------------------------------------------
+# Non-augmented momentum Jacobian
+# ---------------------------------------------------------------------------
+
+# `single_element = true` isolates one T7 cell. The assembler accumulates
+# absolute row sums per element before scattering, so element-wise and global
+# row sums agree only when no node is shared, which is what makes the dense
+# finite-difference reference below an exact comparison rather than a bound.
+function _jacobian_fixture(; single_element = false)
+    backend, wg = CPU(), 1
+    element_v = ReferenceElement(QuadraticElement{2, 7, FP64})
+    element_P = ReferenceElement(LinearElement{2, 3, FP64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    if single_element
+        nodes = mesh_v.el2n[:, 1]
+        mesh_v = Mesh(backend, mesh_v.coords[nodes], reshape(Int32.(1:7), 7, 1), element_v)
+    end
+    mesh = MixedMesh(mesh_v, element_P)
+    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+
+    # A non-trivial velocity keeps the shear blocks away from zero; the purely
+    # viscous residual is linear in it, so central differences are exact.
+    vx = [sin(c[1]) * c[2] for c in mesh.coords]
+    vy = [c[1] * cos(c[2]) for c in mesh.coords]
+    P = [0.3 * c[1] - 0.2 * c[2] for c in mesh.coords[1:(mesh.nnodesP)]]
+    T = zeros(mesh.nnodesP)
+    phases = ones(Int, mesh.nnodes)
+
+    return (; backend, wg, element_v, element_P, mesh, cache, vx, vy, P, T, phases,
+        η = (2.0,), G = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (Inf,),
+        g = (0.0, 0.0), Tref = 0.0, Δt = 1.0)
+end
+
+function _momentum_residual(f, vx, vy)
+    Rv_x = zeros(f.mesh.nnodes)
+    Rv_y = zeros(f.mesh.nnodes)
+    assemble_momentum_residual_matrices_atomix!(
+        Rv_x, Rv_y, vx, vy, f.P, f.T, nothing,
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.element_v, f.element_P, f.phases, nothing, nothing, nothing,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
+    )
+    return Rv_x, Rv_y
+end
+
+function _plain_momentum_jacobian(f)
+    blocks = ntuple(_ -> zeros(f.mesh.nnodes), 4)
+    FEMTools.assemble_momentum_jacobian_matrices_atomix!(
+        blocks..., f.vx, f.vy, f.P, f.T,
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.element_v, f.element_P, f.phases,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
+    )
+    return blocks
+end
+
+@testset "assemble_momentum_jacobian_matrices_atomix! matches finite differences" begin
+    f = _jacobian_fixture(; single_element = true)
+    n = f.mesh.nnodes
+    ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy = _plain_momentum_jacobian(f)
+
+    # Dense reference: column j of each block, by central differences.
+    h = 1.0e-6
+    ∂Rx∂vx = zeros(n, n); ∂Rx∂vy = zeros(n, n)
+    ∂Ry∂vx = zeros(n, n); ∂Ry∂vy = zeros(n, n)
+    for j in 1:n
+        vx_p = copy(f.vx); vx_p[j] += h
+        vx_m = copy(f.vx); vx_m[j] -= h
+        Rx_p, Ry_p = _momentum_residual(f, vx_p, f.vy)
+        Rx_m, Ry_m = _momentum_residual(f, vx_m, f.vy)
+        @. ∂Rx∂vx[:, j] = (Rx_p - Rx_m) / 2h
+        @. ∂Ry∂vx[:, j] = (Ry_p - Ry_m) / 2h
+
+        vy_p = copy(f.vy); vy_p[j] += h
+        vy_m = copy(f.vy); vy_m[j] -= h
+        Rx_p, Ry_p = _momentum_residual(f, f.vx, vy_p)
+        Rx_m, Ry_m = _momentum_residual(f, f.vx, vy_m)
+        @. ∂Rx∂vy[:, j] = (Rx_p - Rx_m) / 2h
+        @. ∂Ry∂vy[:, j] = (Ry_p - Ry_m) / 2h
+    end
+
+    # Row sums couple both velocity components; the diagonal is same-component.
+    expected_rowsum_x = vec(sum(abs, ∂Rx∂vx; dims = 2) .+ sum(abs, ∂Rx∂vy; dims = 2))
+    expected_rowsum_y = vec(sum(abs, ∂Ry∂vy; dims = 2) .+ sum(abs, ∂Ry∂vx; dims = 2))
+
+    @test maximum(∂Rv_x∂vx) > 0
+    @test ∂Rv_x∂vx ≈ expected_rowsum_x rtol = 1.0e-6
+    @test ∂Rv_y∂vy ≈ expected_rowsum_y rtol = 1.0e-6
+    @test PC_vx ≈ [abs(∂Rx∂vx[i, i]) for i in 1:n] rtol = 1.0e-6
+    @test PC_vy ≈ [abs(∂Ry∂vy[i, i]) for i in 1:n] rtol = 1.0e-6
+end
+
+@testset "momentum Jacobian row sums bound the assembled Jacobian" begin
+    # With shared nodes the per-element absolute sums stay conservative.
+    f = _jacobian_fixture()
+    ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy = _plain_momentum_jacobian(f)
+
+    @test all(∂Rv_x∂vx .>= PC_vx)
+    @test all(∂Rv_y∂vy .>= PC_vy)
+    @test all(PC_vx .> 0)
+    @test all(PC_vy .> 0)
+end
+
+@testset "augmented momentum Jacobian reduces to the plain one at γ_eff = 0" begin
+    f = _jacobian_fixture()
+    plain = _plain_momentum_jacobian(f)
+
+    augmented = ntuple(_ -> zeros(f.mesh.nnodes), 4)
+    FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
+        augmented..., f.vx, f.vy, f.P, zero(f.P), f.T, zero(f.T),
+        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.cache.geo_P, f.mesh.nels,
+        f.element_v, f.element_P, f.phases, f.phases,
+        f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref,
+        (Inf,), f.Δt, 0.0, ones(f.mesh.nnodesP), f.backend, f.wg,
+    )
+
+    for (a, b) in zip(plain, augmented)
+        @test a ≈ b
+    end
 end
