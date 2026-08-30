@@ -1,7 +1,6 @@
-# Heat diffusion on a rectangle with circular holes — 6-node quadratic triangles.
-# Mesh generated with Triangulate.jl (`o2` flag produces T6 elements).
+# Heat diffusion on a rectangle with circular holes — Gmsh T6 triangles.
 
-using Triangulate
+using Gmsh
 using StaticArrays
 using KernelAbstractions
 using Printf
@@ -11,77 +10,10 @@ using GeometryBasics
 using TimerOutputs
 using FEMTools
 
+include(joinpath(@__DIR__, "..", "gmsh_meshing.jl"))
+
 const backend   = CPU()
 const workgroup = 128
-
-# ---------------------------------------------------------------------------
-# Mesh generation
-# ---------------------------------------------------------------------------
-
-"""
-    build_mesh_T6(; Lx, Ly, holes, n_circle=64, max_area=nothing)
-
-Triangulate the rectangle [-Lx,Lx]×[-Ly,0] with circular holes and produce
-6-node quadratic triangles using Triangulate.jl's `o2` flag.
-
-`holes` is a vector of `(cx, cy, r)` tuples. Returns
-`(coords, el2n, outer_nodes, hole_nodes_per_hole)` where `el2n` is 6×nels
-and nodes 1–3 of each column are corners, nodes 4–6 are edge midpoints
-(matching `QuadraticElement{2,6}` ordering).
-"""
-function build_mesh_T6(; Lx, Ly, holes, n_circle=64, max_area=nothing)
-    # ---- outer rectangle (counter-clockwise) ----
-    rect_pts  = Cdouble[-Lx  Lx  Lx -Lx;
-                        -Ly -Ly  0.0  0.0]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'
-
-    all_pts  = Matrix{Cdouble}(rect_pts)
-    all_segs = Matrix{Cint}(rect_segs)
-    hole_xy  = Matrix{Cdouble}(undef, 2, length(holes))
-
-    for (h, (cx, cy, r)) in enumerate(holes)
-        θ        = range(0, 2π; length = n_circle + 1)[1:end-1]
-        circ_pts = Matrix{Cdouble}(hcat(cx .+ r .* cos.(θ), cy .+ r .* sin.(θ))')
-        n_so_far = size(all_pts, 2)
-        circ_segs = Matrix{Cint}(hcat([
-            [n_so_far + i; n_so_far + mod1(i + 1, n_circle)] for i in 1:n_circle
-        ]...))
-        all_pts  = hcat(all_pts,  circ_pts)
-        all_segs = hcat(all_segs, circ_segs)
-        hole_xy[:, h] = [cx; cy]
-    end
-
-    tio = TriangulateIO()
-    tio.pointlist   = all_pts
-    tio.segmentlist = all_segs
-    tio.holelist    = hole_xy
-
-    # o2 = generate second-order (6-node) elements
-    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts  = result.pointlist    # 2 × nnodes
-    tris = result.trianglelist # 6 × nels  (1-based, o2 ordering matches QuadraticElement{2,6})
-
-    nnodes = size(pts, 2)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in 1:nnodes]
-    el2n   = Matrix{Int32}(tris)
-
-    tol_lin = max(Lx, Ly) * 1e-8
-    outer_nodes = Int32[i for i in 1:nnodes if
-        abs(coords[i][2] + Ly) < tol_lin ||
-        abs(coords[i][2])      < tol_lin ||
-        abs(coords[i][1] + Lx) < tol_lin ||
-        abs(coords[i][1] - Lx) < tol_lin]
-
-    hole_nodes_per_hole = map(holes) do (cx, cy, r)
-        tol_circ = r * 1e-4
-        Int32[i for i in 1:nnodes if
-            abs(sqrt((coords[i][1] - cx)^2 + (coords[i][2] - cy)^2) - r) < tol_circ]
-    end
-
-    return coords, el2n, outer_nodes, hole_nodes_per_hole
-end
 
 # ---------------------------------------------------------------------------
 # Node reordering (Reverse Cuthill-McKee)
@@ -162,10 +94,11 @@ function main(; max_area=1e5 / 2)
     T_holes = Float64[873, 1173]
 
     # Generate T6 mesh and reorder nodes for cache locality
-    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_mesh_T6(;
+    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_gmsh_hole_mesh(;
         Lx, Ly, holes,
         n_circle = 64,
         max_area,
+        order = 2,
     )
     coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole =
         reorder_mesh_rcm(coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole)

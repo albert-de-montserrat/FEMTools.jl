@@ -4,7 +4,7 @@ Pkg.activate(joinpath(@__DIR__, "../.."))
 using Statistics
 using StaticArrays
 using KernelAbstractions
-using Triangulate
+using Gmsh
 using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect
 
@@ -47,8 +47,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     ncheck = 50         # convergence check interval
     ϵ_tol  = 1e-6        # relative residual tolerance
 
-    # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
-    # constrained boundary, so no element crosses the material interface.
+    # Gmsh fragments the domain at this material interface.
     half_width = 0.1
     cx         = Lx / 2
     cy         = -Ly / 2
@@ -60,7 +59,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
-    coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_triangle_t7_inclusion_mesh(;
+    coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_gmsh_t7_rectangle_inclusion_mesh(;
         Lx, Ly,
         cx, cy, half_width,
         max_area,
@@ -72,7 +71,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     )
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
+    @info "Gmsh mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)

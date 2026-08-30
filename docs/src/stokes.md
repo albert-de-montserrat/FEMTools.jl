@@ -72,6 +72,26 @@ expanded positional methods remain available for custom and adjoint workflows.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
+### Coupled thermal--Stokes relaxation
+
+`solve_coupled_dyrel!` advances one thermal DR iteration during every inner
+Stokes velocity iteration. The thermal mesh must share the Stokes velocity-node
+numbering; after each thermal update, its continuous nodal temperature is
+gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
+
+```julia
+stats = solve_coupled_dyrel!(
+    thermal, stokes, thermal_mesh, stokes_mesh, cache,
+    bc_T, bc_vx, bc_vy, Δt, γP; workgroup,
+)
+stats.converged || error("coupled solve did not converge")
+```
+
+The returned Stokes statistics additionally contain `err_T` and
+`thermal_iterations`. The caller still owns physical-time history: set
+`thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
+solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
+
 ### Three-dimensional array layout
 
 The Hex27/Q2--P1 method uses multiple dispatch rather than `StokesDR`, because
@@ -152,7 +172,7 @@ See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.
 
 The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
-Triangle mesh on the host, then uploads mesh arrays, mixed connectivity,
+Gmsh mesh on the host, then uploads mesh arrays, mixed connectivity,
 geometry caches, phase indices, and boundary data before launching kernels:
 
 ```julia
@@ -170,6 +190,7 @@ headless accelerator runs.
 ## Drivers
 
 ```@docs
+solve_coupled_dyrel!
 solve_stokes_dyrel!
 solve_stokes_adjoint_dyrel!
 solve_stokes_3d!
@@ -192,10 +213,12 @@ The reduced material derivative is then contracted elementwise as
 
 ```math
 \frac{\mathrm d J}{\mathrm d m_e}
-= -\lambda_e^T \frac{\partial R_e}{\partial m_e},
+= \frac{\partial J}{\partial m_e}
++\lambda_e^T \frac{\partial R_e}{\partial m_e},
 ```
 
-using the sign convention of the sinking-block reference. The 2-D example forms a
+for the 2-D convention above. The current examples have no explicit material
+term in the objective, so only the contraction remains. The 2-D example forms a
 finite-element objective load for
 `J(v_y) = -∫_{Ωobs} v_y dΩ`, solves the transpose system with
 `solve_stokes_adjoint_dyrel!`, and uses Enzyme reverse mode on the element
@@ -206,8 +229,10 @@ sensitivity density.
 
 The 3-D viscous operator is symmetric, so its adjoint DYREL method reuses the
 3-D forward residual and preconditioner with the objective derivative as the
-momentum load. `stokes_material_gradient_3d` then contracts the forward and
-adjoint velocity fields analytically. `test/test_stokes_3d_reference.jl`
+momentum load. This wrapper instead solves `A^Tλ = J_u`, so its material
+derivative uses the opposite contraction `-λ^T R_m`.
+`stokes_material_gradient_3d` contracts the forward and adjoint velocity fields
+analytically. `test/test_stokes_3d_reference.jl`
 validates those contractions against a sparse finite-difference oracle.
 
 ### Why the discrete transpose matters

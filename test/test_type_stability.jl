@@ -338,6 +338,7 @@ end
         "examples/1D_diffusion_FEMTools_color.jl",
         "examples/2D_diffusion_FEMTools.jl",
         "examples/3D_diffusion_FEMTools.jl",
+        "examples/gmsh_meshing.jl",
         "examples/Poisson/1D_Poisson.jl",
         "examples/Poisson/1D_Poisson_AD.jl",
         "examples/Poisson/1D_Poisson_Q2.jl",
@@ -358,10 +359,13 @@ end
         "examples/stokes/buildup/stokes_2D_elastic_buildup.jl",
         "examples/stokes/buildup/stokes_2D_elastic_buildup_hole.jl",
         "examples/stokes/sinking_block/sinking_block.jl",
+        "examples/stokes/stokes_2D_pure_shear_triangle_hole.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl",
+        "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl",
-        "examples/stokes_2D_pure_shear_triangle_hole.jl",
+        "examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
+        "examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl",
     ]
     for script in scripts
         @test Meta.parseall(read(joinpath(pkgdir(FEMTools), script), String)) isa Expr

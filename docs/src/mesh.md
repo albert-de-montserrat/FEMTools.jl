@@ -52,6 +52,40 @@ FEMTools.element_coordinate_matrix
 FEMTools._unstructured_boundary_nodes
 ```
 
+## External Mesh Ingestion
+
+Meshes produced by an external generator arrive with arbitrary node tags,
+generator-specific node ordering, and no bubble nodes. These helpers convert
+such input to the layout the solvers expect: one-based `Int32` connectivity with
+one element per column, counter-clockwise triangles, and straight-sided T7
+geometry. They run on the host, before the backend-aware `Mesh` constructor
+uploads the result.
+
+```@docs
+FEMTools.renumber_connectivity
+FEMTools.orient_triangle_elements!
+FEMTools.add_t7_bubbles!
+FEMTools.straighten_t7_geometry!
+```
+
+`add_t7_bubbles!` appends one centroid node per element to `coords`, so pass a
+resizable host vector. `straighten_t7_geometry!` recomputes the edge and bubble
+coordinates from the element corners, which is what keeps a T7 mesh consistent
+after the corner nodes are moved — by a generator that curved the high-order
+nodes, or by Lagrangian mesh advection.
+
+Boundary nodes for the common analytic geometries are selected by coordinate
+tolerance rather than by generator tags, which the package does not preserve:
+
+```@docs
+FEMTools.rectangle_boundary_nodes
+FEMTools.circle_boundary_nodes
+```
+
+Both default `atol` to `sqrt(eps(Float64))` scaled by the largest supplied
+coordinate. `examples/gmsh_meshing.jl` chains these helpers into a complete
+Gmsh-to-FEMTools triangle pipeline.
+
 ## Sparsity and Coloring
 
 ```@docs

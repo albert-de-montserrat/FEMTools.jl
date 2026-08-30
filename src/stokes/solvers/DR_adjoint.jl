@@ -9,13 +9,13 @@ Powell-Hestenes / DYREL iteration used by [`solve_stokes_dyrel!`](@ref), and
 store the adjoint fields in `λvx`, `λvy`, `λP` (modified in place).
 
 The adjoint is assembled on the *same* T7/P1-disc spaces, quadrature, and element
-operators as the forward problem and transposed exactly, so `-λᵀ ∂R/∂m` is the
-exact gradient of the discrete objective. The forward state in `dr` must already
-be converged: the transpose Jacobian, its diagonal preconditioner, and λmax are
-frozen at that state, so only λmin (hence the Chebyshev pair) is re-estimated
-during the solve.
+operators as the forward problem and transposed exactly. With this method's sign
+convention, the total derivative is `∂J/∂m + λᵀ ∂R/∂m`. The forward state in
+`dr` must already be converged: the transpose Jacobian, its diagonal
+preconditioner, and λmax are frozen at that state, so only λmin (hence the
+Chebyshev pair) is re-estimated during the solve.
 
-`objective_vx` and `objective_vy` carry the velocity part of `-∂J/∂u`
+`objective_vx` and `objective_vy` carry the velocity part of `∂J/∂u`
 (the consistently assembled objective load); the pressure adjoint has no explicit
 objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
 forward solve. Homogeneous Dirichlet conditions are applied to the adjoint
