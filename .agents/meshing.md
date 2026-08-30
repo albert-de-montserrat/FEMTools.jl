@@ -51,8 +51,8 @@ Primary checks: `test/test_elements.jl`,
 `test/test_shape_function_evaluations.jl`, `test/test_mesh.jl`,
 `test/test_mixed_mesh.jl`, `test/test_mesh_producer_api.jl`, and
 `test/test_mesh_utils.jl`.
-The examples-only Gmsh conversion has a runnable smoke check via
-`julia --project=examples examples/gmsh_meshing.jl`.
+`examples/gmsh_meshing.jl` defines mesh builders only; it is exercised by the
+example scripts that include it, not by the package test suite.
 
 ## Invariants
 

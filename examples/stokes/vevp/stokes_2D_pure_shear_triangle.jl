@@ -285,4 +285,4 @@ function main(;
         solve_stats = solve_stats_history, solve_time)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

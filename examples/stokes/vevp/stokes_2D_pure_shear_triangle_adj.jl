@@ -663,4 +663,4 @@ function main(;
     )
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

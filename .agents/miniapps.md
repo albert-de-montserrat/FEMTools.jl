@@ -21,8 +21,9 @@ julia --project=examples path/to/example.jl
 
 The example collection is not uniform yet:
 
-- many scripts execute a large default case at file load, while newer scripts
-  guard execution with `abspath(PROGRAM_FILE) == abspath(@__FILE__)`;
+- every script executes its default case at file load; including one runs it.
+  Code a test needs without that side effect belongs in a shared helper such as
+  `examples/gmsh_meshing.jl`, not behind a run guard;
 - some legacy scripts call `Pkg.activate` themselves, sometimes selecting the
   package root instead of the examples environment;
 - several Poisson/KA experiments import CUDA and select `CUDABackend()` at
@@ -115,6 +116,7 @@ applications.
 | `examples/benchmarks/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
 | `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion |
 | `examples/stokes/sinking_block/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
+| `examples/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
 | `examples/elasticity/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 
 ## Miniapp contract

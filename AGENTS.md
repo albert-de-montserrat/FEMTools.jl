@@ -124,6 +124,11 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
 - Keep optional capabilities out of the core dependency path when practical.
 - Comment only non-obvious numerical intent, layout constraints, or deliberate
   simplifications with a known ceiling.
+- Example scripts run their top-level entry point unconditionally. Do not wrap
+  it in `abspath(PROGRAM_FILE) == abspath(@__FILE__)`. An example is a script:
+  running it and including it do the same thing. Code that a test or another
+  script needs without that side effect belongs in a shared helper file or in
+  the package, not behind a guard.
 
 ### Before handing off
 

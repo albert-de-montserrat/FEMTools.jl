@@ -292,6 +292,4 @@ function main(;
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    main()
-end
+main()

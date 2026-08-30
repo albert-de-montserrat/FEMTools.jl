@@ -59,4 +59,4 @@ function main(; max_area = 1 / 32^2, show_plot = true, CFL = 0.9,
     return fig
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

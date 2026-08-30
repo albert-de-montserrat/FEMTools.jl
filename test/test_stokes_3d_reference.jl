@@ -1,4 +1,4 @@
-include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinking_block_3D_adj.jl"))
+include(joinpath(pkgdir(FEMTools), "examples", "stokes", "sinking_block", "sinking_block_3D_setup.jl"))
 
 using LinearAlgebra
 using SparseArrays

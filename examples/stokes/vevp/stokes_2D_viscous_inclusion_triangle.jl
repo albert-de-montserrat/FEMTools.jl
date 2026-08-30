@@ -309,4 +309,4 @@ function main(;
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

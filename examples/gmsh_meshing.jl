@@ -114,22 +114,3 @@ function build_gmsh_t7_rectangle_inclusion_mesh(;
         gmsh.isInitialized() == 1 && gmsh.finalize()
     end
 end
-
-function _gmsh_meshing_selfcheck()
-    hole = [(0.0, -0.5, 0.15)]
-    _, t3, outer3, holes3 = build_gmsh_hole_mesh(;
-        Lx = 1.0, Ly = 1.0, holes = hole, n_circle = 16, max_area = 0.03)
-    _, t6, outer6, holes6 = build_gmsh_hole_mesh(;
-        Lx = 1.0, Ly = 1.0, holes = hole, n_circle = 16, max_area = 0.03, order = 2)
-    _, circle_t7, circle_outer, circle_interface = build_gmsh_t7_circle_inclusion_mesh(;
-        Lx = 1.0, Ly = 1.0, cx = 0.5, cy = 0.5, r = 0.15, n_circle = 16, max_area = 0.03)
-    _, rectangle_t7, rectangle_outer, rectangle_interface = build_gmsh_t7_rectangle_inclusion_mesh(;
-        Lx = 1.0, Ly = 1.0, cx = 0.5, cy = -0.5, half_width = 0.15, max_area = 0.03)
-    @assert size(t3, 1) == 3 && !isempty(outer3) && !isempty(only(holes3))
-    @assert size(t6, 1) == 6 && !isempty(outer6) && !isempty(only(holes6))
-    @assert size(circle_t7, 1) == 7 && !isempty(circle_outer) && !isempty(circle_interface)
-    @assert size(rectangle_t7, 1) == 7 && !isempty(rectangle_outer) && !isempty(rectangle_interface)
-    return nothing
-end
-
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && _gmsh_meshing_selfcheck()
