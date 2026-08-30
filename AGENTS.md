@@ -152,6 +152,34 @@ on Ubuntu and macOS and builds the docs on Julia 1. See
 [testing](.agents/testing.md) before changing this matrix or claiming coverage
 for accelerators or MPI.
 
+### Persistent Julia session (Kaimon MCP)
+
+Compilation latency dominates iterative work here, so develop against one
+persistent Julia session rather than a fresh process per check. Kaimon serves
+that session over MCP; start it from the repository root before the agent
+session:
+
+```sh
+kaimon -r              # Revise loaded, MCP endpoint on http://localhost:2828/mcp
+kaimon -r --headless   # same, without the terminal dashboard
+```
+
+The server is registered as `kaimon` in the user-scope Claude configuration and
+exposes `mcp__julia__julia_eval`, `mcp__julia__julia_list_sessions`, and
+`mcp__julia__julia_restart`. A server that is down when the agent session starts
+reports `ConnectionRefused` and its tools stay unavailable for that whole
+session, so start Kaimon first and restart the agent session if the tools are
+missing.
+
+`julia_eval` runs `Revise.revise()` before every evaluation, so edits under
+`src/` are already applied; do not call `Revise.revise()` again. Use
+`julia_restart` after changes Revise cannot track: `Project.toml`, `struct`
+definitions, and the `include` order in `src/FEMTools.jl`.
+
+Run `julia` from the shell instead whenever a cold process is the measurement —
+package load timing, invalidation analysis, benchmark baselines — and for the
+final `Pkg.test()` and docs build before a pull request.
+
 ## Definition of done
 
 A change is done when:
