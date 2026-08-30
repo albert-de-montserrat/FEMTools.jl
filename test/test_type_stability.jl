@@ -163,7 +163,7 @@ function _pressure_element_residual_case()
     el2n = reshape(Int32[1, 2, 3], 3, 1)
     geo = [TRI_GEO]
     return FEMTools.pressure_element_residual(
-        vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, phases,
+        (vx, vy), P, P0, T, T0, el2n, el2n, geo, geo, phases,
         (0.0,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
     )
 end
@@ -306,7 +306,7 @@ end
     @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int}, Float32}
     @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
     @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
-    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, <:Vector{Float64}, <:Vector{Int}, <:Matrix{Float64}, Float64}
+    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{2, 1, <:Vector{Float64}, <:Vector{Int}, <:Matrix{Float64}, Float64, 3}
     @test (@inferred _mixed_mesh_cache_case()) isa MixedMeshCache
     @test (@inferred _heat_assembly_case()) === nothing
     @test (@inferred _lithostatic_assembly_case()) === nothing
@@ -359,6 +359,9 @@ end
         "examples/stokes/buildup/stokes_2D_elastic_buildup.jl",
         "examples/stokes/buildup/stokes_2D_elastic_buildup_hole.jl",
         "examples/stokes/sinking_block/sinking_block.jl",
+        "examples/stokes/volcano/volcano_mesh_3D.jl",
+        "examples/stokes/volcano/volcano_thermal_stokes.jl",
+        "examples/stokes/volcano/volcano_thermal_stokes_3D.jl",
         "examples/stokes/stokes_2D_pure_shear_triangle_hole.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl",

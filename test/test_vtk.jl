@@ -60,6 +60,23 @@ end
     @test occursin("SCALARS marker float 1\nLOOKUP_TABLE default\n10.0\n11.0\n12.0", text)
 end
 
+@testset "write_vtk uses Hex27 geometry for 3-D mixed meshes" begin
+    coords = vec([SVector{3, Float64}(x, y, z)
+                  for x in (0.0, 0.5, 1.0), y in (0.0, 0.5, 1.0), z in (0.0, 0.5, 1.0)])
+    element_v = ReferenceElement(QuadraticElement{3, 27, Float64})
+    element_P = ReferenceElement(LinearElement{3, 4, Float64})
+    el2n = generate_element2node(element_v, (1, 1, 1))
+    mesh = MixedMesh(Mesh(coords, el2n; order = 2), element_P)
+
+    text = _read_temp_vtk() do path
+        write_vtk(path, mesh)
+    end
+
+    @test occursin("POINTS 8 float", text)
+    @test occursin("CELLS 1 9\n8 ", text)
+    @test occursin("CELL_TYPES 1\n12", text)
+end
+
 @testset "write_vtk validates field lengths" begin
     coords = SVector{2, Float64}[
         SVector(0.0, 0.0),

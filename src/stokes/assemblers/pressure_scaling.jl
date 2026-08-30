@@ -8,7 +8,7 @@ Assemble pressure mass and scaling using the geometry and elements stored in
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
     dr::StokesDR,
-    mesh::MixedMesh{2},
+    mesh::MixedMesh,
     cache::MixedMeshCache,
     γfact,
     Δt;
@@ -37,7 +37,7 @@ element-wise phase layouts or alternate pressure-scaling material properties.
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
     dr::StokesDR,
-    mesh::MixedMesh{2},
+    mesh::MixedMesh,
     geo_P,
     element_v::ReferenceElement,
     element_P::ReferenceElement,
@@ -73,7 +73,9 @@ The pressure residual assembled by FEMTools is weak/integrated,
 
     RP_i = ∫ N_i (-∇⋅v) dΩ,
 
-so `MP_i = ∫ N_i dΩ` converts it to a pointwise residual `RP_i / MP_i`.
+so the nodal 2-D pressure spaces use `MP_i = ∫ N_i dΩ`. The 3-D linear
+modal basis instead uses its positive Jacobi diagonal `MP_i = ∫ N_i² dΩ`
+because its signed modes have zero or negative lumped integrals.
 For the Arrow-Hurwicz/DYREL pressure update, this helper also computes a local
 pressure scale
 
@@ -95,7 +97,7 @@ function assemble_viscosity_weighted_pressure_scaling!(
     η,
     γfact,
     backend, workgroup,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     return assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n_v, dofs_P, geo_P, nels, element_v, element_P,
         phases_v, η, γfact, nothing, nothing, backend, workgroup,
@@ -115,14 +117,15 @@ function assemble_viscosity_weighted_pressure_scaling!(
     K,
     Δt,
     backend, workgroup,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     NqV = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
 
     fill!(MP, 0)
     fill!(γP, 0)
     viscosity_weighted_pressure_scaling_kernel!(backend, workgroup)(
-        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, K, Δt, NqV, NqP, Val(NV), Val(NP);
+        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, K, Δt,
+        NqV, NqP, Val(NV), Val(NP), Val(D);
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -137,7 +140,7 @@ end
 """
     viscosity_weighted_pressure_scaling_kernel!(MP, γP, el2n_v, dofs_P, geo_P,
                                                 phases_v, η, γfact, K, Δt, NqV, NqP,
-                                                Val(NV), Val(NP))
+                                                Val(NV), Val(NP), Val(D))
 
 KernelAbstractions kernel that accumulates the lumped pressure mass `MP` and
 viscosity-weighted pressure scale `γP` by numerical quadrature.
@@ -146,6 +149,8 @@ At each quadrature point `q` in element `iel`, accumulates
 `MP_a += N_a(q) dΩ` and `γP_a += N_a(q) γ_eff(q) dΩ` for every
 pressure DoF `a`. Atomix atomics are used unconditionally for correctness
 when pressure DoFs are shared across elements (continuous pressure spaces).
+The three-dimensional linear modal basis uses the positive Jacobi weight
+`N_a² dΩ`; its signed modes have zero or negative lumped integrals.
 """
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
     MP, γP,
@@ -153,8 +158,8 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
     @Const(geo_P),
     @Const(phases_v),
     η, γfact, K, Δt,
-    NqV, NqP, ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+    NqV, NqP, ::Val{NV}, ::Val{NP}, dim::Val{D},
+) where {NV, NP, D}
     iel = @index(Global)
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_dofs_P  = local_nodes_of(dofs_P,  iel, Val(NP))
@@ -170,12 +175,15 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
 
         for a in 1:NP
             inod = local_dofs_P[a]
-            weight = NPq[a] * dΩ
+            weight = _pressure_mass_weight(NPq[a], dim) * dΩ
             Atomix.@atomic :monotonic MP[inod] += weight
             Atomix.@atomic :monotonic γP[inod] += weight * γq
         end
     end
 end
+
+@inline _pressure_mass_weight(N, ::Val) = N
+@inline _pressure_mass_weight(N, ::Val{3}) = abs2(N)
 
 @inline pressure_scale_at_ip(_, ηq, _, γfact, ::Nothing, _) = γfact * ηq / 2
 @inline function pressure_scale_at_ip(Nv, ηq, phase_loc, γfact, K, Δt)

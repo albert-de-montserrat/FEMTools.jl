@@ -34,14 +34,20 @@ function _set_circle_mesh_size!(circles, mesh_size, n_circle)
     isempty(curves) && return
 
     target = minimum((mesh_size, (2pi * r / n_circle for (_, _, r) in circles)...))
+    _refine_near_curves!(curves, target, mesh_size, maximum(last, circles))
+    return
+end
+
+"""Grade the element size from `size_min` on `curves` up to `size_max` at `dist_max`."""
+function _refine_near_curves!(curves, size_min, size_max, dist_max)
     distance = gmsh.model.mesh.field.add("Distance")
-    gmsh.model.mesh.field.setNumbers(distance, "CurvesList", curves)
+    gmsh.model.mesh.field.setNumbers(distance, "CurvesList", collect(Float64, curves))
     threshold = gmsh.model.mesh.field.add("Threshold")
     gmsh.model.mesh.field.setNumber(threshold, "InField", distance)
-    gmsh.model.mesh.field.setNumber(threshold, "SizeMin", target)
-    gmsh.model.mesh.field.setNumber(threshold, "SizeMax", mesh_size)
+    gmsh.model.mesh.field.setNumber(threshold, "SizeMin", size_min)
+    gmsh.model.mesh.field.setNumber(threshold, "SizeMax", size_max)
     gmsh.model.mesh.field.setNumber(threshold, "DistMin", 0.0)
-    gmsh.model.mesh.field.setNumber(threshold, "DistMax", maximum(last, circles))
+    gmsh.model.mesh.field.setNumber(threshold, "DistMax", dist_max)
     gmsh.model.mesh.field.setAsBackgroundMesh(threshold)
     return
 end
@@ -113,4 +119,145 @@ function build_gmsh_t7_rectangle_inclusion_mesh(;
     finally
         gmsh.isInitialized() == 1 && gmsh.finalize()
     end
+end
+
+"""
+    volcano_topography(x; cone_base, cone_top, cone_height)
+
+Elevation of a flat ground surface interrupted by a truncated cone centered on
+`x = 0`. The cone rises from `|x| = cone_base` to the flat summit plateau
+`|x| <= cone_top`.
+"""
+function volcano_topography(x; cone_base, cone_top, cone_height)
+    ax = abs(x)
+    ax >= cone_base && return zero(cone_height)
+    ax <= cone_top && return cone_height
+    return cone_height * (cone_base - ax) / (cone_base - cone_top)
+end
+
+"""Test whether a point lies inside the elliptical magma chamber."""
+function in_magma_chamber(c; chamber_center, chamber_radii)
+    return hypot((c[1] - chamber_center[1]) / chamber_radii[1],
+                 (c[2] - chamber_center[2]) / chamber_radii[2]) <= 1
+end
+
+"""
+    build_gmsh_t7_volcano_mesh(; kwargs...) -> (coords, el2n, groups)
+
+Build a T7 (Crouzeix-Raviart velocity) Gmsh mesh of a volcano cross-section:
+a flat surface carrying a truncated cone, with an ellipsoidal magma chamber
+fragmented into the domain as a conforming material interface. Lengths are in
+meters and the ground surface is at `y = 0`; the defaults are Etna-like.
+
+`groups` is a `NamedTuple` of node indices: `Γnodes` (every boundary node),
+`surface` (topography, including the ground-surface corners), `bottom`, `left`,
+`right`, and `chamber` (the material interface).
+
+Passing `vtk_path` also writes the corner-linearized mesh, its element phases,
+and its boundary groups to a legacy VTK file.
+"""
+function build_gmsh_t7_volcano_mesh(;
+        Lx = 40.0e3,
+        depth = 20.0e3,
+        cone_base = 10.0e3,
+        cone_top = 0.5e3,
+        cone_height = 3.3e3,
+        chamber_center = (0.0, -5.0e3),
+        chamber_radii = (3.0e3, 1.5e3),
+        max_area = nothing,
+        refinement = 4,
+        vtk_path = nothing,
+    )
+    cone_top < cone_base ||
+        throw(ArgumentError("cone_top must be smaller than cone_base"))
+    2 * cone_base <= Lx ||
+        throw(ArgumentError("the cone must fit inside the domain width Lx"))
+    cx, cy = chamber_center
+    rx, ry = chamber_radii
+    # Gmsh builds a disk from a major and a minor radius, in that order.
+    rx >= ry > 0 ||
+        throw(ArgumentError("chamber_radii must be positive and horizontally elongated"))
+    cy + ry < 0 && -depth < cy - ry ||
+        throw(ArgumentError("the magma chamber must lie strictly below the surface and above the base"))
+
+    x1 = Lx / 2
+    topography(x) = volcano_topography(x; cone_base, cone_top, cone_height)
+    mesh_size = _mesh_size(max_area, Lx, depth)
+
+    gmsh.initialize()
+    try
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("volcano")
+
+        outline = [
+            (-x1, -depth), (x1, -depth), (x1, 0.0),
+            (cone_base, 0.0), (cone_top, cone_height),
+            (-cone_top, cone_height), (-cone_base, 0.0), (-x1, 0.0),
+        ]
+        points = [gmsh.model.occ.addPoint(x, y, 0.0) for (x, y) in outline]
+        edges = [
+            gmsh.model.occ.addLine(points[i], points[mod1(i + 1, length(points))])
+            for i in eachindex(points)
+        ]
+        domain = gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(edges)])
+        chamber = gmsh.model.occ.addDisk(cx, cy, 0.0, rx, ry)
+        _, fragments = gmsh.model.occ.fragment([(2, domain)], [(2, chamber)])
+        gmsh.model.occ.synchronize()
+
+        gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+        chamber_curves = [tag for (_, tag) in gmsh.model.getBoundary(fragments[2], false, false)]
+        _refine_near_curves!(chamber_curves, mesh_size / refinement, mesh_size, 2 * rx)
+
+        coords, el2n = FEMTools.add_t7_bubbles!(_gmsh_triangles(2)...)
+
+        tol = sqrt(eps(Float64)) * max(Lx, depth)
+        select(f) = Int32[i for i in eachindex(coords) if f(coords[i])]
+        surface = select(c -> abs(c[2] - topography(c[1])) <= tol)
+        bottom = select(c -> abs(c[2] + depth) <= tol)
+        left = select(c -> abs(c[1] + x1) <= tol)
+        right = select(c -> abs(c[1] - x1) <= tol)
+        chamber_nodes = select(c -> abs(hypot((c[1] - cx) / rx, (c[2] - cy) / ry) - 1) <= sqrt(eps(Float64)))
+        Γnodes = sort!(union(surface, bottom, left, right))
+        groups = (; Γnodes, surface, bottom, left, right, chamber = chamber_nodes)
+        isnothing(vtk_path) ||
+            _write_volcano_vtk(vtk_path, coords, el2n, groups, chamber_center, chamber_radii)
+        return coords, el2n, groups
+    finally
+        gmsh.isInitialized() == 1 && gmsh.finalize()
+    end
+end
+
+"""Write the volcano mesh, its element phases, and its boundary groups to `path`."""
+function _write_volcano_vtk(path, coords, el2n, groups, chamber_center, chamber_radii)
+    phase = [
+        in_magma_chamber(sum(coords[el2n[a, iel]] for a in 1:3) / 3; chamber_center, chamber_radii) ? 2 : 1
+        for iel in axes(el2n, 2)
+    ]
+    # Nodes shared by two groups keep the last code below.
+    boundary = zeros(Int, length(coords))
+    for (code, group) in enumerate((groups.surface, groups.bottom, groups.left, groups.right, groups.chamber))
+        boundary[group] .= code
+    end
+    mkpath(dirname(path))
+    FEMTools.write_vtk(path, FEMTools.Mesh(coords, el2n);
+        point_data = (; boundary), cell_data = (; phase), title = "volcano cross-section")
+    return path
+end
+
+"""
+    main(; max_area = 1.0e6, vtk_path = "output_volcano/volcano_mesh.vtk", kwargs...)
+
+Build the default volcano cross-section mesh, write it to `vtk_path` (pass
+`nothing` to skip the file), and return `(; coords, el2n, groups)`. Remaining
+keyword arguments are forwarded to `build_gmsh_t7_volcano_mesh`.
+"""
+function main(;
+        max_area = 1.0e6,
+        vtk_path = joinpath(@__DIR__, "output_volcano", "volcano_mesh.vtk"),
+        kwargs...,
+    )
+    coords, el2n, groups = build_gmsh_t7_volcano_mesh(; max_area, vtk_path, kwargs...)
+    @info "Volcano T7 mesh" nnodes = length(coords) nels = size(el2n, 2) n_surface =
+        length(groups.surface) n_chamber = length(groups.chamber) vtk_path
+    return (; coords, el2n, groups)
 end

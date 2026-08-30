@@ -1,3 +1,16 @@
+# Apply one Dirichlet node set and value set per spatial direction.
+@inline function _apply_dirichlet_all!(fields::NTuple{D}, nodes, vals, backend, workgroup) where {D}
+    ntuple(Val(D)) do c
+        apply_dirichlet!(fields[c], nodes[c], vals[c], backend, workgroup)
+        nothing
+    end
+    return nothing
+end
+
+# Preconditioner-diagnostic labels reported by `_checked_λmax`, indexed by
+# spatial direction.
+const _VELOCITY_LABELS = ("stokes vx", "stokes vy", "stokes vz")
+
 function _stokes_λmin(step, rate, ΔR, PC)
     dV = step .* rate
     denom = sum(dV .^ 2)
@@ -23,16 +36,18 @@ end
 
 """
     solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh, cache,
-                         bc_T, bc_vx, bc_vy, Δt, γP;
-                         Tref=273, workgroup=256, kwargs...)
+                         bc_T, bc_v, Δt, γP; Tref=273, workgroup=256, kwargs...)
+    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh, cache,
+                         bc_T, bc_vx, bc_vy, Δt, γP; kwargs...)
 
 Solve one coupled thermal--Stokes time step. Each inner Stokes velocity
 iteration advances one thermal dynamic-relaxation iteration, then gathers the
 continuous thermal field at `stokes_mesh.el2nP` onto the discontinuous pressure
 DoFs used by the Stokes residuals.
 
-`thermal_mesh` must use the same node numbering and backend as the primary
-field of `stokes_mesh`. The previous-time fields `thermal.T0`, `stokes.P0`, and
+`bc_v` holds one velocity boundary condition per spatial direction; the second
+form takes the two plane-strain components separately. `thermal_mesh` must use
+the same node numbering and backend as the primary field of `stokes_mesh`. The previous-time fields `thermal.T0`, `stokes.P0`, and
 the Stokes stress history remain caller-owned. Remaining keywords are forwarded
 to [`solve_stokes_dyrel!`](@ref); `ncheck` controls convergence checks for both
 relaxation updates. Returns the Stokes statistics with additional `err_T` and
@@ -45,14 +60,13 @@ function solve_coupled_dyrel!(
     stokes_mesh::MixedMesh,
     cache::MixedMeshCache,
     bc_T::DirichletBoundaryCondition,
-    bc_vx::DirichletBoundaryCondition,
-    bc_vy::DirichletBoundaryCondition,
+    bc_v::NTuple{D, DirichletBoundaryCondition},
     Δt,
     γP;
     Tref = eltype(thermal.T)(273),
     workgroup = 256,
     kwargs...,
-)
+) where {D}
     isnothing(thermal_mesh.geometry) && throw(ArgumentError(
         "thermal mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
     thermal_mesh.nnodes == stokes_mesh.nnodes || throw(DimensionMismatch(
@@ -70,14 +84,24 @@ function solve_coupled_dyrel!(
 
     coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref)
     return solve_stokes_dyrel!(
-        stokes, stokes_mesh, cache, bc_vx, bc_vy, Δt, γP;
+        stokes, stokes_mesh, cache, bc_v, Δt, γP;
         workgroup, _thermal = coupled, kwargs...,
     )
 end
 
+solve_coupled_dyrel!(
+        thermal::ThermalDiffusionDR, stokes::StokesDR, thermal_mesh::Mesh,
+        stokes_mesh::MixedMesh, cache::MixedMeshCache,
+        bc_T::DirichletBoundaryCondition,
+        bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition,
+        Δt, γP; kwargs...) =
+    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh, cache,
+        bc_T, (bc_vx, bc_vy), Δt, γP; kwargs...)
+
 """
-    solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP;
+    solve_stokes_dyrel!(dr, mesh, cache, bc_v, Δt, γP;
                         plastic=nothing, workgroup=256, kwargs...)
+    solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; kwargs...)
 
 Solve the Stokes system using geometry and elements from `cache`, material and
 stress history from `dr`, and one Dirichlet boundary-condition object per
@@ -88,40 +112,46 @@ function solve_stokes_dyrel!(
     dr::StokesDR,
     mesh::MixedMesh,
     cache::MixedMeshCache,
-    bc_vx::DirichletBoundaryCondition,
-    bc_vy::DirichletBoundaryCondition,
+    bc_v::NTuple{D, DirichletBoundaryCondition},
     Δt,
     γP;
     plastic = nothing,
     phases_v = dr.phases_v,
     phases_P = dr.phases_P,
-    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    τ_old = stress_old(dr),
     workgroup = 256,
     kwargs...,
-)
+) where {D}
     isnothing(cache.element_v) && throw(ArgumentError("cache has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"))
     backend = KA.get_backend(mesh.coords)
     return solve_stokes_dyrel!(
         dr, mesh, cache, cache.element_v, cache.element_P,
         phases_v, phases_P, τ_old, plastic, dr.G, Δt, γP,
-        bc_vx.DoFs, bc_vx.vals, bc_vy.vals, backend, workgroup;
-        vx_nodes = bc_vx.DoFs, vy_nodes = bc_vy.DoFs, kwargs...,
+        first(bc_v).DoFs, map(bc -> bc.vals, bc_v), backend, workgroup;
+        v_nodes = map(bc -> bc.DoFs, bc_v), kwargs...,
     )
 end
+
+solve_stokes_dyrel!(
+        dr::StokesDR, mesh::MixedMesh, cache::MixedMeshCache,
+        bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition,
+        Δt, γP; kwargs...) =
+    solve_stokes_dyrel!(dr, mesh, cache, (bc_vx, bc_vy), Δt, γP; kwargs...)
 
 """
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
                         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+                        Γnodes, bc_vals, backend, workgroup;
                         kwargs...) -> NamedTuple
     solve_stokes_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
                         ...)
 
 Run the Powell-Hestenes / DYREL-style velocity-pressure iteration for a Stokes
 state with Dirichlet velocity boundary conditions on `Γnodes`. `dr.M_P` must be
-filled before calling. The two forms differ only in how the precomputed element
-geometry is supplied: as a `MixedMeshCache` or as the raw `geo_v`, `geo_P`
-arrays.
+filled before calling. `bc_vals` holds one Dirichlet value array per spatial
+direction; the plane-strain form takes `bc_vx_vals` and `bc_vy_vals`
+separately. The element geometry is supplied either as a `MixedMeshCache` or as
+the raw `geo_v`, `geo_P` arrays.
 
 # Keyword arguments
 - `ncheck = 50`: recompute spectral estimates and convergence every `ncheck`
@@ -134,8 +164,9 @@ arrays.
 - `max_ph_iterations = 1000`: maximum outer Powell-Hestenes iterations.
 - `rel_drop0 = 1e-2`: initial relative residual drop demanded of each inner
   solve; tightened automatically as the outer iteration proceeds.
-- `vx_nodes = Γnodes`, `vy_nodes = Γnodes`: per-component Dirichlet node sets,
-  for when the two velocity components are constrained on different boundaries.
+- `v_nodes = ntuple(_ -> Γnodes, D)`: per-direction Dirichlet node sets, for
+  when the velocity components are constrained on different boundaries. The
+  plane-strain form takes these as `vx_nodes` and `vy_nodes`.
 - `verbose = true`: outer Powell-Hestenes progress; `verbose_inner = false`:
   inner dynamic-relaxation trace.
 - `collect_history = false`: record `(iter, err_v, err_P)` at every check.
@@ -150,39 +181,30 @@ iterations), `err`, `err_abs`, `err_rel`, `err_v`, `err_P`,
 `converged::Bool`, `reached_total_iter::Bool`, and `history` (empty unless
 `collect_history`).
 """
-function solve_stokes_dyrel!(
-    dr,
-    mesh_stokes,
-    cache::MixedMeshCache,
-    element_v,
-    element_P,
-    phases_v,
-    phases_P,
-    τ_old,
-    plastic,
-    G,
-    Δt,
-    γP,
-    Γnodes,
-    bc_vx_vals,
-    bc_vy_vals,
-    backend,
-    workgroup;
-    kwargs...,
-)
-    return solve_stokes_dyrel!(
+solve_stokes_dyrel!(
+        dr, mesh_stokes, cache::MixedMeshCache, element_v, element_P,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, args...; kwargs...) =
+    solve_stokes_dyrel!(
         dr, mesh_stokes, cache.geo_v, cache.geo_P, element_v, element_P,
-        phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-        kwargs...,
-    )
-end
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, args...; kwargs...)
+
+solve_stokes_dyrel!(
+        dr, mesh_stokes, geo_v::AbstractVector, geo_P::AbstractVector,
+        element_v, element_P,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, Γnodes,
+        bc_vx_vals::AbstractVector, bc_vy_vals::AbstractVector, backend, workgroup;
+        vx_nodes = Γnodes, vy_nodes = Γnodes, kwargs...) =
+    solve_stokes_dyrel!(
+        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, Γnodes,
+        (bc_vx_vals, bc_vy_vals), backend, workgroup;
+        v_nodes = (vx_nodes, vy_nodes), kwargs...)
 
 function solve_stokes_dyrel!(
     dr,
     mesh_stokes,
-    geo_v,
-    geo_P,
+    geo_v::AbstractVector,
+    geo_P::AbstractVector,
     element_v,
     element_P,
     phases_v,
@@ -193,10 +215,10 @@ function solve_stokes_dyrel!(
     Δt,
     γP,
     Γnodes,
-    bc_vx_vals,
-    bc_vy_vals,
+    bc_vals::NTuple{D, <:AbstractVector},
     backend,
     workgroup;
+    v_nodes = ntuple(_ -> Γnodes, Val(D)),
     ncheck = 50,
     ϵ_tol = 1.0e-6,
     iterMax = 50_000,
@@ -205,8 +227,6 @@ function solve_stokes_dyrel!(
     rel_drop0 = 1.0e-2,
     verbose = true,
     verbose_inner = false,
-    vx_nodes = Γnodes,
-    vy_nodes = Γnodes,
     collect_history = false,
     measure_λmax = false,
     λmax_power_iterations = 12,
@@ -214,21 +234,26 @@ function solve_stokes_dyrel!(
     λmax_safety = 1.1,
     freeze_jacobian = plastic === nothing,
     _thermal = nothing,
-)
+) where {D}
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
+    measure_λmax && D != 2 &&
+        throw(ArgumentError("measure_λmax is currently supported only in plane strain"))
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
     spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
 
     M_P = dr.M_P
     nout = ncheck
-    zero_vx_bc = zero(bc_vx_vals)
-    zero_vy_bc = zero(bc_vy_vals)
+    zero_bc = map(zero, bc_vals)
+    v      = velocity(dr)
+    rate   = getfield(dr, :∂v∂τ)
+    Rv     = getfield(dr, :Rv)
+    Rv0    = getfield(dr, :Rv0)
+    ∂Rv∂v  = getfield(dr, :∂Rv∂v)
+    PC_v   = getfield(dr, :PC_v)
 
-    fill!(dr.∂vx∂τ, 0)
-    fill!(dr.∂vy∂τ, 0)
-    fill!(dr.Rv_x0, 0)
-    fill!(dr.Rv_y0, 0)
+    foreach(a -> fill!(a, 0), rate)
+    foreach(a -> fill!(a, 0), Rv0)
 
     velocity_op = if measure_λmax
         assemble_velocity_operator(
@@ -236,38 +261,34 @@ function solve_stokes_dyrel!(
             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
-            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            ∂Rv∂v, PC_v,
+            v, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
             backend, workgroup; τ_old, plastic)
         nothing
     end
-    λmax_gershgorin = max(
-        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
-        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+    λmax_gershgorin = maximum(ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D)))
     λmax_iterations = 0
     jacobian_assemblies = 1
     power_x = power_y = nothing
     if measure_λmax
         λmax_measured, λmax_iterations, power_x, power_y = estimate_velocity_λmax(
-            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
-            vx_nodes, vy_nodes, backend, workgroup;
+            velocity_op, mesh_stokes, element_v, PC_v[1], PC_v[2],
+            v_nodes[1], v_nodes[2], backend, workgroup;
             max_iterations = λmax_power_iterations, rtol = λmax_power_rtol)
-        λmax_vx = λmax_vy = min(λmax_gershgorin, spectral_safety * λmax_measured)
+        λmax_v = ntuple(_ -> min(λmax_gershgorin, spectral_safety * λmax_measured), Val(D))
     else
-        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+        λmax_v = ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D))
     end
-    Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
-    Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
-    α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
-    α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
-    verbose && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
+    Δτ_v = map(λ -> 2 / sqrt(λ) * dr.CFL_v, λmax_v)
+    cheb = map(Δτ -> _stokes_cheb(Δτ, zero(Δτ), dr.c_fact), Δτ_v)
+    α_v, β_v = map(first, cheb), map(last, cheb)
+    verbose && @info "Initial momentum preconditioner" λmax_v Δτ_v
 
     err_min = Inf
-    ϵ = eltype(dr.Rv_x)(ϵ_tol)
+    ϵ = eltype(first(Rv))(ϵ_tol)
     err = 2 * ϵ
     err_abs = Inf
     err_rel = Inf
@@ -286,7 +307,7 @@ function solve_stokes_dyrel!(
     thermal_iter = 0
     err_T = isnothing(_thermal) ? nothing : Inf
     thermal_converged = isnothing(_thermal)
-    α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(dr.Rv_x))
+    α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(first(Rv)))
     if !isnothing(_thermal)
         fill!(_thermal.dr.∂T∂τ, 0)
         fill!(_thermal.dr.R0, 0)
@@ -297,7 +318,7 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_matrices_atomix!(
             dr.RP,
-            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+            v, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_P, dr.α, dr.ηb, Δt,
@@ -305,18 +326,17 @@ function solve_stokes_dyrel!(
         )
 
         assemble_momentum_residual_matrices_atomix!(
-            dr.Rv_x, dr.Rv_y,
-            dr.vx, dr.vy, dr.P, dr.T, nothing,
+            Rv,
+            v, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             element_v, element_P,
             phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             backend, workgroup,
         )
-        apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-        apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
+        _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
 
         err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
-        err_v = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
+        err_v = maximum(norm, Rv) / (2 * sqrt(mesh_stokes.nnodes))
         if itPH == 1
             err_P0 = err_P + eps(err_P)
             err_v0 = err_v + eps(err_v)
@@ -351,10 +371,7 @@ function solve_stokes_dyrel!(
             iter += 1
             do_check = iszero(iter % nout)
 
-            if do_check
-                copyto!(dr.Rv_x0, dr.Rv_x)
-                copyto!(dr.Rv_y0, dr.Rv_y)
-            end
+            do_check && foreach(copyto!, Rv0, Rv)
 
             if !isnothing(_thermal)
                 thermal_iter += 1
@@ -408,7 +425,7 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
-                dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                v, dr.P, dr.P0, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
                 phases_P, dr.α, dr.ηb, Δt,
@@ -418,30 +435,27 @@ function solve_stokes_dyrel!(
             @. dr.Pnum = γP * dr.RP / M_P
 
             assemble_momentum_residual_matrices_atomix!(
-                dr.Rv_x, dr.Rv_y,
-                dr.vx, dr.vy, dr.P, dr.T, dr.Pnum,
+                Rv,
+                v, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
                 phases_v, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
             )
 
-            apply_dirichlet!(dr.Rv_x, vx_nodes, zero_vx_bc, backend, workgroup)
-            apply_dirichlet!(dr.∂vx∂τ, vx_nodes, zero_vx_bc, backend, workgroup)
-            apply_dirichlet!(dr.Rv_y, vy_nodes, zero_vy_bc, backend, workgroup)
-            apply_dirichlet!(dr.∂vy∂τ, vy_nodes, zero_vy_bc, backend, workgroup)
+            _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
+            _apply_dirichlet_all!(rate, v_nodes, zero_bc, backend, workgroup)
 
+            # The momentum residual carries the opposite sign to the field
+            # update, hence the negated Chebyshev step.
             update_stokes_velocity!(
-                dr.∂vx∂τ, dr.∂vy∂τ, dr.vx, dr.vy,
-                dr.Rv_x, dr.Rv_y, dr.PC_vx, dr.PC_vy,
-                β_vx, β_vy, -α_vx, -α_vy,
+                rate, v, Rv, PC_v, β_v, map(-, α_v),
                 mesh_stokes.nnodes, backend, workgroup)
 
-            apply_dirichlet!(dr.vx, vx_nodes, bc_vx_vals, backend, workgroup)
-            apply_dirichlet!(dr.vy, vy_nodes, bc_vy_vals, backend, workgroup)
+            _apply_dirichlet_all!(v, v_nodes, bc_vals, backend, workgroup)
 
             if do_check
-                err_v_inner = max(norm(dr.Rv_x), norm(dr.Rv_y)) / (2 * sqrt(mesh_stokes.nnodes))
+                err_v_inner = maximum(norm, Rv) / (2 * sqrt(mesh_stokes.nnodes))
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
@@ -453,8 +467,8 @@ function solve_stokes_dyrel!(
 
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
-                λmin_vx = _stokes_λmin(α_vx, dr.∂vx∂τ, dr.Rv_x .- dr.Rv_x0, dr.PC_vx)
-                λmin_vy = _stokes_λmin(α_vy, dr.∂vy∂τ, dr.Rv_y .- dr.Rv_y0, dr.PC_vy)
+                λmin_v = ntuple(
+                    c -> _stokes_λmin(α_v[c], rate[c], Rv[c] .- Rv0[c], PC_v[c]), Val(D))
 
                 if !freeze_jacobian
                     jacobian_assemblies += 1
@@ -464,8 +478,8 @@ function solve_stokes_dyrel!(
                             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
-                            dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-                            dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+                            ∂Rv∂v, PC_v,
+                            v, dr.P, dr.P0, dr.T, dr.T0,
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
@@ -473,29 +487,26 @@ function solve_stokes_dyrel!(
                         nothing
                     end
 
-                    λmax_gershgorin = max(
-                        _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx"),
-                        _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy"))
+                    λmax_gershgorin = maximum(
+                        ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D)))
                     if measure_λmax
                         λmax_measured, power_iterations, power_x, power_y =
                             estimate_velocity_λmax(
-                            velocity_op, mesh_stokes, element_v, dr.PC_vx, dr.PC_vy,
-                            vx_nodes, vy_nodes, backend, workgroup;
+                            velocity_op, mesh_stokes, element_v, PC_v[1], PC_v[2],
+                            v_nodes[1], v_nodes[2], backend, workgroup;
                             max_iterations = λmax_power_iterations, rtol = λmax_power_rtol,
                             x = power_x, y = power_y)
                         λmax_iterations += power_iterations
-                        λmax_vx = λmax_vy =
-                            min(λmax_gershgorin, spectral_safety * λmax_measured)
+                        λmax_v = ntuple(
+                            _ -> min(λmax_gershgorin, spectral_safety * λmax_measured), Val(D))
                     else
-                        λmax_vx = _checked_λmax(dr.∂Rv_x∂vx, dr.PC_vx, "stokes vx")
-                        λmax_vy = _checked_λmax(dr.∂Rv_y∂vy, dr.PC_vy, "stokes vy")
+                        λmax_v = ntuple(
+                            c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D))
                     end
                 end
-                Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
-                Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
-
-                α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
-                α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
+                Δτ_v = map(λ -> 2 / sqrt(λ) * dr.CFL_v, λmax_v)
+                cheb = map((Δτ, λmin) -> _stokes_cheb(Δτ, λmin, dr.c_fact), Δτ_v, λmin_v)
+                α_v, β_v = map(first, cheb), map(last, cheb)
             end
 
             itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
@@ -518,7 +529,7 @@ function solve_stokes_dyrel!(
         err_P,
         converged = err < ϵ && thermal_converged,
         reached_total_iter = iter > total_iterMax,
-        λmax = max(λmax_vx, λmax_vy),
+        λmax = maximum(λmax_v),
         λmax_gershgorin,
         λmax_iterations,
         jacobian_assemblies,
@@ -542,7 +553,7 @@ function update_stokes_current_stress!(
     Δt;
     plastic = nothing,
     phases_v = dr.phases_v,
-    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old),
+    τ_old = stress_old(dr),
     workgroup = 256,
 )
     backend = KA.get_backend(mesh.coords)
@@ -597,8 +608,8 @@ function update_stokes_current_stress!(
     workgroup,
 )
     assemble_momentum_residual_matrices_atomix!(
-        dr.Rv_x, dr.Rv_y,
-        dr.vx, dr.vy, dr.P, dr.T, nothing,
+        getfield(dr, :Rv),
+        velocity(dr), dr.P, dr.T, nothing,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,

@@ -145,38 +145,110 @@ function compute_strain_rate_stress_postprocess(
     return _strain_rate_stress_diagnostics(vx, vy, el2n_v, geo_v, element_v, element_stress)
 end
 
+# Element-averaged three-dimensional diagnostics, in accumulator order.
+const _DIAGNOSTIC_FIELDS_3D = (
+    :εxx, :εyy, :εzz, :εxy, :εxz, :εyz, :εII,
+    :τxx, :τyy, :τzz, :τxy, :τxz, :τyz, :tauII,
+)
+
+"""
+    compute_strain_rate_stress_postprocess(v, el2n_v, geo_v, τ_ip, element_v)
+
+Compute element-averaged strain-rate and current deviatoric-stress diagnostics
+in three dimensions from integration-point stresses.
+
+`v` holds one nodal velocity array per direction. `τ_ip` holds
+`(τxx, τyy, τzz, τxy, τxz, τyz)` as `nq × nels` matrices, so a stress that has
+been through a plastic return is carried through unchanged.
+
+Normal strain rates are reported in full while the invariant `εII` is formed
+from the deviatoric part, matching the plane-strain method.
+"""
+function compute_strain_rate_stress_postprocess(
+    v::NTuple{3},
+    el2n_v,
+    geo_v,
+    τ_ip::NTuple{6},
+    element_v::ReferenceElement{TV},
+) where {NV, FP, TV <: AbstractElement{3, NV, FP}}
+    nels = size(el2n_v, 2)
+    Nq = shape_function_values(element_v)
+    fields = ntuple(_ -> zeros(FP, nels), length(_DIAGNOSTIC_FIELDS_3D))
+
+    for iel in 1:nels
+        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+        vloc = ntuple(i -> _gather_local(v[i], local_nodes, Val(NV)), Val(3))
+        geo_el = geo_v[iel]
+
+        totals = ntuple(_ -> zero(FP), length(_DIAGNOSTIC_FIELDS_3D))
+        volume = zero(FP)
+
+        for q in eachindex(geo_el)
+            ∂N∂x, dΩ = geo_el[q]
+            ∇v = ntuple(i -> ∂N∂x' * vloc[i], Val(3))
+
+            ε = (
+                ∇v[1][1], ∇v[2][2], ∇v[3][3],
+                (∇v[1][2] + ∇v[2][1]) / 2,
+                (∇v[1][3] + ∇v[3][1]) / 2,
+                (∇v[2][3] + ∇v[3][2]) / 2,
+            )
+            tr = (ε[1] + ε[2] + ε[3]) / 3
+            ε_dev = (ε[1] - tr, ε[2] - tr, ε[3] - tr, ε[4], ε[5], ε[6])
+            τ = ntuple(c -> τ_ip[c][q, iel], Val(6))
+
+            contribution = (ε..., second_invariant(ε_dev), τ..., second_invariant(τ))
+            totals = map((total, value) -> total + value * dΩ, totals, contribution)
+            volume += dΩ
+        end
+
+        for (field, total) in zip(fields, totals)
+            field[iel] = total / volume
+        end
+    end
+
+    return NamedTuple{_DIAGNOSTIC_FIELDS_3D}(fields)
+end
+
+# Cell-averaged stress components of a diagnostics NamedTuple, in the component
+# order the solver's stress-history tuples use.
+_cell_stress_components(post, ::Val{3}) = (post.τxx, post.τyy, post.τxy)
+_cell_stress_components(post, ::Val{6}) =
+    (post.τxx, post.τyy, post.τzz, post.τxy, post.τxz, post.τyz)
+
 """
     update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
 
 Project cell-averaged stress diagnostics back to nodal old-stress arrays.
+
+`τ_old` holds three components in plane strain and six in three dimensions;
+the matching components are taken from `post`.
 """
-function update_old_stress_from_cells!(τ_old, post, el2n_v, nnodes_v)
-    τxx_nodes = zeros(eltype(τ_old[1]), nnodes_v)
-    τyy_nodes = zeros(eltype(τ_old[2]), nnodes_v)
-    τxy_nodes = zeros(eltype(τ_old[3]), nnodes_v)
+function update_old_stress_from_cells!(τ_old::NTuple{Nτ}, post, el2n_v, nnodes_v) where {Nτ}
+    cells  = _cell_stress_components(post, Val(Nτ))
+    nodal  = ntuple(c -> zeros(eltype(τ_old[c]), nnodes_v), Val(Nτ))
     counts = zeros(Int, nnodes_v)
 
     for iel in axes(el2n_v, 2)
         for a in axes(el2n_v, 1)
             inode = el2n_v[a, iel]
-            τxx_nodes[inode] += post.τxx[iel]
-            τyy_nodes[inode] += post.τyy[iel]
-            τxy_nodes[inode] += post.τxy[iel]
+            ntuple(Val(Nτ)) do c
+                nodal[c][inode] += cells[c][iel]
+                nothing
+            end
             counts[inode] += 1
         end
     end
 
     for inode in eachindex(counts)
-        if counts[inode] > 0
-            τxx_nodes[inode] /= counts[inode]
-            τyy_nodes[inode] /= counts[inode]
-            τxy_nodes[inode] /= counts[inode]
+        counts[inode] > 0 || continue
+        ntuple(Val(Nτ)) do c
+            nodal[c][inode] /= counts[inode]
+            nothing
         end
     end
 
-    copyto!(τ_old[1], τxx_nodes)
-    copyto!(τ_old[2], τyy_nodes)
-    copyto!(τ_old[3], τxy_nodes)
+    foreach(copyto!, τ_old, nodal)
     return nothing
 end
 
@@ -240,8 +312,13 @@ end
 _vtk_mesh_arrays(mesh::Mesh{nDim}) where {nDim} =
     (Array(mesh.coords), Array(mesh.el2n), mesh.nels, Val(nDim))
 
-_vtk_mesh_arrays(mesh::MixedMesh{nDim}) where {nDim} =
-    (Array(mesh.coords), Array(mesh.el2nP), mesh.nels, Val(nDim))
+_vtk_mesh_arrays(mesh::MixedMesh{2}) =
+    (Array(mesh.coords), Array(mesh.el2nP), mesh.nels, Val(2))
+
+# The 3-D pressure connectivity identifies modal interpolation points, not a
+# geometric tetrahedron. Write the velocity Hex27 topology instead.
+_vtk_mesh_arrays(mesh::MixedMesh{3}) =
+    (Array(mesh.coords), Array(mesh.el2n), mesh.nels, Val(3))
 
 function _vtk_topology(mesh)
     coords, el2n, nels, dim = _vtk_mesh_arrays(mesh)
@@ -278,7 +355,7 @@ function _vtk_corner_rows(::Val{2}, nlocal)
 end
 
 function _vtk_corner_rows(::Val{3}, nlocal)
-    nlocal == 4 && return [1, 2, 3, 4]
+    nlocal in (4, 10, 11) && return [1, 2, 3, 4]
     nlocal in (8, 27) && return [1, 2, 3, 4, 5, 6, 7, 8]
     throw(ArgumentError("cannot write VTK 3D cells with $nlocal local nodes"))
 end
@@ -379,6 +456,51 @@ function write_stokes_vtk(
             tau_yy = post.τyy,
             tau_zz = post.τzz,
             tau_xy = post.τxy,
+            tau_II = post.tauII,
+        )),
+        title,
+    )
+end
+
+"""
+    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
+                     P_cpu, v_cpu::NTuple{3}, post; kwargs...)
+
+Write a three-dimensional Stokes solution to a legacy VTK file. `v_cpu` holds
+one nodal velocity array per direction, and `post` the diagnostics returned by
+the three-dimensional `compute_strain_rate_stress_postprocess`.
+
+Pressure is written as cell data. For tetrahedra it is evaluated at the centroid
+by averaging the four P1 values; for Hex27 it uses the cell-center value.
+"""
+function write_stokes_vtk(
+    vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu,
+    v_cpu::NTuple{3}, post;
+    title = "FEMTools Stokes 3D",
+    cell_data = (;),
+)
+    topo = _vtk_topology(mesh_stokes)
+    vtk_V = ntuple(c -> [v_cpu[c][old_i] for old_i in topo.nodes], 3)
+    cell_P = if size(mesh_stokes.el2n, 1) in (10, 11)
+        [sum(P_cpu[DoFsP_cpu[a, iel]] for a in 1:4) / 4 for iel in 1:mesh_stokes.nels]
+    else
+        [P_cpu[DoFsP_cpu[1, iel]] for iel in 1:mesh_stokes.nels]
+    end
+
+    return write_vtk(
+        vtk_path,
+        mesh_stokes;
+        point_data = (;
+            Vx = vtk_V[1], Vy = vtk_V[2], Vz = vtk_V[3],
+            V = sqrt.(vtk_V[1] .^ 2 .+ vtk_V[2] .^ 2 .+ vtk_V[3] .^ 2),
+        ),
+        cell_data = merge(cell_data, (;
+            P = cell_P,
+            strain_xx = post.εxx, strain_yy = post.εyy, strain_zz = post.εzz,
+            strain_xy = post.εxy, strain_xz = post.εxz, strain_yz = post.εyz,
+            strain_II = post.εII,
+            tau_xx = post.τxx, tau_yy = post.τyy, tau_zz = post.τzz,
+            tau_xy = post.τxy, tau_xz = post.τxz, tau_yz = post.τyz,
             tau_II = post.tauII,
         )),
         title,

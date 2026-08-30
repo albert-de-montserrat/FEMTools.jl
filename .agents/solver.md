@@ -21,11 +21,13 @@ Physics layers:
 - 2-D Stokes: `StokesDR` on a `MixedMesh`, viscoelastic rheology with optional
   Drucker-Prager plasticity, pressure scaling, Powell-Hestenes outer iteration,
   DYREL velocity iteration, stress history, and a discrete adjoint.
-- Coupled 2-D thermal--Stokes: `solve_coupled_dyrel!` advances one thermal DR
+- Coupled 2-D/3-D thermal--Stokes: `solve_coupled_dyrel!` advances one thermal DR
   step per inner Stokes velocity step and gathers the continuous thermal field
   onto the discontinuous pressure-temperature DoFs.
-- 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure, caller-owned
-  arrays, forward/adjoint wrappers, and material gradients.
+- 3-D Stokes: T11 or Hex27/Q2 velocity with cell-local P1 pressure in a
+  `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic solves. The
+  original caller-owned viscous forward/adjoint and material-gradient path is
+  Hex27-specific.
 - The frozen forward/adjoint operator paths intentionally assemble dense
   element blocks for repeated application. Sparse matrices in tests serve as
   reference oracles, not the production solve path.
@@ -193,8 +195,8 @@ R^p_{e,i}=\int_{Ω_e}N_i\left[
 ```
 
 In 2-D, velocity and pressure live on the two fields of `MixedMesh` (commonly
-T7/P1-discontinuous). In the 3-D path, velocity is continuous Hex27/Q2 and
-pressure has four cell-local modes `(1, ξ, η, ζ)`.
+T7/P1-discontinuous). In the 3-D state path, velocity is continuous T11 or
+Hex27/Q2 and pressure has four cell-local linear modes.
 
 ### Viscoelastic and plastic constitutive update
 
@@ -219,8 +221,8 @@ viscosity and trial stress are
 \left(\dot ε^\prime+\frac{τ^n}{2GΔt}\right).
 ```
 
-The purely viscous limit is `G=∞`, so `ηve=η`. The 3-D production path is
-currently purely viscous and computes
+The purely viscous limit is `G=∞`, so `ηve=η`. The original caller-owned
+3-D path remains purely viscous and computes
 
 ```math
 τ=2η\left[\operatorname{sym}(\nabla v)
@@ -294,8 +296,8 @@ estimate of the symmetrically Jacobi-scaled operator
 
 ### Three-dimensional iteration
 
-The 3-D Hex27/Q2--P1 path uses a simpler diagonally preconditioned fixed-point
-scheme rather than the 2-D Chebyshev recurrence:
+The caller-owned 3-D Hex27/Q2--P1 path uses a simpler diagonally preconditioned
+fixed-point scheme rather than the Chebyshev recurrence:
 
 ```math
 P\leftarrow P+γ_P M_P^{-1}R^p,
@@ -305,6 +307,12 @@ v\leftarrow v-ωD_v^{-1}(R^v-f).
 
 The constant pressure mode is mass-weighted to zero after each pressure update.
 The four cell-local pressure residuals test `-div(v)` against `(1,ξ,η,ζ)`.
+
+The `StokesDR`/`MixedMesh` 3-D path instead extends the Powell-Hestenes/DYREL
+iteration to three velocity components and supports viscoelastic stress history,
+Drucker-Prager plasticity, and coupled thermal relaxation. Its signed linear
+pressure basis uses the positive Jacobi mass `∫Nᵢ²dΩ`; direct lumping by
+`∫NᵢdΩ` is invalid because three modes integrate to zero.
 
 ### Discrete adjoints
 

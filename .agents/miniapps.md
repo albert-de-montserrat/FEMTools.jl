@@ -33,6 +33,23 @@ The example collection is not uniform yet:
 - the test suite parse-checks an explicit subset but does not run the miniapps
   end to end.
 
+`solve_stokes_dyrel!` and `solve_coupled_dyrel!` impose three requirements that
+a new driver has to satisfy; each of them diverges the relaxation rather than
+reporting a setup error:
+
+- the initial velocity must already satisfy the boundary conditions and be
+  divergence-free, not merely be a plausible guess;
+- absolute residuals are compared against fixed thresholds, so a dimensional
+  crustal-scale problem must be solved in characteristic units;
+- the Drucker-Prager regularisation viscosity must stay at or above the
+  viscoelastic viscosity `G Δt`.
+
+The thermal half of `solve_coupled_dyrel!` converges on a relative residual. A
+time step far below the thermal diffusion time leaves that residual at its
+cancellation floor from the first iteration, so its tolerance has to be loosened
+to a reachable value; the coupled solve otherwise runs to `total_iterMax` with
+the Stokes residual already at machine precision.
+
 The 2-D adjoint miniapps use the solver convention
 `R_u^T λ = -J_u` and therefore report material sensitivities as
 `J_m + λ^T R_m`; do not import the opposite 3-D contraction sign into them.
@@ -63,6 +80,7 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
 | `examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
+| `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear |
 
 ## 2-D building-block miniapps
 
@@ -86,6 +104,7 @@ owning substantial assembly or solve logic in the script.
 | `examples/lithostatic_pressure/lithostatic_pressure3D.jl` | Gmsh Hex8 | Three-dimensional dense-inclusion lithostatic-pressure solve and VTK output |
 | `examples/stokes/sinking_block/sinking_block_3D.jl` | Gmsh Hex27/Q2 with cell-local P1 pressure | Matrix-free forward 3-D sinking block on CPU or accelerator backend |
 | `examples/stokes/sinking_block/sinking_block_3D_adj.jl` | same forward mesh/state | Matrix-free 3-D discrete adjoint and material gradients |
+| `examples/stokes/volcano/volcano_thermal_stokes_3D.jl` | unstructured chamber-conforming T11/P1-disc | Coupled thermal--Stokes volcanic edifice with visco-elasto-plastic crust and an ellipsoidal chamber |
 
 ## 3-D building-block and experimental miniapps
 
@@ -114,9 +133,10 @@ applications.
 | `examples/benchmarks/adjoint_perf.jl` | Includes the 2-D sinking-block adjoint and sweeps mesh size/viscosity contrast |
 | `examples/benchmarks/forward_lambda_perf.jl` | Compares Gershgorin and measured forward spectral bounds on the sinking block |
 | `examples/benchmarks/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
-| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion |
+| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation, order conversion, and the volcano cross-section geometry |
 | `examples/stokes/sinking_block/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
 | `examples/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
+| `examples/stokes/volcano/volcano_mesh_3D.jl` | Gmsh T10 mesher fragmented by the chamber ellipsoid and enriched to T11 with cell bubbles |
 | `examples/elasticity/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 
 ## Miniapp contract
@@ -127,8 +147,8 @@ New or polished primary miniapps should follow this shape:
    scientific and execution parameters visible at the boundary.
 2. Return a `NamedTuple` containing the fields and convergence/output metadata
    needed by tests, benchmarks, and downstream plotting.
-3. Guard the default execution so another script can `include` the file without
-   starting a solve.
+3. Run the top-level entry point unconditionally. Reusable code that must be
+   included without launching a solve belongs in a support file.
 4. Support a headless, no-output mode such as `show_plot=false` and
    `write_output=false`.
 5. Accept a backend argument when the implementation is backend-neutral; do not
@@ -150,8 +170,8 @@ New or polished primary miniapps should follow this shape:
 
 Polish existing miniapps before adding near-duplicates:
 
-1. Make every primary 2-D/3-D package-solver miniapp includable, headless, and
-   callable without global side effects.
+1. Make every primary 2-D/3-D package-solver miniapp headless-capable and
+   callable through a keyword-driven entry point.
 2. Remove environment activation from scripts and use the examples project as
    the single dependency declaration.
 3. Move hard-coded accelerator selection behind a backend argument or retain it
@@ -173,8 +193,7 @@ For a miniapp change:
   hardware are available;
 - assert convergence or the expected analytical/reference error;
 - verify the returned result contract rather than scraping printed output;
-- check that `include` does not launch the default simulation for a primary
-  maintained miniapp;
+- check that support files can be included without launching a simulation;
 - verify output in a temporary directory when writing changes;
 - run the relevant package regression tests when the miniapp exposed a core
   bug or relies on changed core behavior;

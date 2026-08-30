@@ -14,14 +14,18 @@ Meshing spans `src/elements/` and `src/mesh/`:
 - Element-aware mesh constructors precompute geometry for single-field
   solvers. Constructors without an element retain `nothing` for element and
   geometry.
-- Unstructured boundary-node detection supports T3, Q4, T6/T7, Q8/Q9, Tet4,
-  Hex8, and Hex27 topology. It identifies exterior entities by occurrence
+- Unstructured boundary-node detection supports T3, Q4, T6/T7, Q8/Q9,
+  Tet4/T10/T11, Hex8, and Hex27 topology. It identifies exterior entities by occurrence
   count; it does not preserve named boundary groups.
 - `MixedMesh` stores distinct velocity and pressure connectivity. Its common
   construction path derives discontinuous linear pressure connectivity and
   nodal normals from a velocity mesh.
 - `MixedMeshCache` stores velocity/pressure geometry and the corresponding
   reference elements.
+- In three dimensions, `MixedMesh` supports T10/T11 tetrahedral or Hex27
+  velocity connectivity with four discontinuous linear pressure DoFs per cell;
+  3-D nodal normals are currently
+  zero because no solver path consumes them.
 - Sparsity, node-to-element adjacency, greedy coloring, color groups, and
   discontinuous linear mesh generation are available.
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:

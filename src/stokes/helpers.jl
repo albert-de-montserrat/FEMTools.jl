@@ -24,25 +24,38 @@ stokes_update_variable!(u, ∂u∂τ, α_dr, ndofs, backend, workgroup) =
     launch!(update_variable_kernel!, backend, workgroup, ndofs, u, ∂u∂τ, α_dr)
 
 @kernel function update_stokes_velocity_kernel!(
-        rate_x, rate_y, vx, vy,
-        @Const(Rx), @Const(Ry), @Const(PCx), @Const(PCy),
-        βx, βy, αx, αy,
-    )
+        rate, v, @Const(R), @Const(PC), β, α_dr, ::Val{D},
+    ) where {D}
     i = @index(Global)
-    new_rate_x = βx * rate_x[i] + Rx[i] / PCx[i]
-    new_rate_y = βy * rate_y[i] + Ry[i] / PCy[i]
-    rate_x[i] = new_rate_x
-    rate_y[i] = new_rate_y
-    vx[i] += αx * new_rate_x
-    vy[i] += αy * new_rate_y
+    ntuple(Val(D)) do c
+        new_rate = β[c] * rate[c][i] + R[c][i] / PC[c][i]
+        rate[c][i] = new_rate
+        v[c][i] += α_dr[c] * new_rate
+        nothing
+    end
 end
+
+"""
+    update_stokes_velocity!(rate, v, R, PC, β, α_dr, ndofs, backend, workgroup)
+    update_stokes_velocity!(rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
+                            βx, βy, αx, αy, ndofs, backend, workgroup)
+
+Advance the Chebyshev velocity recurrence for every spatial direction. The
+first form takes one tuple entry per direction; the second takes the two
+plane-strain components separately.
+"""
+update_stokes_velocity!(
+        rate::NTuple{D}, v::NTuple{D}, R, PC, β, α_dr, ndofs, backend, workgroup,
+    ) where {D} =
+    launch!(update_stokes_velocity_kernel!, backend, workgroup, ndofs,
+            rate, v, R, PC, β, α_dr, Val(D))
 
 update_stokes_velocity!(
         rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
         βx, βy, αx, αy, ndofs, backend, workgroup,
     ) =
-    launch!(update_stokes_velocity_kernel!, backend, workgroup, ndofs,
-            rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy, βx, βy, αx, αy)
+    update_stokes_velocity!((rate_x, rate_y), (vx, vy), (Rx, Ry), (PCx, PCy),
+                            (βx, βy), (αx, αy), ndofs, backend, workgroup)
 
 """
     remove_pressure_mean!(P, M_P) -> p_mean

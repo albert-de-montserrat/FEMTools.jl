@@ -21,51 +21,51 @@ integration points where shape functions can be negative.
 end
 @inline effective_viscosity_phase(Nv, η, G, phase_loc, Δt) =
     first(viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt))
-@inline zero_old_stress(::Type{T}) where T = (zero(T), zero(T), zero(T))
+@inline zero_old_stress(::Type{T}, ::Val{Nτ}) where {T, Nτ} = ntuple(_ -> zero(T), Val(Nτ))
 @inline old_stress_component_at_ip(_, τ::Number) = τ
 @inline old_stress_component_at_ip(Nv, τ) = dot(Nv, τ)
 """
-    IntegrationPointStress{TX, TY, TXY}
+    IntegrationPointStress(τ::NTuple)
+    IntegrationPointStress(τxx, τyy, τxy, ...)
 
 Old deviatoric-stress components stored at integration points for viscoelastic
-memory. Each field is an `NQ × nels` matrix (integration-point index × element
-index). Used by `_gather_old_stress` to recover `(τxx_q, τyy_q, τxy_q)` at
-quadrature point `q` without going through nodal interpolation.
+memory. Each component is an `NQ × nels` matrix (integration-point index ×
+element index), ordered `(τxx, τyy, τxy)` in plane strain and
+`(τxx, τyy, τzz, τxy, τxz, τyz)` in three dimensions. Used by
+`_gather_old_stress` to recover the stress at quadrature point `q` without
+going through nodal interpolation.
 """
-struct IntegrationPointStress{TX, TY, TXY}
-    τxx::TX
-    τyy::TY
-    τxy::TXY
+struct IntegrationPointStress{Nτ, T}
+    τ::NTuple{Nτ, T}
 end
+IntegrationPointStress(τxx, τyy, τxy, rest...) =
+    IntegrationPointStress((τxx, τyy, τxy, rest...))
 
 """
-    IntegrationPointStressOutput{TX, TY, TXY}
+    IntegrationPointStressOutput(τ, iel)
 
 Scratch buffer for writing the *current* deviatoric stress to integration
 points during momentum-residual assembly. `iel` pins the buffer to a specific
-element so that `store_stress_at_ip!` can index `τxx[q, iel]` directly.
+element so that `store_stress_at_ip!` can index `τ[c][q, iel]` directly.
 """
-struct IntegrationPointStressOutput{TX, TY, TXY}
-    τxx::TX
-    τyy::TY
-    τxy::TXY
+struct IntegrationPointStressOutput{Nτ, T}
+    τ::NTuple{Nτ, T}
     iel::Int
 end
-@inline old_stress_at_ip(_, ::Nothing, ::Type{T}, _) where T = zero_old_stress(T)
-@inline function old_stress_at_ip(Nv, τ_old::NTuple{3}, ::Type, _)
-    return (
-        old_stress_component_at_ip(Nv, τ_old[1]),
-        old_stress_component_at_ip(Nv, τ_old[2]),
-        old_stress_component_at_ip(Nv, τ_old[3]),
-    )
-end
-@inline old_stress_at_ip(_, τ_old::IntegrationPointStress, ::Type, q) =
-    (τ_old.τxx[q], τ_old.τyy[q], τ_old.τxy[q])
-@inline store_stress_at_ip!(::Nothing, _, _, _, _) = nothing
-@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy)
-    τ_store.τxx[q, τ_store.iel] = τxx
-    τ_store.τyy[q, τ_store.iel] = τyy
-    τ_store.τxy[q, τ_store.iel] = τxy
+@inline old_stress_at_ip(_, ::Nothing, ::Type{T}, _, ::Val{Nτ}) where {T, Nτ} =
+    zero_old_stress(T, Val(Nτ))
+@inline old_stress_at_ip(Nv, τ_old::NTuple{Nτ}, ::Type, _, ::Val{Nτ}) where {Nτ} =
+    map(τ -> old_stress_component_at_ip(Nv, τ), τ_old)
+@inline old_stress_at_ip(_, τ_old::IntegrationPointStress{Nτ}, ::Type, q, ::Val{Nτ}) where {Nτ} =
+    ntuple(c -> τ_old.τ[c][q], Val(Nτ))
+@inline store_stress_at_ip!(::Nothing, _, _...) = nothing
+@inline function store_stress_at_ip!(
+        τ_store::IntegrationPointStressOutput{Nτ}, q, τij::Vararg{Any, Nτ},
+    ) where {Nτ}
+    ntuple(Val(Nτ)) do c
+        τ_store.τ[c][q, τ_store.iel] = τij[c]
+        nothing
+    end
     return nothing
 end
 
@@ -90,7 +90,7 @@ unchanged in practice.
 """
 @inline second_invariant(axx, ayy, axy) = second_invariant(tuple(axx, ayy, axy))
 
-@inline function second_invariant(A::T) where {T <: Union{SVector{3}, NTuple{3}}}
+@inline function second_invariant(A::Union{SVector{3}, Tuple{Any, Any, Any}})
     Azz = -A[1] - A[2]
     # typeof(real(A[1])) recovers the underlying float type when A[1] is a
     # ForwardDiff Dual (real(::Dual) = value(::Dual) is defined by ForwardDiff).
@@ -110,7 +110,9 @@ evaluated via `viscoelastic_coefficients_phase`. Pass `(0, 0, 0)` for
 `τ_old` on the first time step. This method has no yield criterion; the stress
 is purely viscoelastic.
 """
-@inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+@inline function deviatoric_stress(
+        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old::NTuple{3},
+    )
     vxloc, vyloc = v
     ∇vx = ∂N∂x' * vxloc
     ∇vy = ∂N∂x' * vyloc
@@ -145,7 +147,10 @@ Computes the trial viscoelastic stress, evaluates the yield function
 regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`, whose
 denominator stays positive for any dilation angle.
 """
-@inline function deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager)
+@inline function deviatoric_stress(
+        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
+        τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
+    )
     vxloc, vyloc = v
     ∇vx = ∂N∂x' * vxloc
     ∇vy = ∂N∂x' * vyloc
@@ -206,3 +211,100 @@ denominator stays positive for any dilation angle.
     return τij
 end
 
+
+"""
+    second_invariant(A::NTuple{6}) -> τII
+
+Compute the second invariant `τII = √J₂` of a full three-dimensional symmetric
+deviatoric tensor stored as `(τxx, τyy, τzz, τxy, τxz, τyz)`:
+
+    τII = √((τxx² + τyy² + τzz²) / 2 + τxy² + τxz² + τyz²)
+
+Unlike the plane-strain method, `τzz` is carried explicitly rather than being
+reconstructed from the in-plane components. The same `eps²` floor keeps the
+square root differentiable at zero stress.
+"""
+@inline function second_invariant(
+        A::Union{SVector{6}, Tuple{Any, Any, Any, Any, Any, Any}},
+    )
+    FT = typeof(real(A[1]))
+    return √((A[1]^2 + A[2]^2 + A[3]^2) / 2 + A[4]^2 + A[5]^2 + A[6]^2 + eps(FT)^2)
+end
+
+"""
+    deviatoric_stress(v::NTuple{3}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+        -> (τxx, τyy, τzz, τxy, τxz, τyz)
+
+Compute the three-dimensional viscoelastic deviatoric stress at a quadrature
+point.
+
+`v` holds one element velocity `SVector` per spatial direction and `τ_old` the
+six stress-history components in the same order as the result. Pass a tuple of
+zeros for `τ_old` on the first time step. This method has no yield criterion.
+"""
+@inline function deviatoric_stress(
+        v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
+        τ_old::NTuple{6},
+    )
+    ∇v = ntuple(i -> ∂N∂x' * v[i], Val(3))
+    tr = (∇v[1][1] + ∇v[2][2] + ∇v[3][3]) / 3
+    ε = (
+        ∇v[1][1] - tr, ∇v[2][2] - tr, ∇v[3][3] - tr,
+        (∇v[1][2] + ∇v[2][1]) / 2,
+        (∇v[1][3] + ∇v[3][1]) / 2,
+        (∇v[2][3] + ∇v[3][2]) / 2,
+    )
+    ηve, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+    return map((εij, τij_o) -> 2 * ηve * (εij + τij_o * inv_2Gdt), ε, τ_old)
+end
+
+"""
+    deviatoric_stress(v::NTuple{3}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+                      plastic::DruckerPrager) -> (τxx, τyy, τzz, τxy, τxz, τyz)
+
+Compute the three-dimensional elasto-viscoplastic deviatoric stress at a
+quadrature point with Drucker-Prager return mapping.
+
+The yield function, plastic multiplier, and regularization match the
+plane-strain method. The flow direction is the radial return
+`∂Q/∂τᵢⱼ = τᵢⱼ / (2 τII)`, which for the stored off-diagonal components — each
+of which stands for two tensor entries — becomes `τᵢⱼ / τII`. The correction is
+traceless because the normal components of `∂Q/∂τ` sum to `(τxx+τyy+τzz)/(2τII) = 0`.
+
+The plane-strain method instead differentiates `τII` with respect to the two
+free in-plane components, with `τzz = −τxx − τyy` slaved to them, so its flow
+direction is not radial. The two return maps therefore differ even when the
+three-dimensional kinematics reduce to plane strain.
+"""
+@inline function deviatoric_stress(
+        v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
+        τ_old::NTuple{6}, Pq,
+        plastic::DruckerPrager,
+    )
+    τij = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
+
+    # Interpolate per-phase plastic parameters to the quadrature point.
+    cosϕ  = interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
+    sinϕ  = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
+    sinΨ  = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
+    C     = interp2ip_phase(Nv, plastic.C,     phase_loc)
+    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
+    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
+
+    τII      = second_invariant(τij)
+    τII_safe = τII + eps(typeof(τII))^2
+    F        = τII - cosϕ * C - sinϕ * Pq
+    ∂F∂P     = -sinϕ
+    ∂Q∂P     = -sinΨ
+    # Normal components carry a factor 1/2 that the stored shear components,
+    # which each represent two tensor entries, do not.
+    ∂Q∂τ = (
+        τij[1] / (2 * τII_safe), τij[2] / (2 * τII_safe), τij[3] / (2 * τII_safe),
+        τij[4] / τII_safe, τij[5] / τII_safe, τij[6] / τII_safe,
+    )
+
+    λ = F > 0 ? F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P) : zero(F)
+
+    return λ > 0 ? map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) : τij
+end

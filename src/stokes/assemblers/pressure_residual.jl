@@ -86,7 +86,7 @@ bulk viscosity `NTuple`s.
 """
 function assemble_pressure_residual_matrices_atomix!(
     RP,
-    vx, vy,
+    v::NTuple{D, <:AbstractVector},
     P, P0,
     T, T0,
     el2n_v, el2nP,
@@ -98,18 +98,22 @@ function assemble_pressure_residual_matrices_atomix!(
     α, ηb,
     Δt,
     backend, workgroup,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     # Evaluate pressure shape functions at velocity IPs so that geo_P
     # (precomputed at velocity IPs) and NqP share the same quadrature points.
     NqP = shape_function_values(element_P, element_v.integration_points)
 
     return assemble_pressure_residual_kernel!(
-        RP, vx, vy, P, P0, T, T0,
+        RP, v, P, P0, T, T0,
         el2n_v, el2nP, geo_v, geo_P, nels,
         phases, α, ηb, Δt, NqP,
         Val(NV), Val(NP), workgroup,
     )
 end
+
+assemble_pressure_residual_matrices_atomix!(
+        RP, vx::AbstractVector, vy::AbstractVector, args...) =
+    assemble_pressure_residual_matrices_atomix!(RP, (vx, vy), args...)
 
 """
     assemble_pressure_residual_kernel!(RP, vx, vy, P, P0, T, T0,
@@ -128,15 +132,15 @@ which makes the call differentiable with Enzyme (see
 from `RP`.
 """
 function assemble_pressure_residual_kernel!(
-    RP, vx, vy, P, P0, T, T0,
+    RP, v::NTuple{D, <:AbstractVector}, P, P0, T, T0,
     el2n_v, el2nP, geo_v, geo_P, nels,
     phases, α, ηb, Δt, NqP,
     ::Val{NV}, ::Val{NP}, workgroup
-) where {NV, NP}
+) where {D, NV, NP}
     fill!(RP, 0)
     backend = KA.get_backend(RP)
     pressure_residual_atomic_kernel!(backend, workgroup)(
-        RP, vx, vy, P, P0, T, T0,
+        RP, v, P, P0, T, T0,
         el2n_v, el2nP, geo_v, geo_P,
         phases, α, ηb, Δt, NqP, Val(NV), Val(NP);
         ndrange = nels,
@@ -145,9 +149,12 @@ function assemble_pressure_residual_kernel!(
     return nothing
 end
 
+assemble_pressure_residual_kernel!(RP, vx::AbstractVector, vy::AbstractVector, args...) =
+    assemble_pressure_residual_kernel!(RP, (vx, vy), args...)
+
 @kernel function pressure_residual_atomic_kernel!(
     RP,
-    @Const(vx), @Const(vy),
+    @Const(v),
     @Const(P), @Const(P0),
     @Const(T), @Const(T0),
     @Const(el2n_v), @Const(el2nP),
@@ -156,34 +163,34 @@ end
     α, ηb, Δt, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
+    local_nodes_P, Re = pressure_element_residual(v, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
     # P is discontinuous here, so element pressure DoFs are not shared.
     _add_local!(RP, local_nodes_P, Re, Val(false))
 end
 
 """
-    pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
+    pressure_element_residual(v, P, P0, T, T0, el2n_v, el2nP,
                                geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
 
 Gather element-local nodal values and integrate the Stokes pressure residual for element `iel`.
 
-Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
+`v` holds one nodal velocity array per spatial direction. Returns
+`(local_nodes_P, Re)` ready for global scatter into `RP`.
 """
-@inline function pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
+@inline function pressure_element_residual(v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP,
+        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = geo_v[iel]
     geo_P_el  = geo_P[iel]
-    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
-    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
     P_loc     = _gather_local(P,  local_nodes_P, Val(NP))
     P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
     Tloc      = _gather_local(T,  local_nodes_P, Val(NP))
     T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
     phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))
     Re = integrate_PH_pressure_residual(
-        (vxloc, vyloc), P_loc, P0loc, Tloc, T0loc,
+        vloc, P_loc, P0loc, Tloc, T0loc,
         geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NqP,
     )
     return local_nodes_P, Re

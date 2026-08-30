@@ -3,33 +3,34 @@
                    ρ0=(1.0,), K=(Inf,), g=(0.0, 0.0), Tref=0.0)
 
 Typed per-phase material properties and body-force parameters for `StokesDR`.
-All property tuples must have the same length and floating-point type.
+All property tuples must have the same length and floating-point type. The
+length of `g` selects two or three spatial dimensions.
 """
-@kwdef struct StokesMaterial{nphases, FP}
+@kwdef struct StokesMaterial{D, nphases, FP}
     η::NTuple{nphases, FP} = (1.0,)
     ηb::NTuple{nphases, FP} = (1.0,)
     G::NTuple{nphases, FP} = (Inf,)
     α::NTuple{nphases, FP} = (0.0,)
     ρ0::NTuple{nphases, FP} = (1.0,)
     K::NTuple{nphases, FP} = (Inf,)
-    g::NTuple{2, FP} = (0.0, 0.0)
+    g::NTuple{D, FP} = (0.0, 0.0)
     Tref::FP = 0.0
 
     function StokesMaterial(
         η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
         G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
         ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
-        g::NTuple{2, FP}, Tref::FP,
-    ) where {FP}
+        g::NTuple{D, FP}, Tref::FP,
+    ) where {D, FP}
         nphases = length(η)
         length(ηb) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
             throw(DimensionMismatch("Stokes material property tuples must have the same length"))
-        return new{nphases, FP}(η, ηb, G, α, ρ0, K, g, Tref)
+        return new{D, nphases, FP}(η, ηb, G, α, ρ0, K, g, Tref)
     end
 end
 
 """
-    StokesDR{nphases, _T, _TI, _TS, FP}
+    StokesDR{D, nphases, _T, _TI, _TS, FP, Nτ}
 
 Solver state for an incompressible Stokes flow solved with a pseudo-transient
 dynamic-relaxation (DR) scheme using mixed elements (separate velocity and
@@ -37,6 +38,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 
 # Type parameters
 - `nphases` — number of material phases (compile-time constant)
+- `D`       — number of spatial dimensions
 - `_T`       — nodal float array type (e.g. `Vector{Float64}` on CPU, `CuArray` on GPU)
 - `_TI`      — nodal integer array type (same backend, element type `Int`)
 - `_TS`      — stress array type (nodal by default, or integration-point storage)
@@ -47,8 +49,10 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 |:---------- |:----------------------------------------- |
 | `vx`       | x-velocity (current iterate)              |
 | `vy`       | y-velocity (current iterate)              |
+| `vz`       | z-velocity in three dimensions            |
 | `∂vx∂τ`   | Pseudo-transient rate for x-velocity       |
 | `∂vy∂τ`   | Pseudo-transient rate for y-velocity       |
+| `∂vz∂τ`   | Pseudo-transient rate for z-velocity       |
 | `Rv_x`     | x-momentum residual                       |
 | `Rv_x0`    | Residual snapshot for λ_min estimate      |
 | `∂Rv_x∂vx` | Row-sum Jacobian estimate for x-momentum  |
@@ -65,6 +69,9 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `τyy_old`  | Previous-step deviatoric stress yy        |
 | `τxy_old`  | Previous-step deviatoric stress xy        |
 
+Three-dimensional states additionally carry `Rv_z`, its work arrays, and the
+stress components `τzz`, `τxz`, and `τyz` with matching old-stress arrays.
+
 # Pressure-node arrays (length `nnodes_P`)
 | Field      | Description                               |
 |:---------- |:----------------------------------------- |
@@ -75,7 +82,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 | `T0`       | Temperature at previous time step         |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
-| `M_P`      | Lumped pressure mass (`∫ N_i dΩ`)         |
+| `M_P`      | Pressure mass diagonal (`∫NᵢdΩ` in 2-D, `∫Nᵢ²dΩ` in 3-D) |
 | `Pnum`     | Arrow-Hurwicz numerical pressure correction (`γP·RP/M_P`) passed to the momentum equation |
 | `phases_P` | Per-node phase index (1-based integer)    |
 
@@ -83,8 +90,8 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 Properties are supplied together through [`StokesMaterial`](@ref).
 
 # Global scalar fields
-`G` is the shear modulus. `g::NTuple{2,FP}` (gravity vector, default `(0,0)`), `Tref::FP` (reference
-temperature for the linearised EOS, default 0).
+`G` is the shear modulus. `g::NTuple{D,FP}` is the gravity vector (default
+`(0,0)`), and `Tref::FP` is the equation-of-state reference temperature.
 
 # Solver parameters
 `CFL_v`, `CFL_P`, `c_fact`, `ϵ` (convergence tolerance).
@@ -106,30 +113,21 @@ integration points. `T` and `T0` should be filled via `copyto!` before calling
 the solver. The time step `Δt` is passed directly to the assembler rather than
 stored here.
 """
-struct StokesDR{nphases, _T, _TI, _TS, FP}
-    # velocity-node solution fields
-    vx::_T
-    vy::_T
-    ∂vx∂τ::_T
-    ∂vy∂τ::_T
-    # velocity-node residual and DR work arrays
-    Rv_x::_T
-    Rv_x0::_T
-    ∂Rv_x∂vx::_T
-    PC_vx::_T
-    Rv_y::_T
-    Rv_y0::_T
-    ∂Rv_y∂vy::_T
-    PC_vy::_T
+struct StokesDR{D, nphases, _T, _TI, _TS, FP, Nτ}
+    # velocity-node solution fields, one array per spatial direction
+    v::NTuple{D, _T}
+    ∂v∂τ::NTuple{D, _T}
+    # velocity-node residual and DR work arrays, one array per direction
+    Rv::NTuple{D, _T}
+    Rv0::NTuple{D, _T}
+    ∂Rv∂v::NTuple{D, _T}
+    PC_v::NTuple{D, _T}
     # velocity-node phase assignment
     phases_v::_TI
-    # deviatoric stress history
-    τxx::_TS
-    τyy::_TS
-    τxy::_TS
-    τxx_old::_TS
-    τyy_old::_TS
-    τxy_old::_TS
+    # deviatoric stress history, ordered (τxx, τyy, τxy) in plane strain and
+    # (τxx, τyy, τzz, τxy, τxz, τyz) in three dimensions
+    τ::NTuple{Nτ, _TS}
+    τ_old::NTuple{Nτ, _TS}
     # pressure-node solution fields
     P::_T
     P0::_T
@@ -151,7 +149,7 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     K::NTuple{nphases, FP}     # bulk modulus (EOS)      [Pa]
     G::NTuple{nphases, FP}     # shear modulus           [Pa]
     # global scalar parameters
-    g::NTuple{2, FP}           # gravitational acceleration [m s⁻²]
+    g::NTuple{D, FP}           # gravitational acceleration [m s⁻²]
     Tref::FP                   # reference temperature for EOS [K]
     # solver parameters
     CFL_v::FP
@@ -174,7 +172,10 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
         _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
         _K   = K   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
         _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
-        _g   = g   === nothing ? (FP(0), FP(0))   : (FP(g[1]), FP(g[2]))
+        _g   = g   === nothing ? (FP(0), FP(0))   : map(FP, Tuple(g))
+        D    = length(_g)
+        # Independent components of a symmetric tensor: 3 in plane strain, 6 in 3-D.
+        Nτ   = D * (D + 1) ÷ 2
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
         stress_dims = stress_size === nothing ? (nnodes_v,) :
             stress_size isa Integer ? (stress_size,) : Tuple(stress_size)
@@ -183,14 +184,13 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
         newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
         newiv() = KernelAbstractions.ones(backend,  Int, nnodes_v)
         newip() = KernelAbstractions.ones(backend,  Int, nnodes_P)
-        τxx = newτ()
-        new{nphases, typeof(newv()), typeof(newiv()), typeof(τxx), FP}(
-            newv(), newv(), newv(), newv(),           # vx, vy, ∂vx∂τ, ∂vy∂τ
-            newv(), newv(), newv(), newv(),           # Rv_x, Rv_x0, ∂Rv_x∂vx, PC_vx
-            newv(), newv(), newv(), newv(),           # Rv_y, Rv_y0, ∂Rv_y∂vy, PC_vy
+        dirs()  = ntuple(_ -> newv(), D)
+        new{D, nphases, typeof(newv()), typeof(newiv()), typeof(newτ()), FP, Nτ}(
+            dirs(), dirs(),                           # v, ∂v∂τ
+            dirs(), dirs(), dirs(), dirs(),           # Rv, Rv0, ∂Rv∂v, PC_v
             newiv(),                                  # phases_v
-            τxx, newτ(), newτ(),                      # τxx, τyy, τxy
-            newτ(), newτ(), newτ(),                   # τxx_old, τyy_old, τxy_old
+            ntuple(_ -> newτ(), Nτ),                  # τ
+            ntuple(_ -> newτ(), Nτ),                  # τ_old
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
@@ -200,19 +200,70 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
     end
 end
 
-"""
-    velocity(dr::StokesDR) -> (vx, vy)
+# Component names for the direction-indexed and stress-history tuples. The
+# solver and assemblers work with the tuples directly; these aliases keep the
+# per-component names that drivers, diagnostics and the adjoint paths use.
+@inline _stress_index(::StokesDR{2}, s::Symbol) =
+    s === :τxx ? 1 : s === :τyy ? 2 : s === :τxy ? 3 : 0
+@inline _stress_index(::StokesDR{3}, s::Symbol) =
+    s === :τxx ? 1 : s === :τyy ? 2 : s === :τzz ? 3 :
+    s === :τxy ? 4 : s === :τxz ? 5 : s === :τyz ? 6 : 0
+@inline _stress_old_index(::StokesDR{2}, s::Symbol) =
+    s === :τxx_old ? 1 : s === :τyy_old ? 2 : s === :τxy_old ? 3 : 0
+@inline _stress_old_index(::StokesDR{3}, s::Symbol) =
+    s === :τxx_old ? 1 : s === :τyy_old ? 2 : s === :τzz_old ? 3 :
+    s === :τxy_old ? 4 : s === :τxz_old ? 5 : s === :τyz_old ? 6 : 0
 
-Return the nodal velocity-component arrays of a Stokes solver state.
-"""
-velocity(dr::StokesDR) = (dr.vx, dr.vy)
+@inline function Base.getproperty(dr::StokesDR, s::Symbol)
+    s === :vx     && return getfield(dr, :v)[1]
+    s === :vy     && return getfield(dr, :v)[2]
+    s === :vz     && return getfield(dr, :v)[3]
+    s === :∂vx∂τ  && return getfield(dr, :∂v∂τ)[1]
+    s === :∂vy∂τ  && return getfield(dr, :∂v∂τ)[2]
+    s === :∂vz∂τ  && return getfield(dr, :∂v∂τ)[3]
+    s === :Rv_x   && return getfield(dr, :Rv)[1]
+    s === :Rv_y   && return getfield(dr, :Rv)[2]
+    s === :Rv_z   && return getfield(dr, :Rv)[3]
+    s === :Rv_x0  && return getfield(dr, :Rv0)[1]
+    s === :Rv_y0  && return getfield(dr, :Rv0)[2]
+    s === :Rv_z0  && return getfield(dr, :Rv0)[3]
+    s === :∂Rv_x∂vx && return getfield(dr, :∂Rv∂v)[1]
+    s === :∂Rv_y∂vy && return getfield(dr, :∂Rv∂v)[2]
+    s === :∂Rv_z∂vz && return getfield(dr, :∂Rv∂v)[3]
+    s === :PC_vx  && return getfield(dr, :PC_v)[1]
+    s === :PC_vy  && return getfield(dr, :PC_v)[2]
+    s === :PC_vz  && return getfield(dr, :PC_v)[3]
+    i = _stress_index(dr, s)
+    i > 0 && return getfield(dr, :τ)[i]
+    j = _stress_old_index(dr, s)
+    j > 0 && return getfield(dr, :τ_old)[j]
+    return getfield(dr, s)
+end
 
 """
-    stress(dr::StokesDR) -> (τxx, τyy, τxy)
+    velocity(dr::StokesDR) -> NTuple
 
-Return the current deviatoric-stress arrays of a Stokes solver state.
+Return the nodal velocity-component arrays of a Stokes solver state, one per
+spatial direction.
 """
-stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
+velocity(dr::StokesDR) = getfield(dr, :v)
+
+"""
+    stress(dr::StokesDR) -> NTuple
+
+Return the current deviatoric-stress arrays of a Stokes solver state, ordered
+`(τxx, τyy, τxy)` in plane strain and `(τxx, τyy, τzz, τxy, τxz, τyz)` in three
+dimensions.
+"""
+stress(dr::StokesDR) = getfield(dr, :τ)
+
+"""
+    stress_old(dr::StokesDR) -> NTuple
+
+Return the previous-time deviatoric-stress arrays of a Stokes solver state, in
+the same component order as [`stress`](@ref).
+"""
+stress_old(dr::StokesDR) = getfield(dr, :τ_old)
 
 """
     pressure(dr) -> P

@@ -95,6 +95,11 @@ function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::A
     return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
+# Nodal normals are stored for boundary post-processing and are not read by any
+# solver path, so three-dimensional meshes carry the zero vector everywhere.
+_compute_node_normals(coords::AbstractVector{<:SVector{3, FP}}, ::AbstractMatrix{<:Integer}) where FP =
+    fill(zero(SVector{3, FP}), length(coords))
+
 
 function MixedMesh(
     element::ReferenceElement,
@@ -241,36 +246,95 @@ function MixedMeshCache(
     return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end
 
+"""
+    MixedMeshCache(backend, workgroup, mesh::MixedMesh{3}, element_v, element_P)
+
+Precompute geometry for a three-dimensional mixed mesh at the velocity
+integration points.
+
+The discontinuous pressure basis is defined on the velocity element's reference
+cell rather than on a sub-element of its own, so both geometry fields hold the
+velocity element's data. Only the quadrature weight of `geo_P` is read by the
+pressure residual and pressure scaling.
+"""
+function MixedMeshCache(
+    backend,
+    workgroup,
+    mesh::MixedMesh{3},
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+) where {NV, NP, FP, TV <: AbstractElement{3, NV, FP}, TP <: AbstractElement{3, NP, FP}}
+    ip_v = element_v.integration_points
+    NQ_v = length(ip_v.ω)
+
+    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q], ip_v.ζ[q]), NQ_v)
+    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
+
+    GeoV  = NTuple{NQ_v, Tuple{SMatrix{NV, 3, FP, 3NV}, FP}}
+    geo_v = KA.allocate(backend, GeoV, mesh.nels)
+
+    TDev = TA(backend)
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo_v, TDev(mesh.coords), TDev(mesh.el2n), ∂N∂ξq_v, ip_v.ω, Val(NV);
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+
+    return MixedMeshCache(geo_v, geo_v, element_v, element_P)
+end
+
 # ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------
 
+# Local velocity nodes carrying the discontinuous pressure DoFs. Each row is the
+# node sitting at a reference point where the pressure basis is nodal, so that
+# gathering a continuous field at these nodes reproduces it exactly under the
+# pressure shape functions.
+#
+# Triangles: the P1 basis of `LinearElement{2, 3}` is nodal at the corners.
+# T10/T11: the P1 basis is nodal at the four tetrahedron vertices.
+# Hex27: the four-mode basis (1, ξ, η, ζ) is nodal at the cell center and the
+# +x, +y and +z face centers.
+_pressure_node_rows(::Val{2}, nlocal::Integer) = nlocal >= 3 ? (1, 2, 3) :
+    throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+function _pressure_node_rows(::Val{3}, nlocal::Integer)
+    nlocal in (10, 11) && return (1, 2, 3, 4)
+    nlocal == 27 && return (27, 23, 24, 26)
+    throw(ArgumentError("three-dimensional discontinuous pressure needs T10, T11, or Hex27 connectivity"))
+end
+
 """
     generate_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
-Build the linear triangle topology and element-to-DoF map for discontinuous
-linear pressure elements.
+Build the topology and element-to-DoF map for discontinuous linear pressure
+elements.
 
-`el2n` may be either T3 or T6 triangle connectivity. The returned `p_el2n`
-uses rows 1:3, i.e. the corner nodes of each triangle. The returned
-`p_el2dof` gives each element its own three pressure DoFs:
-`p_el2dof[:, iel] == 3(iel - 1) .+ (1:3)`.
+`el2n` may be T3, T6 or T7 triangle connectivity, T10/T11 tetrahedral
+connectivity, or Hex27 connectivity. The returned `p_el2n` selects the velocity
+nodes at which the pressure basis is nodal: triangle/tetrahedron corners, or the
+cell center and +x, +y, +z face centers of a hexahedron. Each element receives
+its own `NP` pressure DoFs,
+`p_el2dof[:, iel] == NP(iel - 1) .+ (1:NP)`.
 
-Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates
-corner coordinates per element so a discontinuous nodal pressure field can be
-plotted or initialized directly on pressure DoFs.
+Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates the
+selected node coordinates per element so a discontinuous nodal pressure field
+can be plotted or initialized directly on pressure DoFs.
 """
-function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
-    size(el2n, 1) >= 3 || throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+function generate_discontinuous_linear_mesh(
+        coords::AbstractVector{<:SVector{nDim}}, el2n::AbstractMatrix{<:Integer},
+    ) where {nDim}
+    rows = _pressure_node_rows(Val(nDim), size(el2n, 1))
+    NP   = length(rows)
 
     nels      = size(el2n, 2)
-    p_el2n    = Matrix{Int32}(el2n[1:3, :])
-    p_el2dof  = Matrix{Int32}(undef, 3, nels)
-    p_dof_coords = Vector{eltype(coords)}(undef, 3 * nels)
+    p_el2n    = Matrix{Int32}(el2n[collect(rows), :])
+    p_el2dof  = Matrix{Int32}(undef, NP, nels)
+    p_dof_coords = Vector{eltype(coords)}(undef, NP * nels)
 
     for iel in 1:nels
-        base = 3 * (iel - 1)
-        for a in 1:3
+        base = NP * (iel - 1)
+        for a in 1:NP
             dof = base + a
             p_el2dof[a, iel] = Int32(dof)
             p_dof_coords[dof] = coords[p_el2n[a, iel]]

@@ -5,6 +5,7 @@ using DomainSets: ×
 using FEMTools
 using FEMTools: assemble_momentum_residual_matrices_atomix!,
     assemble_viscosity_weighted_pressure_scaling!
+using ForwardDiff
 using KernelAbstractions: CPU, synchronize
 using StaticArrays
 
@@ -155,6 +156,20 @@ end
     stress = 8 .* (strain - tr(strain) / 3 .* I)
     expected = ntuple(i -> SA[dot(dNdx[1, :], stress[:, i]) - dNdx[1, i] * 5.5 - 3g[i]] .* 2, 3)
     @test all(isapprox.(R, expected))
+end
+
+@testset "3D plastic momentum supports component-wise AD" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    Nv = SA[1.0]
+    v = (SA[1.0], SA[2.0], SA[3.0])
+    plastic = DruckerPrager((0.0,), (0.0,), (0.0,), (1.0,), (1.0,))
+    momentum(vx) = first(FEMTools.integrate_momentum_residual(
+        (vx, v[2], v[3]), SA[0.0], nothing, SA[0.0], ((dNdx, 1.0),), SA[1],
+        (1.0,), (Inf,), (0.0,), (1.0,), (Inf,), (0.0, 0.0, 0.0), 0.0, 1.0,
+        (Nv,), (Nv,), ntuple(_ -> 0.0, 6), plastic,
+    ))
+
+    @test all(isfinite, ForwardDiff.jacobian(momentum, v[1]))
 end
 
 @testset "3D pressure element divergence" begin

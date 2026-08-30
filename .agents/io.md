@@ -6,10 +6,12 @@ Core I/O is intentionally small:
 
 - `write_vtk` in `src/postprocess/postprocess.jl` writes legacy ASCII VTK
   unstructured grids for `Mesh` and `MixedMesh`.
-- High-order elements are linearized to corner nodes for VTK output.
+- High-order elements are linearized to corner nodes for VTK output. A 3-D
+  `MixedMesh` uses its T11 or Hex27 velocity connectivity; the separate
+  pressure connectivity is interpolation data, not cell geometry.
 - Scalar point fields and cell fields are supported and length-validated.
 - `write_stokes_vtk` maps mixed pressure/velocity and derived stress/strain
-  fields through the generic writer.
+  fields through the generic writer in both 2-D and 3-D.
 - Core has no mesh reader, checkpoint/restart format, parallel writer, or
   general result schema.
 - Examples create meshes with Gmsh.jl and sometimes depend on WriteVTK, but

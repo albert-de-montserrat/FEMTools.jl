@@ -101,7 +101,7 @@ The module currently marks the following categories `public`:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`,
   `circle_boundary_nodes`;
-- result accessors: `velocity`, `stress`, `pressure`, `temperature`.
+- result accessors: `velocity`, `stress`, `stress_old`, `pressure`, `temperature`.
 
 These names are callable as `FEMTools.name` but are deliberately not imported
 by `using FEMTools`. Before adding another public low-level method, confirm that
@@ -138,13 +138,15 @@ stats = solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP)
 stats.converged || error("Stokes solve did not converge")
 ```
 
-`solve_coupled_dyrel!` accepts thermal and 2-D Stokes states plus their meshes
-and boundary conditions. It advances one thermal DR step per inner velocity
+`solve_coupled_dyrel!` accepts thermal and 2-D or 3-D Stokes states plus their
+meshes and boundary conditions. It advances one thermal DR step per inner velocity
 iteration and transfers continuous thermal-node values to the discontinuous
 Stokes pressure DoFs. Its statistics add `err_T` and `thermal_iterations`.
 
 The expanded positional methods remain available for adjoints and specialized
 workflows, but new normal-user examples should start from the high-level forms.
+The same `StokesDR`/`MixedMesh` flow accepts three velocity boundary conditions
+for T11 or Hex27 velocity with four cell-local linear pressure DoFs.
 
 ## Mutation and ownership contract
 

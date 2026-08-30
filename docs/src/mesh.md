@@ -35,6 +35,11 @@ backend as `mesh_v`. `MixedMeshCache` allocates both geometry arrays on
 to infer geometry, elements, and backend. Avoid mixing host connectivity with
 device solution arrays.
 
+In three dimensions, T10/T11 tetrahedra attach the four discontinuous linear
+pressure DoFs to their vertices. Hex27 instead attaches them to the cell center
+and positive-axis face centers. Three-dimensional nodal normals are currently
+zero because the solver does not consume them.
+
 ## Coordinates and Degrees of Freedom
 
 ```@docs

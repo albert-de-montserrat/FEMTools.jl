@@ -116,6 +116,10 @@ for FP in (FP32, FP64)
         )
         coords = generate_coordinates(hex27, (zero(FP)..one(FP)) × (zero(FP)..one(FP)) × (zero(FP)..one(FP)), (1, 1, 1))
         @test length(Mesh(coords, el2n; order = 2).Γnodes) == 26
+
+        tet11_coords = [SVector{3, FP}(i, i, i) for i in 1:11]
+        tet11 = reshape(Int32.(1:11), 11, 1)
+        @test Mesh(tet11_coords, tet11; order = 2).Γnodes == Int32.(1:10)
     end
 
     @testset "mesh constructor" begin

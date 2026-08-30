@@ -26,8 +26,10 @@ with a Maxwell viscoelastic deviatoric stress that carries stress history
 The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
 mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
-3-D Hex27/Q2--P1 method uses three caller-owned velocity arrays and a `4 × nels`
-cell-local pressure array with diagonally preconditioned residual updates.
+3-D T11/P1-discontinuous and Hex27/Q2--P1 discretisations are available through
+a `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic problems. The
+original Hex27 viscous interface with three caller-owned velocity arrays and a
+`4 × nels` pressure array remains available.
 
 The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
@@ -82,7 +84,7 @@ gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 ```julia
 stats = solve_coupled_dyrel!(
     thermal, stokes, thermal_mesh, stokes_mesh, cache,
-    bc_T, bc_vx, bc_vy, Δt, γP; workgroup,
+    bc_T, (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
 )
 stats.converged || error("coupled solve did not converge")
 ```
@@ -92,11 +94,13 @@ The returned Stokes statistics additionally contain `err_T` and
 `thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
 solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
 
-### Three-dimensional array layout
+In 2-D, pass `bc_vx` and `bc_vy` positionally as before. In 3-D, pass the tuple
+shown above. The 3-D signed pressure basis uses a positive Jacobi modal mass
+instead of direct lumping.
 
-The Hex27/Q2--P1 method uses multiple dispatch rather than `StokesDR`, because
-its four pressure modes are cell-local rather than stored on a pressure-node
-mesh:
+### Three-dimensional viscous array layout
+
+The original viscous Hex27/Q2--P1 method keeps caller-owned arrays:
 
 ```julia
 velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
@@ -166,7 +170,13 @@ julia --project=examples examples/stokes/sinking_block/sinking_block.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
+julia --project=examples examples/stokes/volcano/volcano_thermal_stokes.jl
+julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
 ```
+
+The 3-D volcano driver uses a locally refined unstructured T11 mesh. Its Gmsh
+geometry is fragmented by the chamber ellipsoid, so the crust and chamber share
+the curved interface instead of assigning phases across cut cells.
 
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.

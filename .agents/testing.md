@@ -17,6 +17,9 @@ The suite covers:
 - `Float32`/`Float64`, type inference, JET optimization checks, Aqua quality
   checks, and selected zero-allocation hot paths;
 - parsing of maintained example scripts;
+- chamber-interface conformance and phase separation for the unstructured 3-D volcano mesh;
+- a one-element 3-D mixed pressure-scaling check and component-wise AD through
+  the 3-D plastic momentum residual;
 - sparse and finite-difference reference oracles for selected solver/adjoint
   behavior.
 
