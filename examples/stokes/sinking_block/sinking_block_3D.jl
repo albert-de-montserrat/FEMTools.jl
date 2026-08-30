@@ -4,7 +4,7 @@
 #
 # The solve runs on any KernelAbstractions backend. For CUDA, `using CUDA` and
 # call `run_sinking_block_3d(; backend = CUDABackend())`.
-const isGPU = true
+const isGPU = false
 
 @static if isGPU
     using CUDA
