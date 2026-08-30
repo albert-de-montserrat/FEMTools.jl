@@ -1,7 +1,6 @@
-# Heat diffusion on a rectangle with a circular hole, meshed with Triangulate.jl
-# (wrapper around J.R. Shewchuk's Triangle library).
+# Heat diffusion on a rectangle with circular holes, meshed with Gmsh.jl.
 
-using Triangulate
+using Gmsh
 using StaticArrays
 using KernelAbstractions
 using Printf
@@ -11,79 +10,10 @@ using GeometryBasics
 using TimerOutputs
 using FEMTools
 
+include(joinpath(@__DIR__, "..", "gmsh_meshing.jl"))
+
 const backend   = CPU()
 const workgroup = 128
-
-# ---------------------------------------------------------------------------
-# Mesh generation
-# ---------------------------------------------------------------------------
-
-"""
-    build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
-
-Triangulate the rectangle [-Lx,Lx]×[-Ly,0] with circular holes using
-Triangulate.jl (Triangle library).
-
-`holes` is a vector of `(cx, cy, r)` tuples, one per hole. `n_circle`
-is the number of boundary segments per circle. `max_area` bounds element
-area; `nothing` skips quality refinement.
-
-Returns `(coords, el2n, outer_nodes, hole_nodes_per_hole)` where
-`hole_nodes_per_hole[h]` lists the boundary nodes of hole `h`.
-"""
-function build_mesh(; Lx, Ly, holes, n_circle=64, max_area=nothing)
-    # ---- outer rectangle (counter-clockwise) ----
-    rect_pts  = Cdouble[-Lx  Lx  Lx -Lx;
-                        -Ly -Ly  0.0  0.0]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'   # 2×4
-
-    all_pts  = Matrix{Cdouble}(rect_pts)
-    all_segs = Matrix{Cint}(rect_segs)
-    hole_xy  = Matrix{Cdouble}(undef, 2, length(holes))
-
-    for (h, (cx, cy, r)) in enumerate(holes)
-        θ        = range(0, 2π; length = n_circle + 1)[1:end-1]
-        circ_pts = Matrix{Cdouble}(hcat(cx .+ r .* cos.(θ), cy .+ r .* sin.(θ))')
-        n_so_far = size(all_pts, 2)
-        circ_segs = Matrix{Cint}(hcat([
-            [n_so_far + i; n_so_far + mod1(i + 1, n_circle)] for i in 1:n_circle
-        ]...))
-        all_pts  = hcat(all_pts,  circ_pts)
-        all_segs = hcat(all_segs, circ_segs)
-        hole_xy[:, h] = [cx; cy]
-    end
-
-    # ---- assemble TriangulateIO ----
-    tio = TriangulateIO()
-    tio.pointlist   = all_pts
-    tio.segmentlist = all_segs
-    tio.holelist    = hole_xy
-
-    flags = isnothing(max_area) ? "pqQ" : "pq30a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts  = result.pointlist    # 2 × nnodes
-    tris = result.trianglelist # 3 × nels  (1-based)
-
-    nnodes = size(pts, 2)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in 1:nnodes]
-    el2n   = Matrix{Int32}(tris)
-
-    tol_lin = max(Lx, Ly) * 1e-8
-    outer_nodes = Int32[i for i in 1:nnodes if
-        abs(coords[i][2] + Ly) < tol_lin ||
-        abs(coords[i][2])      < tol_lin ||
-        abs(coords[i][1] + Lx) < tol_lin ||
-        abs(coords[i][1] - Lx) < tol_lin]
-
-    hole_nodes_per_hole = map(holes) do (cx, cy, r)
-        tol_circ = r * 1e-4
-        Int32[i for i in 1:nnodes if
-            abs(sqrt((coords[i][1] - cx)^2 + (coords[i][2] - cy)^2) - r) < tol_circ]
-    end
-
-    return coords, el2n, outer_nodes, hole_nodes_per_hole
-end
 
 # ---------------------------------------------------------------------------
 # Main
@@ -99,10 +29,11 @@ function main(; max_area=1e5)
     T_holes = Float64[873, 1173]
 
     # Generate mesh
-    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_mesh(;
+    coords_cpu, el2n_cpu, outer_nodes, hole_nodes_per_hole = build_gmsh_hole_mesh(;
         Lx, Ly, holes,
         n_circle = 64,
         max_area = max_area,
+        order = 1,
     )
     element = ReferenceElement(LinearElement{2, 3, Float64})
     mesh = Mesh(backend, coords_cpu, el2n_cpu, element; workgroup)

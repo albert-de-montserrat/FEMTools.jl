@@ -4,7 +4,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 using KernelAbstractions: CPU
 using FEMTools
 using StaticArrays
-using Triangulate
+using Gmsh
 using GLMakie: Axis, Colorbar, DataAspect, Figure, Point2f, poly!
 
 include(joinpath(@__DIR__, "..", "stokes", "sinking_block", "mesher.jl"))
@@ -17,7 +17,7 @@ function main(; max_area = 1 / 32^2, show_plot = true, CFL = 0.9,
     ρ0, α, K = (1.0, 2.0), (0.0, 0.0), (Inf, Inf)
     g, Tref = (0.0, -1.0), 0.0
 
-    all_coords, el2n_t7, _, _ = build_triangle_t7_inclusion_mesh(;
+    all_coords, el2n_t7, _, _ = build_gmsh_t7_rectangle_inclusion_mesh(;
         Lx, Ly, cx, cy, half_width, max_area,
     )
     # The first three T7 nodes are the pressure triangle used by sinking_block.jl.

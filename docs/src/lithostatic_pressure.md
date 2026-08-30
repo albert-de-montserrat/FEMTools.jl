@@ -122,7 +122,7 @@ Iteration stops when
 ## Two-dimensional example
 
 The 2-D domain is ``[0,1]\times[-1,0]``. It contains a square dense block
-centred at ``(0.5,-0.5)`` with half-width `0.1`. Triangulate.jl first creates
+centred at ``(0.5,-0.5)`` with half-width `0.1`. Gmsh.jl first creates
 the constrained sinking-block mesh; the example then extracts its three-node
 corner connectivity and solves on linear T3 pressure elements. The material
 parameters are

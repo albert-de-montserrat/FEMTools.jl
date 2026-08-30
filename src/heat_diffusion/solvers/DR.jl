@@ -1,3 +1,13 @@
+function _assemble_thermal!(
+        dr, Δt, mesh, geo, element, Tref, backend, workgroup, compute_jacobian,
+    )
+    return assemble_diffusion_matrices_atomix!(
+        dr.R, dr.∂R∂T, dr.PC, dr.T, dr.T0, mesh.el2n, geo, mesh.nels,
+        element, dr.phases, dr.k, dr.Cp, dr.ρ0, dr.α, dr.K, dr.P, Δt, dr.source, Tref,
+        backend, workgroup; compute_jacobian,
+    )
+end
+
 """
     solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
             Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
@@ -20,10 +30,8 @@ function solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
                  backend, workgroup;
                  Tref = eltype(dr.T)(273),
                  kwargs...)
-    assemble!(compute_jacobian) = assemble_diffusion_matrices_atomix!(
-        dr.R, dr.∂R∂T, dr.PC, dr.T, dr.T0, mesh.el2n, geo, mesh.nels,
-        element, dr.phases, dr.k, dr.Cp, dr.ρ0, dr.α, dr.K, dr.P, Δt, dr.source, Tref,
-        backend, workgroup; compute_jacobian,
+    assemble!(compute_jacobian) = _assemble_thermal!(
+        dr, Δt, mesh, geo, element, Tref, backend, workgroup, compute_jacobian,
     )
     return solve_dynamic_relaxation!(
         dr, assemble!, mesh.nnodes, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;

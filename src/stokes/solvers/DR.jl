@@ -9,6 +9,72 @@ function _stokes_cheb(Δτ, λmin, c_fact)
     return (2 * Δτ^2 / (2 + c * Δτ), (2 - c * Δτ) / (2 + c * Δτ))
 end
 
+@kernel function _transfer_temperature_kernel!(T_P, @Const(T), @Const(DoFsP), @Const(el2nP))
+    i = @index(Global, Linear)
+    T_P[DoFsP[i]] = T[el2nP[i]]
+end
+
+function _transfer_temperature!(T_P, T, mesh::MixedMesh, backend, workgroup)
+    return launch!(
+        _transfer_temperature_kernel!, backend, workgroup, length(mesh.DoFsP),
+        T_P, T, mesh.DoFsP, mesh.el2nP,
+    )
+end
+
+"""
+    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh, cache,
+                         bc_T, bc_vx, bc_vy, Δt, γP;
+                         Tref=273, workgroup=256, kwargs...)
+
+Solve one coupled thermal--Stokes time step. Each inner Stokes velocity
+iteration advances one thermal dynamic-relaxation iteration, then gathers the
+continuous thermal field at `stokes_mesh.el2nP` onto the discontinuous pressure
+DoFs used by the Stokes residuals.
+
+`thermal_mesh` must use the same node numbering and backend as the primary
+field of `stokes_mesh`. The previous-time fields `thermal.T0`, `stokes.P0`, and
+the Stokes stress history remain caller-owned. Remaining keywords are forwarded
+to [`solve_stokes_dyrel!`](@ref); `ncheck` controls convergence checks for both
+relaxation updates. Returns the Stokes statistics with additional `err_T` and
+`thermal_iterations` fields.
+"""
+function solve_coupled_dyrel!(
+    thermal::ThermalDiffusionDR,
+    stokes::StokesDR,
+    thermal_mesh::Mesh,
+    stokes_mesh::MixedMesh,
+    cache::MixedMeshCache,
+    bc_T::DirichletBoundaryCondition,
+    bc_vx::DirichletBoundaryCondition,
+    bc_vy::DirichletBoundaryCondition,
+    Δt,
+    γP;
+    Tref = eltype(thermal.T)(273),
+    workgroup = 256,
+    kwargs...,
+)
+    isnothing(thermal_mesh.geometry) && throw(ArgumentError(
+        "thermal mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
+    thermal_mesh.nnodes == stokes_mesh.nnodes || throw(DimensionMismatch(
+        "thermal mesh nodes must match the Stokes velocity-node layout"))
+    length(thermal.T) == thermal_mesh.nnodes || throw(DimensionMismatch(
+        "thermal state size must match thermal mesh nodes"))
+    length(stokes.T) == stokes_mesh.nnodesP || throw(DimensionMismatch(
+        "Stokes temperature size must match pressure DoFs"))
+
+    backend = KA.get_backend(stokes_mesh.coords)
+    typeof(KA.get_backend(thermal_mesh.coords)) === typeof(backend) || throw(ArgumentError(
+        "thermal and Stokes meshes must use the same backend"))
+    _transfer_temperature!(stokes.T, thermal.T, stokes_mesh, backend, workgroup)
+    _transfer_temperature!(stokes.T0, thermal.T0, stokes_mesh, backend, workgroup)
+
+    coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref)
+    return solve_stokes_dyrel!(
+        stokes, stokes_mesh, cache, bc_vx, bc_vy, Δt, γP;
+        workgroup, _thermal = coupled, kwargs...,
+    )
+end
+
 """
     solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP;
                         plastic=nothing, workgroup=256, kwargs...)
@@ -147,6 +213,7 @@ function solve_stokes_dyrel!(
     λmax_power_rtol = 1.0e-2,
     λmax_safety = 1.1,
     freeze_jacobian = plastic === nothing,
+    _thermal = nothing,
 )
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
@@ -216,6 +283,15 @@ function solve_stokes_dyrel!(
     rel_drop = rel_drop0
     history = NamedTuple[]
 
+    thermal_iter = 0
+    err_T = isnothing(_thermal) ? nothing : Inf
+    thermal_converged = isnothing(_thermal)
+    α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(dr.Rv_x))
+    if !isnothing(_thermal)
+        fill!(_thermal.dr.∂T∂τ, 0)
+        fill!(_thermal.dr.R0, 0)
+    end
+
     for itPH in 1:max_ph_iterations
         itPH_done = itPH
 
@@ -260,7 +336,7 @@ function solve_stokes_dyrel!(
             @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
                 itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
         end
-        err < ϵ && break
+        err < ϵ && thermal_converged && break
 
         if err > err_min * 1.05
             rel_drop = max(rel_drop * 0.1, 1e-3)
@@ -270,7 +346,7 @@ function solve_stokes_dyrel!(
         ϵ_vel = err * rel_drop
         itPT = 0
 
-        while err > ϵ_vel && itPT ≤ iterMax
+        while (err > ϵ_vel || !thermal_converged) && itPT ≤ iterMax
             itPT += 1
             iter += 1
             do_check = iszero(iter % nout)
@@ -278,6 +354,56 @@ function solve_stokes_dyrel!(
             if do_check
                 copyto!(dr.Rv_x0, dr.Rv_x)
                 copyto!(dr.Rv_y0, dr.Rv_y)
+            end
+
+            if !isnothing(_thermal)
+                thermal_iter += 1
+                thermal_check = thermal_iter == 1 || iszero(thermal_iter % nout)
+                thermal_check && copyto!(_thermal.dr.R0, _thermal.dr.R)
+                _assemble_thermal!(
+                    _thermal.dr, Δt, _thermal.mesh, _thermal.mesh.geometry,
+                    _thermal.mesh.element, _thermal.Tref, backend, workgroup,
+                    thermal_check,
+                )
+                apply_dirichlet!(
+                    _thermal.dr.R, _thermal.bc.DoFs, _thermal.bc.zero_vals,
+                    backend, workgroup,
+                )
+                apply_dirichlet!(
+                    _thermal.dr.∂T∂τ, _thermal.bc.DoFs, _thermal.bc.zero_vals,
+                    backend, workgroup,
+                )
+                thermal_check && (λmax_T = _checked_λmax(
+                    _thermal.dr.∂R∂T, _thermal.dr.PC, "thermal diffusion"))
+                update_rate_kernel!(backend, workgroup)(
+                    _thermal.dr.∂T∂τ, _thermal.dr.R, _thermal.dr.PC, β_T;
+                    ndrange = _thermal.mesh.nnodes,
+                )
+                update_variable_kernel!(backend, workgroup)(
+                    _thermal.dr.T, _thermal.dr.∂T∂τ, α_T;
+                    ndrange = _thermal.mesh.nnodes,
+                )
+                apply_dirichlet!(
+                    _thermal.dr.T, _thermal.bc.DoFs, _thermal.bc.vals,
+                    backend, workgroup,
+                )
+                _transfer_temperature!(dr.T, _thermal.dr.T, mesh_stokes, backend, workgroup)
+
+                if thermal_check
+                    nr_T = norm(_thermal.dr.R)
+                    thermal_iter == 1 && (thermal_nr0 = max(nr_T, eps(nr_T)))
+                    err_T = nr_T / thermal_nr0
+                    isfinite(err_T) || error(
+                        "non-finite thermal residual at coupled iteration $thermal_iter")
+                    Δτ_T = 2 / sqrt(λmax_T) * _thermal.dr.CFL
+                    denom_T = sum((Δτ_T .* _thermal.dr.∂T∂τ) .^ 2)
+                    λmin_T = (thermal_iter == 1 || iszero(denom_T)) ?
+                        zero(eltype(_thermal.dr.R)) :
+                        abs(sum(Δτ_T .* _thermal.dr.∂T∂τ .* (
+                            (_thermal.dr.R .- _thermal.dr.R0) ./ _thermal.dr.PC))) / denom_T
+                    α_T, β_T = _stokes_cheb(Δτ_T, λmin_T, _thermal.dr.c_fact)
+                    thermal_converged = err_T < _thermal.dr.ϵ
+                end
             end
 
             assemble_pressure_residual_matrices_atomix!(
@@ -382,7 +508,7 @@ function solve_stokes_dyrel!(
         iter > total_iterMax && break
     end
 
-    return (;
+    stats = (;
         itPH = itPH_done,
         iter,
         err,
@@ -390,7 +516,7 @@ function solve_stokes_dyrel!(
         err_rel,
         err_v,
         err_P,
-        converged = err < ϵ,
+        converged = err < ϵ && thermal_converged,
         reached_total_iter = iter > total_iterMax,
         λmax = max(λmax_vx, λmax_vy),
         λmax_gershgorin,
@@ -398,6 +524,7 @@ function solve_stokes_dyrel!(
         jacobian_assemblies,
         history,
     )
+    return isnothing(_thermal) ? stats : merge(stats, (; err_T, thermal_iterations = thermal_iter))
 end
 
 """

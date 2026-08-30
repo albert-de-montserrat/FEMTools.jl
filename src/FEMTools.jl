@@ -57,6 +57,7 @@ include("elements/integration_points.jl")
 # Mesh helpers are kept separate by responsibility: connectivity, coordinates,
 # sparsity patterns, and conflict-free element coloring.
 include("mesh/connectivity.jl")
+include("mesh/utils.jl")
 include("mesh/mesh.jl")
 include("mesh/mixed_mesh.jl")
 include("mesh/sparsity.jl")
@@ -142,6 +143,7 @@ export StokesMaterial, StokesDR, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,
+    solve_coupled_dyrel!,
     solve_stokes_dyrel!,
     solve_stokes_3d!,
     solve_stokes_adjoint_3d!,
@@ -176,6 +178,8 @@ public assemble_diffusion_matrices_atomix!,
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
+public renumber_connectivity, orient_triangle_elements!, add_t7_bubbles!,
+    straighten_t7_geometry!, rectangle_boundary_nodes, circle_boundary_nodes
 public velocity, stress, pressure, temperature
 
 end # module FEMTools

@@ -22,42 +22,59 @@ include(joinpath(@__DIR__, "..", "..", "gmsh_meshing.jl"))
 # ---------------------------------------------------------------------------
 
 """
-    main(; nsteps=15, n_circle=96, max_area=1 / (1 * 64^2), Δt=1 / 6, show_plot=true) -> NamedTuple
+    main(; nsteps=20, Δt=0.1, γfact=20.0, η_vp=1.0e-2, n_circle=64, max_area=1 / 48^2, show_plot=true) -> NamedTuple
 
-Run the unstructured T7/P1-disc pure-shear Stokes example.
+Run the visco-elasto-plastic shear-localisation model on an unstructured
+T7/P1-disc mesh.
 
-The model builds a square domain with a circular inclusion, applies pure-shear
-boundary conditions, advances the viscoelastic-plastic Stokes solve, writes one
-VTK file per physical step, and returns the stress-history diagnostics.
+A weak circular inclusion (radius `R = 0.1` m, shear modulus `G = 0.5` Pa) sits
+at the centre of the unit domain `[-0.5, 0.5] × [-1, 0]` m, embedded in a matrix
+with `G = 1.0` Pa.  Both phases share `η = 1.0` Pa·s and compressibility
+`β = 0.01` Pa⁻¹, and yield according to a Drucker-Prager criterion with
+cohesion `C = 1.6` Pa, friction angle `ϕ = 30°`, and dilation angle `Ψ = 3°`.
+Background pure shear (`ε̇xx = -ε̇zz = 1.0` s⁻¹) is imposed through free-slip
+walls; gravity is zero.
+
+Elastic stress build-up reaches the yield stress `C·cos(ϕ) ≈ 1.386` Pa around
+`t ≈ 1.2` s, after which conjugate shear bands nucleate at the inclusion and
+propagate across the domain.
+
+`η_vp` is the Perzyna regularisation viscosity.  It sets the shear-band width,
+so the mesh must resolve it: values well below the default diverge the
+dynamic-relaxation iteration once `max_area` is small.  `γfact` scales the
+viscosity-weighted pressure update.
+
+Returns the time series of mean inclusion pressure and mean τII, the last
+post-processed field set, and per-step solver statistics.
 """
 function main(;
-        nsteps = 15, n_circle = 96, max_area = 1 / (1 * 64^2), Δt = 1 / 6,
+        nsteps = 20, Δt = 0.1, γfact = 20.0, η_vp = 1.0e-2,
+        n_circle = 64, max_area = 1 / 48^2,
         show_plot = true, write_output = true, verbose = true,
         measure_λmax = false, λmax_safety = 1.1)
-    # Domain
+    # Domain: unit square with the origin at the top centre, z increasing upward
+    x0, y0 = -0.5, -1.0
     Lx, Ly = 1.0, 1.0
 
-    # Background pure-shear strain rate (non-dimensional)
+    # Background pure-shear strain rate: ε̇xx = -ε̇zz = 1 s⁻¹
     ε̇_bg = 1.0
 
-    # Material (2 phases: matrix + inclusion)
-    γfact = 20.0
-    η     = (1.0,     1.0)   # shear viscosity
-    α     = (0.0,     0.0)   # thermal expansivity  (zero → isothermal)
-    ρ0    = (1.0,     1.0)   # reference density
-    K     = (4e0,     4e0)   # bulk modulus  (Inf → incompressible)
+    # Material (2 phases: matrix + weak inclusion)
+    β     = 0.01
+    η     = (1.0,     1.0)   # shear viscosity [Pa s]
+    α     = (0.0,     0.0)   # thermal expansivity → isothermal
+    ρ0    = (1.0,     1.0)   # reference density; gravity is zero so buoyancy is inert
+    K     = (1 / β,   1 / β) # bulk modulus [Pa]
     ηb    = K                # pressure storage modulus; residual uses ηb * Δt
-    G     = (1e0,     0.5)   # Shear modulus
+    G     = (1.0,     0.5)   # shear modulus [Pa]; the inclusion is the weak phase
     G_stokes = G
-    # Cohesion chosen so the yield stress C·cosϕ = 1.6 at zero pressure.
-    # Background deviatoric stress in pure shear is 2η·ε̇_bg = 2, so the
-    # inclusion (lower G) will enter the plastic regime after a few steps.
-    τy      = 1.6 / cosd(30)                   # cohesion C; yield stress = C·cosϕ = 1.6
+    Ψ     = deg2rad(3)       # dilation angle [rad] (non-associated)
+    ϕ     = deg2rad(30)      # friction angle [rad]
     plastic = DruckerPrager(
-        (π/6, π/6),                            # friction angle ϕ = 30° [rad]
-        (0.0, 0.0),                            # dilation angle Ψ = 0°  [rad] (non-associated)
-        (τy, τy),                              # cohesion C [same for both phases]
-        (8.0e-3,  8.0e-3),                     # plastic regularisation viscosity η_reg
+        (ϕ, ϕ),
+        (Ψ, Ψ),
+        (1.6, 1.6),                            # cohesion C [Pa]; yield stress = C·cosϕ
+        (η_vp, η_vp),                          # Perzyna regularisation viscosity
         K,                                     # Kb (passed separately from elastic K)
     )
     g     = (0.0,     0.0)   # gravity vector
@@ -65,12 +82,12 @@ function main(;
 
     # DR solver
     ncheck = 100          # convergence check interval
-    ϵ_tol  = 1e-6        # relative residual tolerance
+    ϵ_tol  = 1e-6         # relative residual tolerance
 
     # Gmsh fragments the domain at this material interface.
     r_incl = 0.1
-    cx     = Lx / 2
-    cy     = Ly / 2
+    cx     = x0 + Lx / 2
+    cy     = y0 + Ly / 2
 
     # ---------------------------------------------------------------------------
     # Meshes
@@ -80,7 +97,7 @@ function main(;
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
     coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_gmsh_t7_circle_inclusion_mesh(;
-        Lx, Ly,
+        x0, y0, Lx, Ly,
         cx, cy, r = r_incl,
         n_circle,
         max_area,
@@ -135,30 +152,35 @@ function main(;
     ]
     phases_v_cpu = repeat(reshape(cell_phase, 1, :), NV, 1)
     phases_P_cpu = repeat(reshape(cell_phase, 1, :), NP, 1)
+    incl_P_dofs = sort!(unique!(vec(DoFsP_cpu[:, findall(==(2), cell_phase)])))
 
     @info "Phases" n_incl_v=count(==(2), phases_v_cpu) n_incl_P=count(==(2), phases_P_cpu)
 
     # ---------------------------------------------------------------------------
-    # Boundary conditions — pure shear
-    #   vx = +ε̇_bg * (x - Lx/2),   vy = -ε̇_bg * (y - Ly/2)
+    # Boundary conditions — free-slip walls driven by background pure shear
+    #   vx = +ε̇_bg * (x - cx)   on the vertical walls
+    #   vy = -ε̇_bg * (y - cy)   on the horizontal walls
+    # The tangential component is left unconstrained on each wall, which is the
+    # free-slip condition.
     # ---------------------------------------------------------------------------
 
     Γnodes = Array(mesh_v.Γnodes)
     coords = Array(mesh_v.coords)
-    tol = max(Lx, Ly) * eps(Float64) * 32
-    vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - Lx) ≤ tol]
-    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - Ly) ≤ tol]
+    x1, y1 = x0 + Lx, y0 + Ly
+    tol = max(abs(x0), abs(x1), abs(y0), abs(y1)) * eps(Float64) * 32
+    vx_nodes = Int32[n for n in Γnodes if abs(coords[n][1] - x0) ≤ tol || abs(coords[n][1] - x1) ≤ tol]
+    vy_nodes = Int32[n for n in Γnodes if abs(coords[n][2] - y0) ≤ tol || abs(coords[n][2] - y1) ≤ tol]
 
-    bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
-    bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
+    bc_vx_vals = [ ε̇_bg * (coords[n][1] - cx) for n in vx_nodes]
+    bc_vy_vals = [-ε̇_bg * (coords[n][2] - cy) for n in vy_nodes]
     bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
     bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
     # by apply_bc! below; the result is identical on those nodes).
-    copyto!(dr.vx, [ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
-    copyto!(dr.vy, [-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
+    copyto!(dr.vx, [ ε̇_bg * (c[1] - cx) for c in coords_v])
+    copyto!(dr.vy, [-ε̇_bg * (c[2] - cy) for c in coords_v])
 
     apply_bc!(dr.vx, bc_vx)
     apply_bc!(dr.vy, bc_vy)
@@ -186,6 +208,7 @@ function main(;
 
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
+    mean_P_incl_history = zeros(Float64, nsteps)
 
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
@@ -196,7 +219,7 @@ function main(;
     @info "Starting PH/DYREL-style Stokes solver" nsteps Δt iterMax total_iterMax ncheck ϵ_tol
 
     el2n_v_cpu = Array(mesh_stokes.el2n)
-    out_dir = joinpath(@__DIR__, "output_stokes")
+    out_dir = joinpath(@__DIR__, "output_shear_bands")
     mkpath(out_dir)
     post = nothing
     solve_stats_history = NamedTuple[]
@@ -235,14 +258,15 @@ function main(;
             element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII)
+        mean_P_incl_history[istep] = mean(@view P_cpu[incl_P_dofs])
         copyto!(dr.τxx_old, dr.τxx)
         copyto!(dr.τyy_old, dr.τyy)
         copyto!(dr.τxy_old, dr.τxy)
 
         if write_output
-            vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_%04d.vtk", istep))
+            vtk_path = joinpath(out_dir, @sprintf("stokes_2D_shear_bands_triangle_%04d.vtk", istep))
             write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post)
-            @info "Wrote VTK file" vtk_path mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
+            @info "Wrote VTK file" vtk_path mean_P_incl=mean_P_incl_history[istep] mean_tauII=mean_tauII_history[istep] iter=solve_stats.iter err=solve_stats.err
         end
     end  # physical time step loop
 
@@ -263,17 +287,16 @@ function main(;
 
     fig = Figure(size = (1200, 520))
 
-    # Pressure
     clims_P = extrema(el_P)
     ax1 = Axis(fig[1, 1]; aspect = DataAspect(),
-            title = "Pressure  (T7/P1-disc, pure shear)", xlabel = "x", ylabel = "y")
+            title = "Pressure  (T7/P1-disc, VEP shear bands)", xlabel = "x [m]", ylabel = "z [m]")
     poly!(ax1, polys; color = el_P, colormap = :vik, colorrange = clims_P, strokewidth = 0)
     Colorbar(fig[1, 2]; colormap = :vik, limits = clims_P,
-            label = "P", width = 15, tellheight = false)
+            label = "P [Pa]", width = 15, tellheight = false)
 
     ax2 = Axis(fig[1, 3];
-            title = "Mean τII history", xlabel = "time", ylabel = "mean(post.tauII)")
-    scatterlines!(ax2, time_history, mean_tauII_history; color = :black, linewidth = 2)
+            title = "Mean pressure in weak inclusion", xlabel = "t [s]", ylabel = "⟨P⟩ [Pa]")
+    scatterlines!(ax2, time_history, mean_P_incl_history; color = :black, linewidth = 2)
 
     θ    = LinRange(0, 2π, 300)
     xs_c = cx .+ r_incl .* cos.(θ)
@@ -281,8 +304,9 @@ function main(;
     lines!(ax1, xs_c, ys_c; color = :white, linewidth = 1.5, linestyle = :dash)
 
     show_plot && display(fig)
-    return (; time = time_history, mean_tauII = mean_tauII_history, post,
+    return (; time = time_history, mean_P_incl = mean_P_incl_history,
+        mean_tauII = mean_tauII_history, post,
         solve_stats = solve_stats_history, solve_time)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

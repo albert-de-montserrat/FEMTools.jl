@@ -10,7 +10,7 @@ using Statistics
 using StaticArrays
 using KernelAbstractions
 using Atomix
-using Triangulate
+using Gmsh
 using GLMakie: Figure, Axis, Colorbar, poly!, arrows2d!, lines!, Point2f, DataAspect, axislegend
 
 const default_backend = CPU()
@@ -150,7 +150,7 @@ end
         (ρ_element[iel],), (K[phase],), g, Tref, Δt, Nq, NqP,
         τ_old_e,
     )
-    contracted_residual[iel] = -(dot(λx_e, Re_x) + dot(λy_e, Re_y))
+    contracted_residual[iel] = dot(λx_e, Re_x) + dot(λy_e, Re_y)
 end
 
 function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
@@ -172,7 +172,7 @@ end
                            G, α, K, g, Tref, Δt, Val(NV), Val(NP),
                            backend, workgroup) -> (density_sensitivity, viscosity_sensitivity)
 
-Assemble the per-element material sensitivities `sᵉ(m) = -λᵉᵀ ∂Rᵉ/∂m` of the
+Assemble the per-element material sensitivities `sᵉ(m) = λᵉᵀ ∂Rᵉ/∂m` of the
 converged adjoint state by reverse-differentiating `launch_material_contraction!`
 with respect to the element density and viscosity fields.
 
@@ -237,16 +237,16 @@ The model builds a square domain with a rectangular density/viscosity inclusion,
 applies free-slip boundary conditions, initialises the pressure from a
 lithostatic solve, and runs the Powell-Hestenes/DYREL forward solve. It then
 solves the discrete adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` on the same discretisation and
-contracts `-λᵀ ∂R/∂m` with Enzyme to obtain per-element density and viscosity
+contracts `λᵀ ∂R/∂m` with Enzyme to obtain per-element density and viscosity
 sensitivities.
 
-`backend` selects the KernelAbstractions compute backend. The Triangle mesh is
+`backend` selects the KernelAbstractions compute backend. The Gmsh mesh is
 built on the host, after which mesh connectivity, mixed pressure topology,
 geometry caches, phases, boundary arrays, and solver state are placed on that
 backend. Load CUDA before passing `CUDABackend()`; use `show_plot=false` for
 headless runs.
 
-`max_area` sets the Triangle mesh refinement and `Δt` the (visco)elastic time
+`max_area` sets the Gmsh mesh refinement and `Δt` the (visco)elastic time
 step. `η_incl` is the inclusion viscosity against a matrix viscosity of one, so
 it is the viscosity contrast of the problem and controls how badly conditioned
 the Stokes operator — and with it the adjoint operator — becomes. `show_plot`
@@ -309,8 +309,7 @@ function main(;
     Tref  = 0.0
 
     # DR solver
-    # Inclusion geometry. The Triangle PSLG uses this rectangle as an internal
-    # constrained boundary, so no element crosses the material interface.
+    # Gmsh fragments the domain at this material interface.
     half_width = 0.1
     cx         = 0.0
     cy         = 0.0
@@ -323,14 +322,14 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
-    coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_triangle_t7_inclusion_mesh(;
+    coords_v_cpu, el2n_v_cpu, outer_nodes, interface_nodes = build_gmsh_t7_rectangle_inclusion_mesh(;
         Lx, Ly,
         cx = Lx / 2, cy = -Ly / 2, half_width,
         max_area,
     )
     shift = SVector(-Lx / 2, Ly / 2)
     coords_v_cpu = [c + shift for c in coords_v_cpu]
-    # Triangle builds the mesh on the host. The backend-aware constructor
+    # Gmsh builds the mesh on the host. The backend-aware constructor
     # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
     # one place, so every array read by a subsequent assembly kernel lives on
     # the same device as the solver fields.
@@ -341,7 +340,7 @@ function main(;
     # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
     TDev = FEMTools.TA(backend)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
+    @info "Gmsh mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels half_width max_area n_interface_nodes=length(interface_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
@@ -518,7 +517,7 @@ function main(;
 
     # Element areas of the (straight-sided) plotting triangles, equal to ∫dΩ over
     # each element. The raw material sensitivities are un-normalized element
-    # integrals sᵉ = -λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(sensitivity density); dividing by areaᵉ
+    # integrals sᵉ = λᵉᵀ ∂Rᵉ/∂m ≈ areaᵉ·(sensitivity density); dividing by areaᵉ
     # recovers the mesh-independent sensitivity density used for plotting, while
     # the phase-wise gradients keep summing the raw integrals.
     element_area = [
@@ -620,7 +619,7 @@ function main(;
     # element operators as the forward problem, and transposed exactly. This is a
     # requirement, not a convenience:
     #   * Transpose consistency. λ solves the transpose of the *discrete* forward
-    #     Jacobian, so -λᵀ ∂R/∂m is the exact gradient of the discrete objective
+    #     Jacobian, so λᵀ ∂R/∂m is the exact gradient of the discrete objective
     #     (it matches a finite-difference check of that objective to machine
     #     precision). A cheaper/mismatched adjoint discretisation would make the
     #     gradient inconsistent and degrade any optimisation built on it.
@@ -667,12 +666,10 @@ function main(;
     # Material sensitivities
     # -----------------------------------------------------------------------
     #
-    # The FD reference differentiates its momentum residual once more after the
-    # adjoint solve, seeding that reverse pass with -λ. We use the same sign
-    # convention here. For a material parameter m and element momentum residual
-    # Rᵉ, the plotted contribution is therefore
+    # For the convention (∂R/∂u)ᵀλ = -∂J/∂u, a material parameter m and element
+    # momentum residual Rᵉ contribute
     #
-    #     sᵉ(m) = -λᵉᵀ (∂Rᵉ/∂m).
+    #     sᵉ(m) = λᵉᵀ (∂Rᵉ/∂m).
     #
     # Each entry is the contribution from one element. Summing entries of one
     # phase gives the derivative with respect to that phase's single global

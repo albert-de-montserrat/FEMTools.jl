@@ -1,5 +1,5 @@
 import Pkg
-Pkg.activate(@__DIR__)
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using FEMTools
 using Printf
@@ -13,16 +13,7 @@ using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, Da
 const backend   = CPU()
 const workgroup = 128
 
-function straighten_t7_geometry!(coords, el2n)
-    @inbounds for iel in axes(el2n, 2)
-        n1, n2, n3 = Int(el2n[1, iel]), Int(el2n[2, iel]), Int(el2n[3, iel])
-        coords[Int(el2n[4, iel])] = (coords[n1] + coords[n2]) / 2
-        coords[Int(el2n[5, iel])] = (coords[n2] + coords[n3]) / 2
-        coords[Int(el2n[6, iel])] = (coords[n3] + coords[n1]) / 2
-        coords[Int(el2n[7, iel])] = (coords[n1] + coords[n2] + coords[n3]) / 3
-    end
-    return coords
-end
+include(joinpath(@__DIR__, "..", "gmsh_meshing.jl"))
 
 """
     build_gmsh_t7_hole_mesh(; Lx, Ly, cx, cy, r, max_area, hole_refine_factor)
@@ -63,59 +54,23 @@ function build_gmsh_t7_hole_mesh(; Lx, Ly, cx, cy, r, max_area = 1 / 64^2, hole_
         gmsh.model.mesh.generate(2)
         gmsh.model.mesh.setOrder(2)
 
-        nodetags, coords_flat, _ = gmsh.model.mesh.getNodes()
-        tag2idx = Dict{Int, Int32}(Int(tag) => Int32(i) for (i, tag) in enumerate(nodetags))
-        coords = [SVector{2, Float64}(coords_flat[3(i - 1) + 1], coords_flat[3(i - 1) + 2])
-                  for i in eachindex(nodetags)]
-
-        elemtypes, _, elemnodetags = gmsh.model.mesh.getElements(2)
-        tri_idx = findfirst(==(9), elemtypes) # 6-node second-order triangle
-        isnothing(tri_idx) && error("No Gmsh T6 triangle elements found")
-        tri_flat = elemnodetags[tri_idx]
-        nels = length(tri_flat) ÷ 6
-
-        n_t6 = length(coords)
-        el2n = Matrix{Int32}(undef, 7, nels)
-        for iel in 1:nels
-            base = 6 * (iel - 1)
-            nodes = Int32[tag2idx[Int(tri_flat[base + a])] for a in 1:6]
-            p1, p2, p3 = coords[nodes[1]], coords[nodes[2]], coords[nodes[3]]
-            if det(hcat(p2 - p1, p3 - p1)) < 0
-                nodes = nodes[[1, 3, 2, 6, 5, 4]]
-            end
-            el2n[1:6, iel] .= nodes
-        end
+        coords, el2n_t6 = _gmsh_triangles(2)
+        nels = size(el2n_t6, 2)
 
         inside = count(iel -> begin
-            c = (coords[el2n[1, iel]] + coords[el2n[2, iel]] + coords[el2n[3, iel]]) / 3
+            c = sum(coords[el2n_t6[a, iel]] for a in 1:3) / 3
             hypot(c[1] - cx, c[2] - cy) < r
         end, 1:nels)
         inside == 0 || error("Gmsh returned $inside elements inside the hole")
 
-        sizehint!(coords, n_t6 + nels)
-        for iel in 1:nels
-            c1 = coords[el2n[1, iel]]
-            c2 = coords[el2n[2, iel]]
-            c3 = coords[el2n[3, iel]]
-            push!(coords, (c1 + c2 + c3) / 3)
-            el2n[7, iel] = Int32(n_t6 + iel)
-        end
-        straighten_t7_geometry!(coords, el2n)
+        coords, el2n = FEMTools.add_t7_bubbles!(coords, el2n_t6)
+        FEMTools.straighten_t7_geometry!(coords, el2n)
 
         tol = 1e-8 * max(Lx, Ly)
-        outer_nodes = Int32[
-            i for i in 1:n_t6
-            if abs(coords[i][1]) ≤ tol ||
-               abs(coords[i][1] - Lx) ≤ tol ||
-               abs(coords[i][2]) ≤ tol ||
-               abs(coords[i][2] - Ly) ≤ tol
-        ]
-        hole_nodes = Int32[
-            i for i in 1:n_t6
-            if abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) ≤ tol
-        ]
+        outer_nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, Lx, 0.0, Ly; atol = tol)
+        hole_nodes = FEMTools.circle_boundary_nodes(coords, cx, cy, r; atol = tol)
 
-        return coords, el2n, sort!(unique!(outer_nodes)), sort!(unique!(hole_nodes))
+        return coords, el2n, outer_nodes, hole_nodes
     finally
         gmsh.finalize()
     end
@@ -297,7 +252,7 @@ function main(;
             @inbounds for i in eachindex(coords_v)
                 coords_v[i] += Δt * SVector(vx_cpu[i], vy_cpu[i])
             end
-            straighten_t7_geometry!(coords_v, el2n_v_cpu)
+            FEMTools.straighten_t7_geometry!(coords_v, el2n_v_cpu)
             copyto!(mesh_stokes.coords, coords_v)
             copyto!(mesh_v.coords, coords_v)
             cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)

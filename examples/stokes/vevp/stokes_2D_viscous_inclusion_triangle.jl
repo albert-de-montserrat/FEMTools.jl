@@ -8,7 +8,7 @@ using LinearAlgebra
 using DomainSets
 using DomainSets: ×
 using KernelAbstractions
-using Triangulate
+using Gmsh
 using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, DataAspect
 using ExactFieldSolutions
@@ -16,83 +16,7 @@ using ExactFieldSolutions
 const backend   = CPU()
 const workgroup = 128
 
-"""
-    build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle=96, max_area=nothing) -> Tuple
-
-Build an unstructured T7 velocity mesh around a circular inclusion.
-
-Triangulate.jl generates a second-order T6 PSLG mesh with the circle as a
-constrained internal boundary. The local midpoint ordering is remapped to
-FEMTools' T6/T7 convention, then one centroid bubble node is appended per
-element.
-"""
-function build_triangle_t7_inclusion_mesh(; Lx, Ly, cx, cy, r, n_circle = 96, max_area = nothing)
-    rect_pts  = Cdouble[0.0 Lx  Lx 0.0;
-                        0.0 0.0 Ly Ly]
-    rect_segs = Cint[1 2; 2 3; 3 4; 4 1]'
-
-    θ = range(0, 2π; length = n_circle + 1)[1:end-1]
-    circ_pts = Matrix{Cdouble}(hcat(cx .+ r .* cos.(θ), cy .+ r .* sin.(θ))')
-    circ_segs = Matrix{Cint}(hcat([
-        [4 + i; 4 + mod1(i + 1, n_circle)] for i in 1:n_circle
-    ]...))
-
-    tio = TriangulateIO()
-    tio.pointlist = hcat(rect_pts, circ_pts)
-    tio.segmentlist = hcat(rect_segs, circ_segs)
-
-    flags = isnothing(max_area) ? "pqo2Q" : "pq30o2a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts = result.pointlist
-    tris_t6 = Matrix{Int32}(result.trianglelist)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in axes(pts, 2)]
-
-    # Triangle's second-order boundary nodes lie on straight constrained
-    # segments. Project the circular-interface nodes back to the analytical
-    # radius so the inclusion boundary is fitted by the high-order geometry.
-    sagitta = r * (1 - cos(π / n_circle))
-    circle_tol = max(2.5 * sagitta, 100eps(Float64) * max(Lx, Ly))
-    for i in eachindex(coords)
-        dx = coords[i][1] - cx
-        dy = coords[i][2] - cy
-        radius = hypot(dx, dy)
-        if abs(radius - r) ≤ circle_tol && radius > 0
-            coords[i] = SVector{2, Float64}(cx + r * dx / radius, cy + r * dy / radius)
-        end
-    end
-
-    n_t6 = length(coords)
-    nels = size(tris_t6, 2)
-    el2n = Matrix{Int32}(undef, 7, nels)
-    el2n[1:3, :] .= tris_t6[1:3, :]
-    el2n[4, :] .= tris_t6[6, :] # FEMTools node 4 = mid(1, 2)
-    el2n[5, :] .= tris_t6[4, :] # FEMTools node 5 = mid(2, 3)
-    el2n[6, :] .= tris_t6[5, :] # FEMTools node 6 = mid(3, 1)
-    sizehint!(coords, n_t6 + nels)
-    for iel in 1:nels
-        c1 = coords[tris_t6[1, iel]]
-        c2 = coords[tris_t6[2, iel]]
-        c3 = coords[tris_t6[3, iel]]
-        push!(coords, (c1 + c2 + c3) / 3)
-        el2n[7, iel] = Int32(n_t6 + iel)
-    end
-
-    tol = 100eps(Float64) * max(Lx, Ly)
-    outer_nodes = Int32[
-        i for i in 1:n_t6
-        if abs(coords[i][1]) ≤ tol ||
-           abs(coords[i][1] - Lx) ≤ tol ||
-           abs(coords[i][2]) ≤ tol ||
-           abs(coords[i][2] - Ly) ≤ tol
-    ]
-    circle_nodes = Int32[
-        i for i in 1:n_t6
-        if abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) ≤ circle_tol
-    ]
-
-    return coords, el2n, sort!(unique!(outer_nodes)), sort!(unique!(circle_nodes))
-end
+include(joinpath(@__DIR__, "..", "..", "gmsh_meshing.jl"))
 
 # ---------------------------------------------------------------------------
 # Parameters
@@ -147,8 +71,7 @@ function main(;
     ncheck = 100          # convergence check interval
     ϵ_tol  = 1e-6        # relative residual tolerance
 
-    # Inclusion geometry. The Triangle PSLG uses this circle as an internal
-    # constrained boundary, so no element crosses the material interface.
+    # Gmsh fragments the domain at this material interface.
     r_incl = 0.1
     cx     = Lx / 2
     cy     = Ly / 2
@@ -160,7 +83,7 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
-    coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_triangle_t7_inclusion_mesh(;
+    coords_v_cpu, el2n_v_cpu, outer_nodes, circle_nodes = build_gmsh_t7_circle_inclusion_mesh(;
         Lx, Ly,
         cx, cy, r = r_incl,
         n_circle,
@@ -173,7 +96,7 @@ function main(;
     )
     mesh_stokes = MixedMesh(mesh_v, element_P)
 
-    @info "Triangle mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels n_circle max_area n_interface_nodes=length(circle_nodes)
+    @info "Gmsh mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels n_circle max_area n_interface_nodes=length(circle_nodes)
 
     # ---------------------------------------------------------------------------
     # Geometry precompute  (both fields evaluated at velocity integration points)
