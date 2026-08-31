@@ -30,9 +30,9 @@ thermal-expansion term of the equation of state, which makes the hot chamber
 buoyant.
 
 Background pure shear is imposed as `vx = ε̇_bg x` on the `x` walls, with
-`vy = 0` on the `y` walls and `vz = 0` on the base; the topography is a
-traction-free surface, so a positive `ε̇_bg` extends the block and lets it
-subside.
+`vy = 0` on the `y` walls and upward `vz = ε̇_bg depth` on the base. The
+topography is traction-free; the basal influx compensates the lateral extension
+so the reference surface remains near its initial elevation.
 
 The velocity space is the 11-node bubble-enriched quadratic tetrahedron and the
 pressure space is discontinuous linear on the four tetrahedron vertices. Gmsh
@@ -204,7 +204,7 @@ function main(;
 
     # -----------------------------------------------------------------------
     # Boundary conditions
-    #   vx = ε̇ x on the x walls, vy = 0 on the y walls, vz = 0 on the base,
+    #   vx = ε̇ x on the x walls, vy = 0 on the y walls, vz = ε̇ depth on the base,
     #   free slip in the unconstrained components; the topography carries no
     #   traction. T is fixed on the topography and the base, insulating on the
     #   sides.
@@ -216,7 +216,7 @@ function main(;
     )
     bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(length(vy_nodes)))
     bc_vz = DirichletBoundaryCondition(
-        nothing, groups.bottom, zeros(length(groups.bottom)),
+        nothing, groups.bottom, fill(ε̇ * depth / L_c, length(groups.bottom)),
     )
     bc_T = DirichletBoundaryCondition(
         nothing,
@@ -237,7 +237,7 @@ function main(;
     # divergence, so this seed is required, not merely a warm start.
     copyto!(dr.vx, [ε̇ * c[1] for c in coords_cpu])
     fill!(dr.vy, 0)
-    copyto!(dr.vz, [-ε̇ * (c[3] + depth / L_c) for c in coords_cpu])
+    copyto!(dr.vz, [-ε̇ * c[3] for c in coords_cpu])
     apply_bc!(dr.vx, bc_vx)
     apply_bc!(dr.vy, bc_vy)
     apply_bc!(dr.vz, bc_vz)
