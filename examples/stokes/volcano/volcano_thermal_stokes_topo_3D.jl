@@ -1,11 +1,13 @@
-# Coupled thermal-Stokes model of an axisymmetric volcanic edifice in three
-# dimensions.
+# Coupled thermal-Stokes model of a volcanic edifice in three dimensions, with
+# the free surface taken from a sampled digital elevation model rather than an
+# analytic cone.
 
 using Printf
 using Statistics
 using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
+using JLD2
 using FEMTools
 
 const kyr       = 1000 * 365.25 * 24 * 3600.0
@@ -21,32 +23,48 @@ else
     const _default_backend = CPU()
 end
 
-include(joinpath(@__DIR__, "volcano_mesh_3D.jl"))
+include(joinpath(@__DIR__, "volcano_mesh_topo_3D.jl"))
 
 """
-    main(; nsteps=5, Δt=10kyr, ε̇_bg=1e-15, nels=(14,14,12), ...) -> NamedTuple
+    main(; nsteps=5, Δt=10kyr, ε̇_ref=1e-15, mesh_size=2800.0, ...) -> NamedTuple
 
-Run the coupled thermal--Stokes model of an Etna-like volcanic edifice on a
-unstructured chamber-conforming T11/P1-discontinuous mesh.
+Run the coupled thermal--Stokes model of Etna on an unstructured
+chamber-conforming T11/P1-discontinuous mesh whose top surface follows a
+sampled topography.
 
-A 40 × 40 × 20 km crustal block carries a truncated cone of revolution 3.3 km
-high and hosts an oblate ellipsoidal magma chamber (semi-axes 3 × 3 × 1.5 km)
-centred 5 km below the ground surface. The crust is visco-elasto-plastic
+`mesh_size` is the far-field target element size in metres and is the only
+resolution control: the horizontal extent follows the topography tile, so a
+count of elements per side would mean a different element size for every tile.
+The velocity relaxation diverges outright on a mesh coarser than roughly 4 km,
+and converges at 2.9 km, so raise this only with a convergence check.
+
+`topo_file` holds `x`, `y` and `surf` in km: two ascending Cartesian axes and
+the elevation sampled on them. The horizontal extent of that tile sets the
+horizontal extent of the model, which is recentred on the tile, and `surf`
+becomes the free surface. The domain reaches `depth` below the `z = 0` datum
+and hosts an oblate ellipsoidal magma chamber (semi-axes 3 × 3 × 1.5 km)
+centred `chamber_depth` below the datum, directly beneath the highest point of
+the topography. The crust is visco-elasto-plastic
 (Drucker-Prager, cohesion 10 MPa, friction angle 30°); the chamber is
 visco-elastic with a low shear modulus. Temperature starts on a `dTdz` geotherm
 and at `T_magma` inside the chamber, and enters the momentum balance through the
 thermal-expansion term of the equation of state, which makes the hot chamber
 buoyant.
 
-Background pure shear is imposed as `vx = ε̇_bg x` on the `x` walls, with
-`vy = 0` on the `y` walls and upward `vz = ε̇_bg depth` on the base. The
-topography is traction-free; the basal influx compensates the lateral extension
-so the reference surface remains near its initial elevation.
+The four vertical walls and the base are free slip: each pins only the velocity
+component normal to it and leaves the tangential components free. The
+topography carries no traction, so it is a free surface in the stress sense,
+though the mesh does not move and the relief therefore does not evolve. Flow is
+driven by gravity acting on the density contrast between the hot chamber and the
+crust. `ε̇_ref` imposes no velocity: it is the reference strain rate that fixes
+the characteristic time `t_c = 1/ε̇_ref` scaling the whole solve.
 
 The velocity space is the 11-node bubble-enriched quadratic tetrahedron and the
 pressure space is discontinuous linear on the four tetrahedron vertices. Gmsh
 fragments the crust with the chamber ellipsoid, so both phases share a curved,
-conforming interface and the mesh is locally refined around it.
+conforming interface and the mesh is locally refined around it. The topography
+is imposed by displacing the meshed nodes vertically, with a weight that
+vanishes at the top of the chamber so the ellipsoid stays exact.
 
 All arguments and returned fields are SI; the solve itself runs in the
 characteristic units defined below.
@@ -63,9 +81,12 @@ statistics. Fields are written as VTK for inspection in an external viewer.
 function main(;
         nsteps = 5,
         Δt = 10kyr,
-        ε̇_bg = 1.0e-15,
-        nels = (14, 14, 12),
-        mesh_size = nothing,
+        ε̇_ref = 1.0e-15,
+        topo_file = joinpath(@__DIR__, "Etna_Topo.jld2"),
+        depth = 20.0e3,
+        chamber_depth = 5.0e3,
+        mesh_size = 2000.0,
+        # mesh_size = 2800.0,
         refinement = 3.0,
         η_vp = 1.0e21,
         γfact = 100.0,
@@ -76,13 +97,29 @@ function main(;
         backend = _default_backend, workgroup = 128,
     )
     # -----------------------------------------------------------------------
-    # Geometry [m]
+    # Geometry [m] — the topography tile sets the horizontal extent
+    #
+    # `Etna_Topo.jld2` stores Cartesian km. Recentring the axes on the tile puts
+    # the box symmetric about the origin, which is what the mesher builds.
     # -----------------------------------------------------------------------
-    Lx = Ly = 40.0e3
-    depth = 20.0e3
-    cone_base, cone_top, cone_height = 10.0e3, 0.5e3, 3.3e3
-    chamber_center = (0.0, 0.0, -5.0e3)
+    dem = load(topo_file)
+    x_dem = dem["x"] .* 1.0e3
+    y_dem = dem["y"] .* 1.0e3
+    h_dem = dem["surf"] .* 1.0e3
+    x_dem .-= (minimum(x_dem) + maximum(x_dem)) / 2
+    y_dem .-= (minimum(y_dem) + maximum(y_dem)) / 2
+    Lx = maximum(x_dem) - minimum(x_dem)
+    Ly = maximum(y_dem) - minimum(y_dem)
+
+    # The chamber sits beneath the summit, so the refinement follows the edifice
+    # rather than the centre of the tile.
+    summit = argmax(h_dem)
+    chamber_center = (x_dem[summit[1]], y_dem[summit[2]], -chamber_depth)
     chamber_radii  = (3.0e3, 3.0e3, 1.5e3)
+
+    @info "Topography" tile_km = (Lx / 1.0e3, Ly / 1.0e3) summit_km =
+        (chamber_center[1] / 1.0e3, chamber_center[2] / 1.0e3, h_dem[summit] / 1.0e3) elevation_km =
+        extrema(h_dem) ./ 1.0e3
 
     # -----------------------------------------------------------------------
     # Characteristic units
@@ -93,7 +130,7 @@ function main(;
     # units and scaled back for output. Temperature stays in Kelvin.
     # -----------------------------------------------------------------------
     L_c  = depth                  # length [m]
-    t_c  = 1 / abs(ε̇_bg)          # time [s]
+    t_c  = 1 / abs(ε̇_ref)          # time [s]
     σ_c  = 1.0e8                  # stress [Pa]
     η_c  = σ_c * t_c              # viscosity [Pa s]
     ρ_c  = σ_c * t_c^2 / L_c^2    # density [kg m⁻³]
@@ -137,7 +174,6 @@ function main(;
     T_surface = 273.0
     T_base    = T_surface + dTdz * depth
 
-    ε̇  = ε̇_bg * t_c
     Δτ = Δt / t_c
 
     # -----------------------------------------------------------------------
@@ -146,15 +182,15 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{3, 11, Float64})  # T10 + centroid bubble
     element_P = ReferenceElement(LinearElement{3, 4, Float64})      # P1 discontinuous
 
-    topography(x, y) = volcano_topography(x, y; cone_base = cone_base / L_c,
-        cone_top = cone_top / L_c, cone_height = cone_height / L_c)
-    coords_cpu, el2n_cpu, groups = build_tet11_volcano_mesh(;
+    # The mesher works in characteristic units, so the tile is scaled once here
+    # and `topography` answers in the same units.
+    topography = dem_topography(x_dem ./ L_c, y_dem ./ L_c, h_dem ./ L_c)
+    coords_cpu, el2n_cpu, groups = build_tet11_topo_mesh(;
+        topography,
         Lx = Lx / L_c, Ly = Ly / L_c, depth = depth / L_c,
-        cone_base = cone_base / L_c, cone_top = cone_top / L_c,
-        cone_height = cone_height / L_c,
         chamber_center = chamber_center ./ L_c,
         chamber_radii = chamber_radii ./ L_c,
-        nels, mesh_size = isnothing(mesh_size) ? nothing : mesh_size / L_c, refinement,
+        mesh_size = mesh_size / L_c, refinement,
     )
     # Keep the host mesh data above for meshing, classification, and output,
     # but put all connectivity consumed by solver kernels on the selected
@@ -169,7 +205,7 @@ function main(;
     NP   = length(element_P)
 
     @info "Unstructured conforming mesh (T11/P1-disc)" nnodes_v = mesh_stokes.nnodes nnodes_P =
-        mesh_stokes.nnodesP nels = mesh_stokes.nels
+        mesh_stokes.nnodesP nels = mesh_stokes.nels mesh_size_km = mesh_size / 1.0e3
 
     # -----------------------------------------------------------------------
     # Phases — element phase from the mesh, node phase from the elements
@@ -191,7 +227,7 @@ function main(;
     DoFsP_cpu  = Array(mesh_stokes.DoFsP)
     chamber_P_dofs = sort!(unique!(vec(DoFsP_cpu[:, findall(==(2), cell_phase)])))
     isempty(chamber_P_dofs) &&
-        throw(ArgumentError("mesh does not resolve the magma chamber; increase nels"))
+        throw(ArgumentError("mesh does not resolve the magma chamber; reduce mesh_size"))
 
     @info "Phases" n_chamber_cells = count(==(2), cell_phase) n_chamber_nodes =
         count(==(2), node_phase)
@@ -215,22 +251,22 @@ function main(;
 
     # -----------------------------------------------------------------------
     # Boundary conditions
-    #   vx = ε̇ x on the x walls, vy = 0 on the y walls, vz = ε̇ depth on the base,
-    #   free slip in the unconstrained components; the topography carries no
-    #   traction. T is fixed on the topography and the base, insulating on the
-    #   sides.
+    #   Free slip on the walls and the base: vx = 0 on the x walls, vy = 0 on
+    #   the y walls, vz = 0 on the base, with the tangential components left
+    #   free. The topography carries no traction. T is fixed on the topography
+    #   and the base, insulating on the sides.
     # -----------------------------------------------------------------------
     vx_nodes = sort!(union(groups.left, groups.right))
     vy_nodes = sort!(union(groups.front, groups.back))
     bc_vx = DirichletBoundaryCondition(
-        nothing, TDev(Int32.(vx_nodes)), TDev([0 * ε̇ * coords_cpu[n][1] for n in vx_nodes]),
+        nothing, TDev(Int32.(vx_nodes)), TDev(zeros(length(vx_nodes))),
     )
     bc_vy = DirichletBoundaryCondition(
         nothing, TDev(Int32.(vy_nodes)), TDev(zeros(length(vy_nodes))),
     )
     bc_vz = DirichletBoundaryCondition(
         nothing, TDev(Int32.(groups.bottom)),
-        TDev(fill(0 * ε̇ * depth / L_c, length(groups.bottom))),
+        TDev(zeros(length(groups.bottom))),
     )
     bc_T = DirichletBoundaryCondition(
         nothing,
@@ -238,7 +274,7 @@ function main(;
         TDev(vcat(fill(T_surface, length(groups.surface)), fill(T_base, length(groups.bottom)))),
     )
 
-    # Linear geotherm below the ground surface; the edifice sits at T_surface.
+    # Linear geotherm below the datum; the edifice sits at T_surface.
     geotherm(c) = T_surface - dTdz * L_c * min(c[3], 0.0)
     copyto!(thermal.T, [
         node_phase[i] == 2 ? T_magma : geotherm(coords_cpu[i]) for i in eachindex(coords_cpu)
@@ -246,12 +282,12 @@ function main(;
     apply_bc!(thermal.T, bc_T; workgroup)
     copyto!(thermal.T0, thermal.T)
 
-    # Seed the interior with the pure-shear field that satisfies the boundary
-    # conditions. The relaxation diverges from an initial guess with a non-zero
-    # divergence, so this seed is required, not merely a warm start.
-    copyto!(dr.vx, [0 * ε̇ * c[1] for c in coords_cpu])
+    # The relaxation diverges from an initial guess with a non-zero divergence,
+    # so the seed has to satisfy the boundary conditions and be divergence-free.
+    # Rest does both.
+    fill!(dr.vx, 0)
     fill!(dr.vy, 0)
-    copyto!(dr.vz, [0 * ε̇ * c[3] for c in coords_cpu])
+    fill!(dr.vz, 0)
     apply_bc!(dr.vx, bc_vx)
     apply_bc!(dr.vy, bc_vy)
     apply_bc!(dr.vz, bc_vz)
@@ -265,9 +301,8 @@ function main(;
     end
     copyto!(dr.P, P_init)
 
-    @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) n_vz =
-        length(groups.bottom) n_T = length(bc_T.DoFs) max_vx_SI =
-        maximum(abs, bc_vx.vals) * L_c / t_c T_base
+    @info "BCs (free slip on the walls and base)" n_vx = length(vx_nodes) n_vy =
+        length(vy_nodes) n_vz = length(groups.bottom) n_T = length(bc_T.DoFs) T_base
 
     # Pressure update scale: γP * RP / M_P reproduces the pointwise pressure
     # correction while adapting the step to the local viscosity.
@@ -285,11 +320,11 @@ function main(;
     mean_P_chamber      = zeros(Float64, nsteps)
     solve_stats_history = NamedTuple[]
 
-    out_dir = joinpath(@__DIR__, "output_volcano_3D")
+    out_dir = joinpath(@__DIR__, "output_volcano_topo_3D")
     write_output && mkpath(out_dir)
     post = nothing
 
-    @info "Starting coupled thermal--Stokes solver" nsteps Δt_kyr = Δt / kyr ε̇_bg
+    @info "Starting coupled thermal--Stokes solver" nsteps Δt_kyr = Δt / kyr ε̇_ref
 
     for istep in 1:nsteps
         t = istep * Δt
@@ -332,14 +367,14 @@ function main(;
         if write_output
             T_cpu = Array(thermal.T)
             el_T = [mean(T_cpu[el2n_v_cpu[1:4, iel]]) for iel in 1:mesh_stokes.nels]
-            vtk_path = joinpath(out_dir, @sprintf("volcano_thermal_stokes_3D_%04d.vtk", istep))
+            vtk_path = joinpath(out_dir, @sprintf("volcano_thermal_stokes_topo_3D_%04d.vtk", istep))
             write_stokes_vtk(
                 vtk_path, mesh_stokes, coords_cpu .* L_c, el2nP_cpu, DoFsP_cpu,
                 P_cpu .* σ_c, map(v -> v .* (L_c / t_c), v_cpu),
                 # Strain-rate fields scale with 1/t_c, stress fields with σ_c.
                 merge(map(f -> f .* σ_c, post),
                     map(f -> f ./ t_c, post[(:εxx, :εyy, :εzz, :εxy, :εxz, :εyz, :εII)]));
-                title = "volcano thermal-Stokes 3D",
+                title = "volcano thermal-Stokes 3D (DEM topography)",
                 cell_data = (; phase = cell_phase, T = el_T),
             )
         end

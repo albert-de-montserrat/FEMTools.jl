@@ -553,12 +553,31 @@ velocity tuple `v`, so block `J[i][j]` is `∂Rᵢ/∂vⱼ` and the off-diagonal
 blocks carry the shear coupling between directions.
 """
 @inline function _velocity_jacobian_blocks(momentum, vloc::NTuple{D}) where {D}
-    return ntuple(Val(D)) do i
-        ntuple(Val(D)) do j
-            ForwardDiff.jacobian(u -> momentum(Base.setindex(vloc, u, j))[i], vloc[j])
-        end
-    end
+    dirs = _direction_tags(Val(D))
+    return map(vi -> map(vj -> _velocity_jacobian_block(momentum, vloc, vi, vj), dirs), dirs)
 end
+
+# The block indices travel as `Val` singletons rather than as integers: they end
+# up captured by the closure `ForwardDiff.jacobian` differentiates, and only a
+# type carries a value across that capture. An integer index would have to be
+# constant-propagated into `momentum`, which is far too large for inference to
+# do so; the index then reaches `_substitute_component` non-constant, the trial
+# tuple comes back `Union`-typed, and the enclosing kernel loses inferability
+# and cannot be compiled for GPU back-ends.
+@inline _direction_tags(::Val{D}) where {D} = ntuple(i -> Val(i), Val(D))
+
+@inline function _velocity_jacobian_block(
+        momentum, vloc::NTuple{D}, vi::Val, vj::Val{J},
+    ) where {D, J}
+    return ForwardDiff.jacobian(
+        u -> _component(momentum(_substitute_component(vloc, u, vj)), vi), vloc[J],
+    )
+end
+
+@inline _component(R::Tuple, ::Val{I}) where {I} = R[I]
+
+@inline _substitute_component(vloc::NTuple{D}, u, ::Val{J}) where {D, J} =
+    ntuple(k -> k === J ? u : vloc[k], Val(D))
 
 """
     element_momentum_jacobians(vx, vy, P, T, el2n_v, el2nP, geo, phases,
@@ -683,6 +702,16 @@ The plane-strain form returns the four blocks positionally as
 `jacobian_rowsums_and_diagonal` reduces them to the preconditioner diagnostics.
 """
 @inline function element_augmented_momentum_jacobians(
+        v::NTuple{D}, args...,
+    ) where {D}
+    local_nodes_v, momentum, vloc = _element_augmented_momentum_problem(v, args...)
+    return local_nodes_v, _velocity_jacobian_blocks(momentum, vloc)
+end
+
+# Gather the element-local state of the augmented momentum residual and return
+# it as the residual closure the Jacobian differentiates, alongside the trial
+# velocity it is differentiated at.
+@inline function _element_augmented_momentum_problem(
     v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
     phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
     MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
@@ -705,16 +734,13 @@ The plane-strain form returns the four blocks positionally as
     phase_P   = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
     η_pc      = _element_max_phase_property(η, phase_v)
 
-    J = _velocity_jacobian_blocks(
-        v_arg -> integrate_momentum_residual(
-            v_arg, P_loc, P0loc, T_loc, T0loc,
-            geo_v_el, geo_P_el, phase_v, phase_P,
-            η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, Nq, NqP,
-            τ_old_loc, plastic,
-        ),
-        vloc,
+    momentum = v_arg -> integrate_momentum_residual(
+        v_arg, P_loc, P0loc, T_loc, T0loc,
+        geo_v_el, geo_P_el, phase_v, phase_P,
+        η_pc, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff_loc, MP_loc, Nq, NqP,
+        τ_old_loc, plastic,
     )
-    return local_nodes_v, J
+    return local_nodes_v, momentum, vloc
 end
 
 @inline function element_augmented_momentum_jacobians(
@@ -797,12 +823,63 @@ assemble_augmented_momentum_jacobian_matrices_atomix!(
     Nq, NqP, ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_v, J = element_augmented_momentum_jacobians(
+    local_nodes_v, momentum, vloc = _element_augmented_momentum_problem(
         v, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
     )
-    _scatter_jacobian_diagnostics!(∂Rv∂v, PC, local_nodes_v, J)
+    _scatter_folded_jacobian_diagnostics!(∂Rv∂v, PC, local_nodes_v, momentum, vloc)
+end
+
+# Reduce the element Jacobian to the preconditioner diagnostics one block at a
+# time. The diagnostics need only an L1 row sum and a diagonal, so no block has
+# to outlive its own contribution, and keeping just one live matters: a live
+# block holds several KiB of ForwardDiff frame, and all `D²` at once reserve
+# more thread-local memory than a GPU launch can back.
+@inline function _scatter_folded_jacobian_diagnostics!(
+        ∂Rv∂v::NTuple{D}, PC::NTuple{D}, nodes, momentum, vloc::NTuple{D},
+    ) where {D}
+    dirs = _direction_tags(Val(D))
+    map(dirs) do vi
+        rowsum, diagonal = _jacobian_row_diagnostics(momentum, vloc, vi, dirs)
+        _scatter_row_diagnostics!(∂Rv∂v, PC, nodes, rowsum, diagonal, vi)
+    end
+    return nothing
+end
+
+@inline function _jacobian_row_diagnostics(momentum, vloc, vi, dirs)
+    block = _velocity_jacobian_block(momentum, vloc, vi, first(dirs))
+    diagonal = _abs_diagonal(block)
+    seed = (_abs_row_sums(block), _same_direction(vi, first(dirs)) ? diagonal : zero(diagonal))
+    return _fold_jacobian_row(momentum, vloc, vi, Base.tail(dirs), seed)
+end
+
+@inline _fold_jacobian_row(momentum, vloc, vi, ::Tuple{}, acc) = acc
+@inline function _fold_jacobian_row(momentum, vloc, vi, dirs::Tuple, acc)
+    vj = first(dirs)
+    block = _velocity_jacobian_block(momentum, vloc, vi, vj)
+    rowsum, diagonal = acc
+    folded = (
+        rowsum + _abs_row_sums(block),
+        _same_direction(vi, vj) ? _abs_diagonal(block) : diagonal,
+    )
+    return _fold_jacobian_row(momentum, vloc, vi, Base.tail(dirs), folded)
+end
+
+@inline _same_direction(::Val{I}, ::Val{J}) where {I, J} = I === J
+@inline _abs_row_sums(block::SMatrix{M, N}) where {M, N} =
+    SVector{M}(ntuple(i -> sum(ntuple(j -> abs(block[i, j]), Val(N))), Val(M)))
+@inline _abs_diagonal(block::SMatrix{M}) where {M} =
+    SVector{M}(ntuple(i -> abs(block[i, i]), Val(M)))
+
+@inline function _scatter_row_diagnostics!(
+        ∂Rv∂v, PC, nodes, rowsum, diagonal, ::Val{C},
+    ) where {C}
+    for (i, inod) in enumerate(nodes)
+        Atomix.@atomic :monotonic ∂Rv∂v[C][inod] += rowsum[i]
+        Atomix.@atomic :monotonic PC[C][inod]    += diagonal[i]
+    end
+    return nothing
 end
 
 # Scatter the preconditioner diagnostics of an element Jacobian. For direction

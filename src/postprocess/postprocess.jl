@@ -260,6 +260,11 @@ Write a legacy ASCII VTK unstructured-grid file for `Mesh` or `MixedMesh`.
 High-order elements are linearized to their corner nodes. Scalar `point_data`
 fields may have either one value per mesh coordinate node or one value per
 written VTK point. Scalar `cell_data` fields must have one value per element.
+
+A field given as a tuple of component arrays is written as a VTK vector or
+tensor rather than as separate scalars, so a viewer can glyph it directly: two
+or three components make a vector, six a symmetric tensor in the order
+`(xx, yy, zz, xy, xz, yz)`, and nine a full row-major tensor.
 """
 function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_data = (;), title = "FEMTools")
     topo = _vtk_topology(mesh)
@@ -295,14 +300,14 @@ function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_da
         if !isempty(point_fields)
             println(io, "POINT_DATA $(length(topo.nodes))")
             for (name, field) in point_fields
-                _vtk_write_scalar_field(io, name, _vtk_point_values(field, topo, name))
+                _vtk_write_field(io, name, _vtk_point_values(field, topo, name))
             end
         end
 
         if !isempty(cell_fields)
             println(io, "CELL_DATA $(topo.nels)")
             for (name, field) in cell_fields
-                _vtk_write_scalar_field(io, name, _vtk_cell_values(field, topo, name))
+                _vtk_write_field(io, name, _vtk_cell_values(field, topo, name))
             end
         end
     end
@@ -376,6 +381,9 @@ function _vtk_print_point(io, c)
     end
 end
 
+_vtk_point_values(field::Tuple, topo, name) =
+    map(component -> _vtk_point_values(component, topo, name), field)
+
 function _vtk_point_values(field, topo, name)
     values = vec(Array(field))
     if length(values) == length(topo.nodes)
@@ -388,6 +396,9 @@ function _vtk_point_values(field, topo, name)
     ))
 end
 
+_vtk_cell_values(field::Tuple, topo, name) =
+    map(component -> _vtk_cell_values(component, topo, name), field)
+
 function _vtk_cell_values(field, topo, name)
     values = vec(Array(field))
     length(values) == topo.nels && return values
@@ -396,11 +407,51 @@ function _vtk_cell_values(field, topo, name)
     ))
 end
 
+_vtk_write_field(io, name, values) = _vtk_write_scalar_field(io, name, values)
+
+function _vtk_write_field(io, name, components::Tuple)
+    ncomp = length(components)
+    ncomp in (2, 3) && return _vtk_write_vector_field(io, name, components)
+    ncomp in (6, 9) && return _vtk_write_tensor_field(io, name, components)
+    throw(ArgumentError(
+        "field $(string(name)) has $ncomp components; a tuple field must hold 2 or 3 " *
+        "(vector), 6 (symmetric tensor), or 9 (full tensor) of them",
+    ))
+end
+
 function _vtk_write_scalar_field(io, name, values)
     println(io, "SCALARS $(string(name)) float 1")
     println(io, "LOOKUP_TABLE default")
     for value in values
         println(io, value)
+    end
+end
+
+function _vtk_write_vector_field(io, name, components::Tuple)
+    println(io, "VECTORS $(string(name)) float")
+    # The format has no two-component vector: a plane field pads the third slot.
+    pad = zero(eltype(first(components)))
+    for i in eachindex(components...)
+        third = length(components) == 3 ? components[3][i] : pad
+        println(io, components[1][i], " ", components[2][i], " ", third)
+    end
+end
+
+# Row-major 3 × 3 positions of the components of a symmetric tensor given in the
+# order (xx, yy, zz, xy, xz, yz), which is the order the stress and strain-rate
+# diagnostics carry.
+const _VTK_SYMMETRIC_TENSOR_LAYOUT = (1, 4, 5, 4, 2, 6, 5, 6, 3)
+
+function _vtk_write_tensor_field(io, name, components::Tuple)
+    # A legacy VTK tensor is always a full 3 × 3, so a symmetric field is
+    # mirrored into the lower triangle as it is written.
+    layout = length(components) == 6 ? _VTK_SYMMETRIC_TENSOR_LAYOUT : ntuple(identity, 9)
+    println(io, "TENSORS $(string(name)) float")
+    for i in eachindex(components...)
+        for row in 1:3
+            entries = ntuple(c -> components[layout[3 * (row - 1) + c]][i], 3)
+            println(io, entries[1], " ", entries[2], " ", entries[3])
+        end
     end
 end
 
@@ -470,6 +521,14 @@ Write a three-dimensional Stokes solution to a legacy VTK file. `v_cpu` holds
 one nodal velocity array per direction, and `post` the diagnostics returned by
 the three-dimensional `compute_strain_rate_stress_postprocess`.
 
+Velocity is written as a VTK vector and the strain-rate and deviatoric-stress
+diagnostics as VTK tensors, so a viewer can glyph them or take their principal
+values without first recombining components. The second invariants are kept as
+the separate scalars `strain_II` and `tau_II`.
+
+The point elevation is written as the scalar `z`, in the same units as the
+written coordinates, so a viewer can colour or warp a surface by it.
+
 Pressure is written as cell data. For tetrahedra it is evaluated at the centroid
 by averaging the four P1 values; for Hex27 it uses the cell-center value.
 """
@@ -490,17 +549,12 @@ function write_stokes_vtk(
     return write_vtk(
         vtk_path,
         mesh_stokes;
-        point_data = (;
-            Vx = vtk_V[1], Vy = vtk_V[2], Vz = vtk_V[3],
-            V = sqrt.(vtk_V[1] .^ 2 .+ vtk_V[2] .^ 2 .+ vtk_V[3] .^ 2),
-        ),
+        point_data = (; velocity = vtk_V, z = [topo.coords[i][3] for i in topo.nodes]),
         cell_data = merge(cell_data, (;
             P = cell_P,
-            strain_xx = post.εxx, strain_yy = post.εyy, strain_zz = post.εzz,
-            strain_xy = post.εxy, strain_xz = post.εxz, strain_yz = post.εyz,
+            strain = (post.εxx, post.εyy, post.εzz, post.εxy, post.εxz, post.εyz),
             strain_II = post.εII,
-            tau_xx = post.τxx, tau_yy = post.τyy, tau_zz = post.τzz,
-            tau_xy = post.τxy, tau_xz = post.τxz, tau_yz = post.τyz,
+            tau = (post.τxx, post.τyy, post.τzz, post.τxy, post.τxz, post.τyz),
             tau_II = post.tauII,
         )),
         title,

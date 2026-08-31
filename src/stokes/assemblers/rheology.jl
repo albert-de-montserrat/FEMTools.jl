@@ -246,13 +246,25 @@ zeros for `τ_old` on the first time step. This method has no yield criterion.
         v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
         τ_old::NTuple{6},
     )
-    ∇v = ntuple(i -> ∂N∂x' * v[i], Val(3))
+    # Indexed literally rather than through `ntuple`: `v` is heterogeneous
+    # while one direction is differentiated and the others are not, and a
+    # closure index reaches `v[i]` non-constant, which widens every gradient
+    # to a `Union` and makes the enclosing kernel uncompilable on GPU
+    # back-ends.
+    ∇v = (∂N∂x' * v[1], ∂N∂x' * v[2], ∂N∂x' * v[3])
     tr = (∇v[1][1] + ∇v[2][2] + ∇v[3][3]) / 3
+    # `tr` reads all three directions, so it carries the widest element type in
+    # `v`; holding the shear components to it keeps the strain rate on a single
+    # type. `εyz` reads neither the trace nor, when `v` is mixed, the direction
+    # being differentiated. Left narrower, it splits the Drucker-Prager return
+    # of the caller below: the corrected branch promotes that component and the
+    # unyielded branch returns it as is, so the two disagree and the stress type
+    # widens to a `Union` that no GPU back-end can compile.
     ε = (
         ∇v[1][1] - tr, ∇v[2][2] - tr, ∇v[3][3] - tr,
-        (∇v[1][2] + ∇v[2][1]) / 2,
-        (∇v[1][3] + ∇v[3][1]) / 2,
-        (∇v[2][3] + ∇v[3][2]) / 2,
+        oftype(tr, (∇v[1][2] + ∇v[2][1]) / 2),
+        oftype(tr, (∇v[1][3] + ∇v[3][1]) / 2),
+        oftype(tr, (∇v[2][3] + ∇v[3][2]) / 2),
     )
     ηve, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
     return map((εij, τij_o) -> 2 * ηve * (εij + τij_o * inv_2Gdt), ε, τ_old)
