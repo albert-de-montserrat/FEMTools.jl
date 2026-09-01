@@ -29,7 +29,9 @@ The example collection is not uniform yet:
 - several Poisson/KA experiments import CUDA and select `CUDABackend()` at
   global scope, so they are not portable CPU examples as written;
 - plotting commonly uses GLMakie and output commonly uses legacy VTK or
-  WriteVTK;
+  WriteVTK. `write_vtk` writes a field given as a tuple of component arrays as a
+  VTK vector, which is what the 3-D drivers pass their velocity as so a viewer
+  can glyph it directly;
 - the test suite parse-checks an explicit subset but does not run the miniapps
   end to end.
 
@@ -42,7 +44,13 @@ reporting a setup error:
 - absolute residuals are compared against fixed thresholds, so a dimensional
   crustal-scale problem must be solved in characteristic units;
 - the Drucker-Prager regularisation viscosity must stay at or above the
-  viscoelastic viscosity `G Δt`.
+  viscoelastic viscosity `G Δt`;
+- the velocity relaxation needs a fine enough mesh in absolute terms. The 3-D
+  volcano models diverge in the first Powell-Hestenes step at a far-field
+  element size of 4.4 km and above, and converge at 2.9 km. Note that a
+  per-side element count sets `hmax = max(Lx/nx, Ly/ny, depth/nz)`, so the same
+  count means a coarser mesh on a wider domain; compare absolute element sizes,
+  not element counts, when carrying settings between models.
 
 The thermal half of `solve_coupled_dyrel!` converges on a relative residual. A
 time step far below the thermal diffusion time leaves that residual at its
@@ -104,7 +112,8 @@ owning substantial assembly or solve logic in the script.
 | `examples/lithostatic_pressure/lithostatic_pressure3D.jl` | Gmsh Hex8 | Three-dimensional dense-inclusion lithostatic-pressure solve and VTK output |
 | `examples/stokes/sinking_block/sinking_block_3D.jl` | Gmsh Hex27/Q2 with cell-local P1 pressure | Matrix-free forward 3-D sinking block on CPU or accelerator backend |
 | `examples/stokes/sinking_block/sinking_block_3D_adj.jl` | same forward mesh/state | Matrix-free 3-D discrete adjoint and material gradients |
-| `examples/stokes/volcano/volcano_thermal_stokes_3D.jl` | unstructured chamber-conforming T11/P1-disc | Coupled thermal--Stokes volcanic edifice with visco-elasto-plastic crust and an ellipsoidal chamber |
+| `examples/stokes/volcano/volcano_thermal_stokes_3D.jl` | unstructured chamber-conforming T11/P1-disc; CPU or selected KernelAbstractions backend | Coupled thermal--Stokes volcanic edifice with visco-elasto-plastic crust and an ellipsoidal chamber |
+| `examples/stokes/volcano/volcano_thermal_stokes_topo_3D.jl` | same element pair and solver, free surface read from a DEM | Etna under its sampled topography, free slip on the walls and base, chamber beneath the summit |
 
 ## 3-D building-block and experimental miniapps
 
@@ -137,6 +146,8 @@ applications.
 | `examples/stokes/sinking_block/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
 | `examples/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
 | `examples/stokes/volcano/volcano_mesh_3D.jl` | Gmsh T10 mesher fragmented by the chamber ellipsoid and enriched to T11 with cell bubbles |
+| `examples/stokes/volcano/volcano_mesh_topo_3D.jl` | Same mesher with the top surface displaced onto a sampled topography; reuses the cone mesher's helpers |
+| `examples/stokes/volcano/Etna_Topo.jld2` | Etna elevation tile: `x`, `y`, `surf` in km on a 256 x 256 Cartesian grid |
 | `examples/elasticity/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 
 ## Miniapp contract
@@ -183,6 +194,11 @@ Polish existing miniapps before adding near-duplicates:
 6. Select a small representative smoke set across 2-D/3-D, structured/
    unstructured, scalar/Stokes, and CPU/backend paths instead of running every
    expensive application in default CI.
+
+The 3-D volcano driver keeps mesh generation and post-processing on the host,
+but moves solver connectivity, phases, boundary data, and state arrays to the
+selected backend. It defaults to `CPU()` and can be launched with
+`FEMTOOLS_BACKEND=cuda` after CUDA is available in the examples environment.
 
 ## Acceptance checks
 

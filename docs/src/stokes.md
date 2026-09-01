@@ -178,6 +178,11 @@ The 3-D volcano driver uses a locally refined unstructured T11 mesh. Its Gmsh
 geometry is fragmented by the chamber ellipsoid, so the crust and chamber share
 the curved interface instead of assigning phases across cut cells.
 
+The driver uses CPU by default, but accepts any KernelAbstractions backend and
+moves solver connectivity, phases, boundary data, and state arrays accordingly.
+After loading CUDA, run `main(backend = CUDABackend(); write_output = false)`
+or launch it with `FEMTOOLS_BACKEND=cuda`.
+
 See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
 discretisations, physical setup, output, figure, and material-gradient checks.
 
