@@ -183,6 +183,17 @@ end
     @test residual ≈ SA[-4.0]
 end
 
+@testset "continuity volumetric source" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    v = (SA[1.0], SA[2.0], SA[3.0])
+    residual = FEMTools.integrate_PH_pressure_residual(
+        v, SA[0.0], SA[0.0], SA[0.0], SA[0.0], SA[3.0],
+        ((dNdx, 2.0),), ((dNdx, 2.0),), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],),
+    )
+    @test residual ≈ SA[2.0]
+end
+
 @testset "DruckerPrager constructor precomputes phase parameters" begin
     for FP in (FP32, FP64)
         ϕ     = NTuple{2, FP}((π / 6, π / 4))

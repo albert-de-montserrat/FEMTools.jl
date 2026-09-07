@@ -367,6 +367,7 @@ end
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
         "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl",
+        "examples/stokes/vevp/stokes_2D_dike_triangle_adv.jl",
         "examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
         "examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl",
     ]

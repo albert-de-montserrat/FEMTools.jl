@@ -11,7 +11,11 @@ Core I/O is intentionally small:
   pressure connectivity is interpolation data, not cell geometry.
 - Scalar point fields and cell fields are supported and length-validated.
 - `write_stokes_vtk` maps mixed pressure/velocity and derived stress/strain
-  fields through the generic writer in both 2-D and 3-D.
+  fields through the generic writer in both 2-D and 3-D. In 2-D it writes
+  velocity as both `Vx`/`Vy` scalar components and the glyphable vector `V`;
+  callers can optionally provide pressure-node `Q_cpu`, which is averaged and
+  written as a cell field. The dike example converts its characteristic-unit
+  fields to SI units before writing.
 - Core has no mesh reader, checkpoint/restart format, parallel writer, or
   general result schema.
 - Examples create meshes with Gmsh.jl and sometimes depend on WriteVTK, but

@@ -174,16 +174,19 @@ end
     )
 
     text = _read_temp_vtk() do path
-        write_stokes_vtk(path, mesh, coords, el2nP, DoFsP, [10.0, 20.0, 30.0], 1.0:6.0, 2.0:7.0, post)
+        coords_advected = [SVector(2.0, 0.0), SVector(0.0, 2.0), SVector(0.0, 0.0)]
+        write_stokes_vtk(path, mesh, coords_advected, el2nP, DoFsP, [10.0, 20.0, 30.0], 1.0:6.0, 2.0:7.0, post; Q_cpu = [4.0, 5.0, 6.0])
     end
 
     @test occursin("POINT_DATA 3", text)
+    @test occursin("2.0 0.0", text)
     @test occursin("SCALARS P float 1", text)
     @test occursin("SCALARS Vx float 1", text)
-    @test occursin("SCALARS V float 1", text)
+    @test occursin("VECTORS V float", text)
     @test occursin("CELL_DATA 1", text)
     @test occursin("SCALARS strain_xx float 1", text)
     @test occursin("SCALARS tau_II float 1", text)
+    @test occursin("SCALARS Q float 1", text)
 end
 
 @testset "write_stokes_vtk writes 3-D velocity as a vector" begin

@@ -256,6 +256,8 @@ end
     write_vtk(path, mesh; point_data=(;), cell_data=(;), title="FEMTools")
 
 Write a legacy ASCII VTK unstructured-grid file for `Mesh` or `MixedMesh`.
+The optional `coords` argument replaces the mesh coordinates in the written
+geometry while preserving the mesh connectivity and field indexing.
 
 High-order elements are linearized to their corner nodes. Scalar `point_data`
 fields may have either one value per mesh coordinate node or one value per
@@ -266,8 +268,8 @@ tensor rather than as separate scalars, so a viewer can glyph it directly: two
 or three components make a vector, six a symmetric tensor in the order
 `(xx, yy, zz, xy, xz, yz)`, and nine a full row-major tensor.
 """
-function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_data = (;), title = "FEMTools")
-    topo = _vtk_topology(mesh)
+function write_vtk(path, mesh::Union{Mesh, MixedMesh}; point_data = (;), cell_data = (;), title = "FEMTools", coords = nothing)
+    topo = _vtk_topology(mesh; coords_override = coords)
     point_fields = collect(pairs(point_data))
     cell_fields = collect(pairs(cell_data))
 
@@ -325,8 +327,12 @@ _vtk_mesh_arrays(mesh::MixedMesh{2}) =
 _vtk_mesh_arrays(mesh::MixedMesh{3}) =
     (Array(mesh.coords), Array(mesh.el2n), mesh.nels, Val(3))
 
-function _vtk_topology(mesh)
-    coords, el2n, nels, dim = _vtk_mesh_arrays(mesh)
+function _vtk_topology(mesh; coords_override = nothing)
+    mesh_coords, el2n, nels, dim = _vtk_mesh_arrays(mesh)
+    coords = coords_override === nothing ? mesh_coords : coords_override
+    length(coords) == length(mesh_coords) || throw(DimensionMismatch(
+        "coords has length $(length(coords)); expected $(length(mesh_coords))",
+    ))
     corner_rows = _vtk_corner_rows(dim, size(el2n, 1))
     corner_el2n = Matrix{Int}(el2n[corner_rows, :])
     nodes = Int.(sort!(unique(vec(corner_el2n))))
@@ -456,11 +462,15 @@ function _vtk_write_tensor_field(io, name, components::Tuple)
 end
 
 """
-    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu, vx_cpu, vy_cpu, post; title, cell_data)
+    write_stokes_vtk(vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu,
+                     P_cpu, vx_cpu, vy_cpu, post; title, cell_data, Q_cpu)
 
 Write pressure, velocity, strain-rate, and stress diagnostics to an ASCII VTK
-unstructured-grid file using pressure triangle corners. Extra per-cell fields
-can be supplied with `cell_data`.
+unstructured-grid file using pressure triangle corners. The 2-D velocity is
+written both as component scalars (`Vx`, `Vy`) and as the vector field `V`, so
+viewers can glyph it directly. An optional pressure-node source array `Q_cpu`
+is averaged to cells and written as `Q`; extra per-cell fields can be supplied
+with `cell_data`.
 """
 function write_stokes_vtk(
     vtk_path,
@@ -474,8 +484,9 @@ function write_stokes_vtk(
     post;
     title = "FEMTools Stokes 2D",
     cell_data = (;),
+    Q_cpu = nothing,
 )
-    topo = _vtk_topology(mesh_stokes)
+    topo = _vtk_topology(mesh_stokes; coords_override = coords_v)
     NP = size(el2nP_cpu, 1)
 
     vtk_P = zeros(eltype(P_cpu), length(topo.nodes))
@@ -491,24 +502,31 @@ function write_stokes_vtk(
 
     vtk_Vx = [vx_cpu[old_i] for old_i in topo.nodes]
     vtk_Vy = [vy_cpu[old_i] for old_i in topo.nodes]
-    vtk_V = hypot.(vtk_Vx, vtk_Vy)
+    vtk_cell_data = merge(cell_data, (;
+        strain_xx = post.εxx,
+        strain_yy = post.εyy,
+        strain_zz = post.εzz,
+        strain_xy = post.εxy,
+        strain_II = post.εII,
+        tau_xx = post.τxx,
+        tau_yy = post.τyy,
+        tau_zz = post.τzz,
+        tau_xy = post.τxy,
+        tau_II = post.tauII,
+    ))
+    if Q_cpu !== nothing
+        vtk_cell_data = merge(vtk_cell_data, (Q = [
+            sum(Q_cpu[DoFsP_cpu[a, iel]] for a in axes(DoFsP_cpu, 1)) /
+            size(DoFsP_cpu, 1) for iel in axes(DoFsP_cpu, 2)
+        ],))
+    end
 
     return write_vtk(
         vtk_path,
         mesh_stokes;
-        point_data = (; P = vtk_P, Vx = vtk_Vx, Vy = vtk_Vy, V = vtk_V),
-        cell_data = merge(cell_data, (;
-            strain_xx = post.εxx,
-            strain_yy = post.εyy,
-            strain_zz = post.εzz,
-            strain_xy = post.εxy,
-            strain_II = post.εII,
-            tau_xx = post.τxx,
-            tau_yy = post.τyy,
-            tau_zz = post.τzz,
-            tau_xy = post.τxy,
-            tau_II = post.tauII,
-        )),
+        point_data = (; P = vtk_P, Vx = vtk_Vx, Vy = vtk_Vy, V = (vtk_Vx, vtk_Vy)),
+        cell_data = vtk_cell_data,
+        coords = coords_v,
         title,
     )
 end
@@ -538,7 +556,7 @@ function write_stokes_vtk(
     title = "FEMTools Stokes 3D",
     cell_data = (;),
 )
-    topo = _vtk_topology(mesh_stokes)
+    topo = _vtk_topology(mesh_stokes; coords_override = coords_v)
     vtk_V = ntuple(c -> [v_cpu[c][old_i] for old_i in topo.nodes], 3)
     cell_P = if size(mesh_stokes.el2n, 1) in (10, 11)
         [sum(P_cpu[DoFsP_cpu[a, iel]] for a in 1:4) / 4 for iel in 1:mesh_stokes.nels]
@@ -557,6 +575,7 @@ function write_stokes_vtk(
             tau = (post.τxx, post.τyy, post.τzz, post.τxy, post.τxz, post.τyz),
             tau_II = post.tauII,
         )),
+        coords = coords_v,
         title,
     )
 end

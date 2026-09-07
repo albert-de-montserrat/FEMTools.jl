@@ -318,7 +318,7 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_matrices_atomix!(
             dr.RP,
-            v, dr.P, dr.P0, dr.T, dr.T0,
+            v, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_P, dr.α, dr.ηb, Δt,
@@ -425,7 +425,7 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
-                v, dr.P, dr.P0, dr.T, dr.T0,
+                v, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
                 phases_P, dr.α, dr.ηb, Δt,

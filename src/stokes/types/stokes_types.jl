@@ -80,6 +80,7 @@ stress components `τzz`, `τxz`, and `τyz` with matching old-stress arrays.
 | `∂P∂τ`    | Pseudo-transient rate for pressure         |
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
+| `Q`        | Volumetric source/sink in continuity      |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
 | `M_P`      | Pressure mass diagonal (`∫NᵢdΩ` in 2-D, `∫Nᵢ²dΩ` in 3-D) |
@@ -109,9 +110,10 @@ Properties are supplied together through [`StokesMaterial`](@ref).
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Stress arrays default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
-integration points. `T` and `T0` should be filled via `copyto!` before calling
-the solver. The time step `Δt` is passed directly to the assembler rather than
-stored here.
+integration points. `T`, `T0`, and `Q` should be filled via `copyto!` before
+calling the solver. `Q` is the prescribed volumetric production rate (positive)
+or sink rate (negative) in the continuity equation. The time step `Δt` is
+passed directly to the assembler rather than stored here.
 """
 struct StokesDR{D, nphases, _T, _TI, _TS, FP, Nτ}
     # velocity-node solution fields, one array per spatial direction
@@ -134,6 +136,7 @@ struct StokesDR{D, nphases, _T, _TI, _TS, FP, Nτ}
     ∂P∂τ::_T
     T::_T
     T0::_T
+    Q::_T
     # pressure-node residual and DR work arrays
     RP::_T
     RP0::_T
@@ -191,7 +194,7 @@ struct StokesDR{D, nphases, _T, _TI, _TS, FP, Nτ}
             newiv(),                                  # phases_v
             ntuple(_ -> newτ(), Nτ),                  # τ
             ntuple(_ -> newτ(), Nτ),                  # τ_old
-            newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
+            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _G, _g, _Tref,

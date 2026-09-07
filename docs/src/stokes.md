@@ -14,8 +14,12 @@ continuity balances
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
 \nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
-- \alpha\frac{\partial T}{\partial t} = 0,
+- \alpha\frac{\partial T}{\partial t} = Q,
 ```
+
+`Q` is the backend-resident volumetric source/sink array on the Stokes
+pressure nodes. Positive values produce volume and negative values remove it;
+the default is zero.
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
@@ -166,6 +170,7 @@ viscoelasto-plastic pure-shear test and a sinking-block buoyancy test:
 
 ```sh
 julia --project=examples examples/stokes/vevp/stokes_2D_pure_shear.jl
+julia --project=examples examples/stokes/vevp/stokes_2D_dike_triangle_adv.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
 julia --project=examples examples/stokes/sinking_block/sinking_block_3D.jl
@@ -173,6 +178,49 @@ julia --project=examples examples/stokes/sinking_block/sinking_block_3D_adj.jl
 julia --project=examples examples/stokes/volcano/volcano_thermal_stokes.jl
 julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
 ```
+
+`stokes_2D_dike_triangle_adv.jl` models a 40 km wide by 20 km deep crustal
+section with a free surface, free-slip lateral and bottom boundaries, and a
+prescribed dike influx. Its 100 m wide, 2 km tall dike is centred at one-third
+of the model depth (6.67 km), is represented by a conforming lower-viscosity
+visco-elastic phase, and
+is surrounded by a graded T7 mesh refinement. The surrounding crust is
+visco-elasto-plastic, and the Stokes body force includes Earth gravity with the
+characteristic scaling used by the example. The initial pressure is obtained
+from the lithostatic
+pressure solver on a continuous corner mesh and transferred to the
+discontinuous Stokes pressure field. `Q_dike` is the total two-dimensional
+influx, normalized over the resolved dike-cell area. Use
+`show_plot=false`, `write_output=false`, or `advect_mesh=false` for headless
+and fixed-geometry runs. The optional figure also compares the initially flat
+surface with the final deformed profile.
+
+Pass `adjoint=true` to solve a frozen one-step discrete adjoint after every
+converged forward step. The objective is the normalized mean vertical velocity
+over a rectangular region immediately below the free surface, spanning
+`observation_xmin` and `observation_xmax`, so it does not include the whole
+domain. `observation_depth` controls its default vertical extent below the
+current surface. The returned `adjoint` result includes raw element contractions and
+log sensitivities for `G`, `K`, `η`, `ρ0`, and the scalar `Q_dike`. These are
+Each VTK file contains the sensitivities for its corresponding step. Each
+step remains a frozen one-step sensitivity with incoming stress/pressure and
+geometry held fixed; these are not a full trajectory gradient through stress
+history and mesh advection. Use a nonzero positive `Q_dike` when requesting
+its logarithmic sensitivity.
+
+When `write_output=true` and adjoint mode is enabled, every step also writes
+`stokes_2D_dike_adjoint_XXXX.vtk`. Its cell fields
+`dJ_dlog_eta`, `dJ_dlog_G`, `dJ_dlog_rho0`, `dJ_dlog_K`, and
+`dJ_dlog_Q_dike` are area-normalized sensitivity densities; the regular
+forward VTK file remains unchanged. The same adjoint file also stores the
+point fields `adjoint_vx`, `adjoint_vy`, and `adjoint_V`, plus the cell field
+`adjoint_pressure`.
+
+Each VTK output also contains the nodal velocity vector `V` (along with the
+`Vx` and `Vy` component scalars), so visualization tools can use their vector
+glyph or arrow filters directly. The dike output additionally stores the
+source rate as the cell field `Q`. Dike VTK files are written in SI units:
+metres, m/s, Pa, s⁻¹, and the volumetric source rate in s⁻¹.
 
 The 3-D volcano driver uses a locally refined unstructured T11 mesh. Its Gmsh
 geometry is fragmented by the chamber ellipsoid, so the crust and chamber share

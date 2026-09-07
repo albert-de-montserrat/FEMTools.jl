@@ -6,7 +6,7 @@
 
 Reverse-mode (Enzyme) transpose of `assemble_pressure_residual_kernel!`.
 
-Reads the primal fields (`RP`, `vx`, `vy`, `P`, `P0`, `T`, `T0`) and the
+Reads the primal fields (`RP`, `vx`, `vy`, `P`, `P0`, `T`, `T0`, `Q`) and the
 per-phase parameters `α`, `ηb` from the solver state `dr`. Given the adjoint
 seed `dRP` on the pressure residual, accumulate the transpose-Jacobian
 products into the input adjoints `dvx`, `dvy`, `dP`. The primal residual
@@ -24,7 +24,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqP = shape_function_values(element_P, element_v.integration_points)
     RP, vx, vy, P = dr.RP, dr.vx, dr.vy, dr.P
-    P0, T, T0 = dr.P0, dr.T, dr.T0
+    P0, T, T0, Q = dr.P0, dr.T, dr.T0, dr.Q
     el2n_v, el2nP = mesh_stokes.el2n, mesh_stokes.DoFsP
     nels = mesh_stokes.nels
 
@@ -39,6 +39,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         Enzyme.Const(P0),
         Enzyme.Const(T),
         Enzyme.Const(T0),
+        Enzyme.Const(Q),
         Enzyme.Const(el2n_v),
         Enzyme.Const(el2nP),
         Enzyme.Const(geo_v),

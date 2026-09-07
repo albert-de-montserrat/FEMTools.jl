@@ -85,6 +85,7 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl` | Gmsh T7/P1-disc | Unstructured pure shear with an inclusion |
 | `examples/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl` | Gmsh T7/P1-disc | Discrete-adjoint sensitivities for the unstructured pure-shear model |
 | `examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl` | Gmsh T7/P1-disc | Pure shear with mesh advection |
+| `examples/stokes/vevp/stokes_2D_dike_triangle_adv.jl` | Gmsh T7/P1-disc with graded interface refinement | 40 km × 20 km free-surface dike-influx model with free-slip walls/base, lithostatic pressure initialization, weak visco-elastic vertical dike, and optional selected-step adjoint sensitivities |
 | `examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
 | `examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |

@@ -191,8 +191,15 @@ R^p_{e,i}=\int_{Ω_e}N_i\left[
 -\nabla\!\cdot v
 -\frac{P-P^n}{η_bΔt}
 +α\frac{T-T^n}{Δt}
-\right]dΩ.
++Q\right]dΩ.
 ```
+
+`StokesDR.Q` is a pressure-node array for a prescribed volumetric
+source/sink. Positive values denote volume production and negative values
+denote removal. It is initialized to zero and populated by the caller on the
+selected backend. The 2-D pressure residual and adjoint treat it as an input
+coefficient; the specialized 3-D cell-local pressure residual does not yet
+carry `Q`.
 
 In 2-D, velocity and pressure live on the two fields of `MixedMesh` (commonly
 T7/P1-discontinuous). In the 3-D state path, velocity is continuous T11 or
