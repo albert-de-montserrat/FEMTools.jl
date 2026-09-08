@@ -34,19 +34,19 @@ end
     element = ReferenceElement(LinearElement{2, 3, Float64})
     ip = element.integration_points
     NQ = length(ip.ω)
-    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> FEMTools.eval_shape_function_jacobian(element, ξq[q]), NQ)
+    ∂N∂ξq = shape_function_gradients(element)
 
     coords = [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
     nels = 1
-    geotype = NTuple{NQ, Tuple{SMatrix{3, 2, Float64, 6}, Float64}}
+    geotype = NTuple{NQ, QuadraturePointGeometry{2, Float64, 4}}
 
     geo = KernelAbstractions.allocate(backend, geotype, nels)
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(3), nels, backend, workgroup)
 
     # Unit reference triangle: quadrature weights sum to its area, and the
     # linear shape-function gradients are the same at every point.
-    @test sum(last, geo[1]) ≈ 0.5
-    @test all(∂N∂x ≈ first(geo[1])[1] for (∂N∂x, _) in geo[1])
+    geo_el = element_geometry(geo, 1, ∂N∂ξq)
+    @test sum(p -> p.dΩ, geo[1]) ≈ 0.5
+    @test all(∂N∂x ≈ geo_el[1][1] for (∂N∂x, _) in geo_el)
 end

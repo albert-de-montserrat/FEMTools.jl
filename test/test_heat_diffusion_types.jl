@@ -98,7 +98,7 @@ for FP in (FP32, FP64)
         # --- phases integer array ---
 
         @testset "phases field" begin
-            @test eltype(dr.phases) === Int
+            @test eltype(dr.phases) === Int32
             @test length(dr.phases) == nnodes
             @test all(==(1), dr.phases)   # defaults to phase 1 everywhere
         end

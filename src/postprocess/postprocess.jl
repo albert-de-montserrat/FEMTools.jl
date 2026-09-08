@@ -23,6 +23,7 @@ function _strain_rate_stress_diagnostics(
 ) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     fields = ntuple(_ -> zeros(FP, nels), length(_DIAGNOSTIC_FIELDS))
 
     for iel in 1:nels
@@ -30,7 +31,7 @@ function _strain_rate_stress_diagnostics(
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
         stress_at_ip = element_stress(iel, local_nodes)
-        geo_el = geo_v[iel]
+        geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
 
         totals = ntuple(_ -> zero(FP), length(_DIAGNOSTIC_FIELDS))
         volume = zero(FP)

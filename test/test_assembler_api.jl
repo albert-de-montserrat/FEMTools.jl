@@ -4,14 +4,18 @@ using FEMTools
 using KernelAbstractions: CPU
 using StaticArrays
 
-function _line_assembler_fixture(dNdx)
+# One two-node line element of unit physical length: the reference element spans
+# ξ ∈ [-1, 1], so J = 1/2 and J⁻¹ = 2. These tests compare the atomic and colored
+# assembly paths against each other, so only their sharing one geometry matters.
+function _line_assembler_fixture()
     element = ReferenceElement(LinearElement{1, 2, Float64})
-    geo_el = ntuple(_ -> (dNdx, 1.0), length(shape_function_values(element)))
+    geo_el = ntuple(_ -> QuadraturePointGeometry(SMatrix{1, 1}(2.0), 1.0),
+                    length(shape_function_values(element)))
     return element, reshape(Int32[1, 2], 2, 1), [geo_el], [Int32[1]], CPU(), 1
 end
 
 @testset "heat assemblers accept compute_jacobian keyword" begin
-    element, el2n, geo, groups, backend, workgroup = _line_assembler_fixture(@SMatrix [0.0; 0.0])
+    element, el2n, geo, groups, backend, workgroup = _line_assembler_fixture()
     T = [300.0, 300.0]
     T0 = [300.0, 300.0]
     phases = [1, 1]
@@ -51,7 +55,7 @@ end
 end
 
 @testset "lithostatic assemblers accept compute_jacobian keyword" begin
-    element, el2n, geo, groups, backend, workgroup = _line_assembler_fixture(@SMatrix [0.0; 1.0])
+    element, el2n, geo, groups, backend, workgroup = _line_assembler_fixture()
     T = [300.0, 300.0]
     P = [1.0, 0.0]
     phases = [1, 1]

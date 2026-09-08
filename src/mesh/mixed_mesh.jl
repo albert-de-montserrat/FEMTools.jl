@@ -191,8 +191,13 @@ same backend for the mesh, cache, solver state, phase arrays, and boundary
 arrays; mixing host and device inputs in an assembly kernel is unsupported.
 
 Fields:
-- `geo_v`: primary-field shape-function gradients and weighted volumes.
-- `geo_P`: secondary-field shape-function gradients and weighted volumes.
+- `geo_v`: primary-field inverse Jacobians and weighted volumes, as
+  [`QuadraturePointGeometry`](@ref). Combine with
+  [`shape_function_gradients`](@ref) of `element_v` to obtain physical gradients.
+- `geo_P`: weighted volumes of the secondary field at the primary field's
+  quadrature points. Only the volumes are stored: the pressure residual and the
+  pressure scaling are the only consumers and neither uses secondary-field
+  gradients.
 - `element_v`, `element_P`: reference elements used to build the cache.
 """
 struct MixedMeshCache{GV, GP, EV, EP}
@@ -214,14 +219,11 @@ function MixedMeshCache(
     ip_v = element_v.integration_points
     NQ_v = length(ip_v.ω)
 
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
+    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
+    ∂N∂ξq_P = shape_function_gradients(element_P, ip_v)
 
-    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}
-    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}
-    geo_v = KA.allocate(backend, GeoV, mesh.nels)
-    geo_P = KA.allocate(backend, GeoP, mesh.nels)
+    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{2, FP, 4}}, mesh.nels)
+    geo_P = KA.allocate(backend, NTuple{NQ_v, FP}, mesh.nels)
 
     TDev   = TA(backend)
     coords = TDev(mesh.coords)

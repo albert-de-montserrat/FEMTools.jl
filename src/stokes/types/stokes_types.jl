@@ -38,7 +38,7 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 # Type parameters
 - `nphases` — number of material phases (compile-time constant)
 - `_T`       — nodal float array type (e.g. `Vector{Float64}` on CPU, `CuArray` on GPU)
-- `_TI`      — nodal integer array type (same backend, element type `Int`)
+- `_TI`      — nodal integer array type (same backend, element type `Int32`)
 - `_TS`      — stress array type (nodal by default, or integration-point storage)
 - `FP`       — floating-point precision (`Float32` or `Float64`)
 
@@ -102,7 +102,12 @@ temperature for the linearised EOS, default 0).
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Stress arrays default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
-integration points. `T` and `T0` should be filled via `copyto!` before calling
+integration points, or `stress_size=:none` to allocate no stress history at all.
+
+`:none` suits a purely viscous model, where the shear modulus is infinite and the
+six stress arrays are never read. All six fields are then `nothing`,
+[`stress`](@ref) returns `nothing`, and the assemblers must be called with
+`τ_old = nothing`. `T` and `T0` should be filled via `copyto!` before calling
 the solver. The time step `Δt` is passed directly to the assembler rather than
 stored here.
 """
@@ -176,13 +181,17 @@ struct StokesDR{nphases, _T, _TI, _TS, FP}
         _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
         _g   = g   === nothing ? (FP(0), FP(0))   : (FP(g[1]), FP(g[2]))
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
+        stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
+            "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
         stress_dims = stress_size === nothing ? (nnodes_v,) :
+            stress_size === :none ? nothing :
             stress_size isa Integer ? (stress_size,) : Tuple(stress_size)
         newv()  = KernelAbstractions.zeros(backend, FP,  nnodes_v)
         newP()  = KernelAbstractions.zeros(backend, FP,  nnodes_P)
-        newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
-        newiv() = KernelAbstractions.ones(backend,  Int, nnodes_v)
-        newip() = KernelAbstractions.ones(backend,  Int, nnodes_P)
+        newτ()  = stress_dims === nothing ? nothing :
+            KernelAbstractions.zeros(backend, FP, stress_dims...)
+        newiv() = KernelAbstractions.ones(backend,  Int32, nnodes_v)
+        newip() = KernelAbstractions.ones(backend,  Int32, nnodes_P)
         τxx = newτ()
         new{nphases, typeof(newv()), typeof(newiv()), typeof(τxx), FP}(
             newv(), newv(), newv(), newv(),           # vx, vy, ∂vx∂τ, ∂vy∂τ
@@ -210,9 +219,11 @@ velocity(dr::StokesDR) = (dr.vx, dr.vy)
 """
     stress(dr::StokesDR) -> (τxx, τyy, τxy)
 
-Return the current deviatoric-stress arrays of a Stokes solver state.
+Return the current deviatoric-stress arrays of a Stokes solver state, or
+`nothing` for a state built with `stress_size = :none`.
 """
 stress(dr::StokesDR) = (dr.τxx, dr.τyy, dr.τxy)
+stress(::StokesDR{<:Any, <:Any, <:Any, Nothing}) = nothing
 
 """
     pressure(dr) -> P
@@ -293,5 +304,48 @@ function DruckerPrager(
 ) where {N, FP}
     DruckerPrager{N + 1, FP}(
         map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
+    )
+end
+
+"""
+    Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+
+Caller-owned scratch for the 3-D Hex27/Q2--P1 DYREL solver.
+
+Holds the momentum and pressure residuals, the Jacobi preconditioner, the lumped
+pressure mass, and the zero boundary values each velocity component is projected
+against. All of it scales with the mesh, so a solver that allocates it per call
+churns tens of megabytes of device memory on every call. Build one and pass it as
+the `workspace` keyword of [`solve_stokes_dyrel!`](@ref) to reuse it across a
+time-stepping or optimization loop.
+
+It also owns the reference tables the assembly kernels read, so a `Hex27`
+gradient table is built once per workspace instead of once per launch.
+
+The preconditioner and pressure mass depend on the material and are refilled at
+the start of every solve, so a workspace never carries stale material data. The
+lengths in `fixed_nodes` are baked into the zero boundary values, and the
+reference tables into `mesh.element`, so a workspace belongs to one
+boundary-condition layout and one element; the solver checks the first and
+raises if it is handed a mismatched one.
+"""
+struct Stokes3DWorkspace{TV, TP, TB, TT}
+    residual_v::TV
+    residual_p::TP
+    diagonal::TV
+    pressure_mass::TP
+    zero_bc::TB
+    tables::TT
+end
+
+function Stokes3DWorkspace(
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+)
+    residual_v = ntuple(i -> similar(velocity[i]), 3)
+    diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
+    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
+    tables = stokes_tables_3d(KA.get_backend(first(velocity)), mesh.element)
+    return Stokes3DWorkspace(
+        residual_v, similar(pressure), diagonal, similar(pressure), zero_bc, tables,
     )
 end

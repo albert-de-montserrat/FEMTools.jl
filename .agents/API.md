@@ -37,7 +37,8 @@ avoid qualifying it in one example.
 - Containers: `ReferenceElement`, `ShapeFunctions`, `IntegrationPoints`.
 - Queries/evaluation: `order`, `eval_shape_function`,
   `eval_shape_function_gradient`, `eval_shape_function_jacobian`,
-  `shape_function_values`, `gauss_legendre_triangle`.
+  `shape_function_values`, `shape_function_gradients`, `quadrature_table`,
+  `gauss_legendre_triangle`.
 
 An element tag identifies dimension, local-node count, and numeric type. A
 `ReferenceElement` is the user-facing bundle of tag, shape functions, and
@@ -51,7 +52,8 @@ implementation; unsupported combinations must fail explicitly.
 - Mesh producers: `generate_element2node`, `generate_node2element`,
   `generate_boundary_elements`, `generate_coordinates`, `generate_dofs`,
   `generate_discontinuous_linear_mesh`.
-- Derived data: `precompute_geometry`, `generate_sparsity_pattern`,
+- Derived data: `precompute_geometry`, `QuadraturePointGeometry`,
+  `ElementGeometry`, `element_geometry`, `generate_sparsity_pattern`,
   `color_mesh`, `generate_element_groups`.
 - Boundary application: `apply_bc!`.
 
@@ -61,10 +63,26 @@ precomputes solver geometry; omitting it produces a topology-only mesh.
 `MixedMesh` owns distinct velocity and pressure layouts, while
 `MixedMeshCache` owns their precomputed geometry/reference elements.
 
+Precomputed geometry holds one `QuadraturePointGeometry` per element and
+quadrature point: the inverse isoparametric Jacobian and the weighted volume.
+`MixedMeshCache.geo_P` instead holds the weighted volume alone, since no consumer
+takes pressure-field gradients.
+Physical shape-function gradients are formed on access by pairing it with the
+reference-element gradients through `element_geometry`, so an assembler that
+consumes geometry also takes `shape_function_gradients(element)` alongside
+`shape_function_values(element)`.
+
+Both tables reach kernels either as the `NTuple`s those accessors return or as
+the backend arrays `quadrature_table` builds from them. Tuples travel in the
+kernel argument pack, which is rebuilt on every launch, so a solver builds the
+arrays once and passes those; the per-call assembler wrappers still take
+reference elements and rebuild tuples.
+
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
-  `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `DruckerPrager`.
+  `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
+  `DruckerPrager`.
 - Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
 - Stokes entry points: `solve_stokes_dyrel!`,
   `solve_coupled_dyrel!`,

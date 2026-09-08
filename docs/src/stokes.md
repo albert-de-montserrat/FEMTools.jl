@@ -38,6 +38,7 @@ operators and the same mixed spaces. It therefore computes gradients of the
 ```@docs
 StokesMaterial
 StokesDR
+Stokes3DWorkspace
 DruckerPrager
 pressure_mass
 ```
@@ -112,6 +113,25 @@ stats = solve_stokes_dyrel!(
 velocity component. The matching `solve_stokes_adjoint_dyrel!` method accepts
 the same storage plus a three-component objective load. `solve_stokes_3d!` and
 `solve_stokes_adjoint_3d!` remain compatibility wrappers.
+
+Each call otherwise allocates its own residuals, preconditioner and pressure
+mass, which at Hex27 resolutions is over a hundred megabytes per solve. A loop
+that solves repeatedly should own that storage:
+
+```julia
+workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+
+for step in 1:nsteps
+    stats = solve_stokes_dyrel!(
+        velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+        ϵ_tol = 1e-6, workspace,
+    )
+end
+```
+
+The preconditioner is refilled from the current material at the start of every
+solve, so a reused workspace never carries stale values, and the same workspace
+can be handed to `solve_stokes_adjoint_dyrel!`.
 
 ### Two-dimensional spectral estimate and frozen Jacobian
 

@@ -49,7 +49,7 @@ end
 
     @test mesh.element === element
     @test length(mesh.geometry) == mesh.nels
-    @test eltype(mesh.geometry) == NTuple{3, Tuple{SMatrix{3, 2, Float32, 6}, Float32}}
+    @test eltype(mesh.geometry) == NTuple{3, QuadraturePointGeometry{2, Float32, 4}}
 end
 
 @testset "unstructured Mesh accepts abstract array types" begin

@@ -31,6 +31,9 @@ end
 Assemble the pressure mass and viscosity-weighted pressure scale using a
 `StokesDR` state and `MixedMesh`.
 
+`geo_P` supplies the weighted volume at each quadrature point; no gradients of
+the pressure field enter this quadrature.
+
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
 """
@@ -162,7 +165,7 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
     geo_P_el = geo_P[iel]
 
     for q in eachindex(geo_P_el)
-        _, dΩ = geo_P_el[q]
+        dΩ = geo_P_el[q]
         Nv = NqV[q]
         NPq = NqP[q]
         ηq = interp2ip_phase(Nv, η, phase_loc)

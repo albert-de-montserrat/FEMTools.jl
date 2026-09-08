@@ -16,20 +16,8 @@ function _capture_stdout(f)
     end
 end
 
-function _thermal_geometry(coords, el2n, nels, element::ReferenceElement{E}) where {E <: AbstractElement{2, NV}} where {NV}
-    ip = element.integration_points
-    NQ = length(ip.ω)
-    FP = eltype(ip.ω)
-    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo = Vector{NTuple{NQ, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}}(undef, nels)
-    FEMTools.precompute_geometry_kernel!(CPU(), 1)(
-        geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV);
-        ndrange = nels,
-    )
-    synchronize(CPU())
-    return geo
-end
+_thermal_geometry(coords, el2n, nels, element) =
+    precompute_geometry(coords, el2n, element; backend = CPU(), workgroup = 1)
 
 function _thermal_case()
     backend = CPU()

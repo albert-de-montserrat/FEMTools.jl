@@ -104,10 +104,27 @@ using DomainSets: ×
     op = FEMTools.assemble_adjoint_operator(
         dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    # A viscous tangent is symmetric, so the velocity block keeps only its upper
+    # triangle and the pressure-coupling block is Bᵀ and is not stored. The
+    # residual comparison below is what proves the apply still reproduces the full
+    # operator; these pin the storage layout the saving depends on.
+    NV2 = 2 * length(element_v)
+    @test op.C === nothing
+    @test size(op.B[1]) == (NV2, length(element_P))
+    @test op.A[1] isa SVector{NV2 * (NV2 + 1) ÷ 2}
+    # Unpacking must give back a symmetric matrix that applies as the dense one did.
+    A_full = FEMTools._unpack_symmetric(op.A[1], Val(NV2))
+    @test A_full ≈ transpose(A_full)
+    xtest = SVector{NV2}(sin.(1:NV2))
+    @test FEMTools._symmetric_matvec(op.A[1], xtest) ≈ A_full * xtest
+
     velocity_op = FEMTools.assemble_velocity_operator(
         dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
-    @test velocity_op.A ≈ op.A
+    # The forward velocity operator keeps dense blocks; they must match what the
+    # adjoint packed away.
+    @test all(FEMTools._unpack_symmetric(op.A[i], Val(NV2)) ≈ velocity_op.A[i]
+              for i in 1:mesh.nels)
     λcold, ncold, power_x, power_y = FEMTools.estimate_velocity_λmax(
         velocity_op, mesh, element_v, dr.PC_vx, dr.PC_vy,
         vx_nodes, vy_nodes, backend, wg)
@@ -147,6 +164,17 @@ using DomainSets: ×
     @test rowsum_vy_op ≈ dr.∂Rv_y∂vy
     @test PC_vx_op ≈ dr.PC_vx
     @test PC_vy_op ≈ dr.PC_vy
+    # A plastic model gives a non-normal tangent, so the block must be kept even
+    # though this particular state may not be at yield.
+    plastic = DruckerPrager(
+        ntuple(_ -> deg2rad(30.0), 2), ntuple(_ -> deg2rad(3.0), 2),
+        (1.6, 1.6), (1.0e-2, 1.0e-2), (1.0e2, 1.0e2))
+    op_plastic = FEMTools.assemble_adjoint_operator(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, plastic, G, Δt, γP, backend, wg)
+    @test op_plastic.C !== nothing
+    @test size(op_plastic.C[1]) == (length(element_P), 2 * length(element_v))
+
     λmax, λmax_iterations = FEMTools.estimate_adjoint_λmax(
         op, mesh, element_v, element_P, dr.PC_vx, dr.PC_vy,
         vx_nodes, vy_nodes, backend, wg)

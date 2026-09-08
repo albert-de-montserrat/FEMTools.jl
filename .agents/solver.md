@@ -54,7 +54,14 @@ x(ξ) = \sum_a N_a(ξ)x_a,
 dΩ_q = |\det J_q|w_q.
 ```
 
-`precompute_geometry` stores `(∇N, dΩ)` for every element and quadrature point.
+`precompute_geometry` stores `(J⁻¹, dΩ)` for every element and quadrature point.
+`∇_ξN` is a property of the reference element, supplied by
+`shape_function_gradients`, so storing it per element would cost `N·nDim` numbers
+per point where `J⁻¹` costs `nDim²` — a factor of 8 for Hex27. `element_geometry`
+pairs the two and forms `∇_xN = ∇_ξN·J⁻¹` on access, so quadrature loops still
+read `∂N∂x, dΩ = geo_el[q]`. The output array's element type selects what is
+kept, so a field whose gradients no consumer needs — the mixed-mesh pressure
+geometry `geo_P` — stores `dΩ` alone and is indexed as `dΩ = geo_P_el[q]`.
 Element residuals are evaluated in statically sized vectors, then atomically or
 color-wise scattered into global vectors. The atomic and colored paths change
 only the scatter strategy, not the element mathematics.

@@ -13,6 +13,8 @@ Modules = [FEMTools]
 
 ```@docs
 shape_function_values
+shape_function_gradients
+quadrature_table
 FEMTools.interp2ip
 FEMTools.interp2ip_phase
 FEMTools._eval_shape_function

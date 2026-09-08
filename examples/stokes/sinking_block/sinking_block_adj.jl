@@ -38,8 +38,8 @@ velocity degree of freedom is the consistently assembled load vector
     ∂J/∂Vᵧᵢ = -∫_Ωₒᵇₛ Nᵢ dΩ.
 
 Each kernel invocation handles one element. Integration points outside the
-observation box contribute nothing. `geo[iel][q][2]` is the physical
-quadrature measure `|det(J)|ωq` computed by `precompute_geometry!`.
+observation box contribute nothing. `geo[iel][q].dΩ` is the physical
+quadrature measure `|det(J)|ωq` computed by `precompute_geometry`.
 
 Neighbouring elements share velocity nodes, so their element load vectors are
 scattered with atomic additions. This makes the assembly safe for both CPU and
@@ -80,7 +80,7 @@ accelerator backends.
         # For a discontinuous indicator, quadrature naturally approximates the
         # fraction of a cut element lying inside the observation box.
         if xmin < xq[1] < xmax && ymin < xq[2] < ymax
-            dΩ = geo[iel][q][2]
+            dΩ = geo[iel][q].dΩ
             element_load -= N_at_q * dΩ
         end
     end
@@ -121,7 +121,7 @@ end
     @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
     @Const(τ_old), η_element, ρ_element,
     @Const(G), @Const(α), @Const(K), @Const(g), Tref, Δt,
-    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+    @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
@@ -145,7 +145,7 @@ end
         SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
     )
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
-        (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
+        (vx_e, vy_e), P_e, nothing, T_e, element_geometry(geo, iel, ∂N∂ξ_v), phase_e,
         (η_element[iel],), (G[phase],), (α[phase],),
         (ρ_element[iel],), (K[phase],), g, Tref, Δt, Nq, NqP,
         τ_old_e,
@@ -155,13 +155,13 @@ end
 
 function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
     el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-    G, α, K, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
+    G, α, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
     material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
         el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-        G, α, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
+        G, α, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
 end
@@ -200,6 +200,7 @@ function material_sensitivities(
     density_sensitivity_backend = zero(ρ_element)
     Nq_v = shape_function_values(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
 
     Enzyme.autodiff_deferred(
         Enzyme.set_runtime_activity(Enzyme.Reverse),
@@ -213,6 +214,7 @@ function material_sensitivities(
         Enzyme.Duplicated(ρ_element, density_sensitivity_backend),
         Enzyme.Const(G), Enzyme.Const(α), Enzyme.Const(K), Enzyme.Const(g),
         Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
+        Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
     )
 

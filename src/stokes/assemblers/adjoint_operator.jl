@@ -13,16 +13,27 @@ ResλP = Bᵀλv
 ```
 
 - `A` is the augmented velocity block `∂Rv/∂v`, `2NV`×`2NV` per element, ordered
-  with the `vx` degrees of freedom first. It already carries the Powell-Hestenes
+  with the `vx` degrees of freedom first, or its packed upper triangle. It already carries the Powell-Hestenes
   term `Bnum·(γP/M_P)·C`, because the assembler forms `Pnum` inline from
   element-local pressures; that coupling stays inside one element only while the
   pressure space is discontinuous.
 - `B` is `∂Rv/∂P`, `2NV`×`NP` per element, differentiated with `Pnum` held as an
   independent variable so it excludes the augmentation already inside `A`.
-- `C` is `∂RP/∂v`, `NP`×`2NV` per element.
+- `C` is `∂RP/∂v`, `NP`×`2NV` per element, or `nothing`.
 
-Storage is `≈(4NV² + 4NV·NP)` floating-point numbers per element — 280 for T7/P1-disc
-in two dimensions, about 2.2 kB.
+A purely viscous forward model has a symmetric element tangent, and the layout
+exploits that twice: `A` keeps only its upper triangle, and `C` is `nothing`
+because `C == Bᵀ` exactly, so the apply reads `B` in its place. Storage falls from
+`4NV² + 4NV·NP` floating-point numbers per element to `NV(2NV+1) + 2NV·NP` — 2 240
+to 1 176 bytes for T7/P1-disc in two dimensions. `_symmetric_matvec` applies the
+packed block without rebuilding it, at the same arithmetic cost.
+
+Both identities are asserted per element at assembly rather than assumed, because
+they are properties of the tangent, not of the code. A non-associated plastic flow
+rule (`ψ ≠ ϕ`) makes the tangent non-normal and breaks them: on a shear-banding
+case with 97 % of quadrature points at yield, `‖A − Aᵀ‖/‖A‖` is 2 × 10⁻⁴ and
+`‖C − Bᵀ‖/‖C‖` is 0.125, against 7 × 10⁻¹⁵ and 0 at the same forward state with
+the plastic tangent switched off.
 """
 struct FrozenAdjointOperator{TA, TB, TC}
     A::TA
@@ -34,19 +45,103 @@ struct FrozenVelocityOperator{TA}
     A::TA
 end
 
+"""
+    _packed_symmetric_length(N) -> Int
+
+Number of entries in the upper triangle of an `N`×`N` symmetric matrix.
+"""
+@inline _packed_symmetric_length(N) = (N * (N + 1)) ÷ 2
+
+# Column-major upper triangle: entry (i, j) with i ≤ j sits at j(j-1)/2 + i.
+_triangle_index(i, j) = i ≤ j ? (j * (j - 1)) ÷ 2 + i : (i * (i - 1)) ÷ 2 + j
+
+"""
+    _pack_symmetric(A) -> SVector
+
+Pack the upper triangle of a symmetric `SMatrix` column by column.
+
+The lower triangle is not read: a caller storing the result has already
+established that `A == Aᵀ`.
+"""
+@generated function _pack_symmetric(A::SMatrix{N, N, T}) where {N, T}
+    entries = [:(A[$i, $j]) for j in 1:N for i in 1:j]
+    return :(SVector{$(_packed_symmetric_length(N)), T}($(entries...)))
+end
+
+"""
+    _unpack_symmetric(packed, Val(N)) -> SMatrix{N, N}
+
+Rebuild the full symmetric matrix from a packed upper triangle. Used for
+diagnostics and tests; the solver applies the packed form directly.
+"""
+@generated function _unpack_symmetric(packed::SVector{L, T}, ::Val{N}) where {L, N, T}
+    entries = [:(packed[$(_triangle_index(i, j))]) for j in 1:N for i in 1:N]
+    return :(SMatrix{$N, $N, T, $(N * N)}($(entries...)))
+end
+
+"""
+    _symmetric_matvec(packed, x) -> SVector
+
+Multiply a packed symmetric matrix by `x` without rebuilding it.
+
+The same `N²` multiply-adds a dense product would perform, reading each stored
+entry twice instead of storing it twice.
+"""
+@generated function _symmetric_matvec(packed::SVector{L}, x::SVector{N}) where {L, N}
+    rows = [Expr(:call, :+, [:(packed[$(_triangle_index(i, j))] * x[$j]) for j in 1:N]...)
+            for i in 1:N]
+    return :(SVector{$N}($(rows...)))
+end
+
+# A symmetric velocity block is stored as its upper triangle; a non-symmetric one
+# has to be kept whole and is transposed on apply.
+@inline _store_velocity_block!(Ablocks::AbstractVector{<:SVector}, iel, A) =
+    (Ablocks[iel] = _pack_symmetric(A); nothing)
+@inline _store_velocity_block!(Ablocks, iel, A) = (Ablocks[iel] = A; nothing)
+@inline _velocity_apply(A::SVector, λv) = _symmetric_matvec(A, λv)
+@inline _velocity_apply(A, λv) = transpose(A) * λv
+
+"""
+    _assert_frozen_symmetry(worst, quantity, what, nels, T)
+
+Raise if a structural identity the frozen operator's storage layout relies on
+does not hold to `sqrt(eps(T))`.
+
+The check cannot be tripped by a caller: it is `plastic === nothing` that makes
+the element tangent symmetric, so the packing and the identity are enabled by the
+same condition. It guards against the tangent itself changing — a new rheology, or
+an edit to the momentum residual — in which case the adjoint must fail rather
+than return a gradient computed from a layout the operator no longer satisfies.
+"""
+function _assert_frozen_symmetry(worst, quantity, what, nels, ::Type{T}) where {T}
+    worst ≤ sqrt(eps(T)) && return nothing
+    return error(
+        "the frozen adjoint operator $what, which assumes the element tangent is " *
+        "symmetric, but the assembled blocks disagree: max $quantity = $worst over " *
+        "$nels elements. Without a plastic model the tangent is symmetric and this " *
+        "cannot happen, so the element operator no longer has the symmetry the " *
+        "storage layout depends on.")
+end
+
+# A symmetric operator keeps no pressure-coupling block: Cᵀ is B.
+@inline _store_pressure_coupling!(::Nothing, _, _) = nothing
+@inline _store_pressure_coupling!(Cblocks, iel, C) = (Cblocks[iel] = C; nothing)
+@inline _pressure_coupling(::Nothing, Bblocks, iel) = Bblocks[iel]
+@inline _pressure_coupling(Cblocks, _, iel) = transpose(Cblocks[iel])
+
 @kernel function velocity_operator_assembly_kernel!(
         Ablocks, ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
         @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(geo_P),
         @Const(phases_v), @Const(phases_P), τ_old, plastic,
         η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, @Const(MP),
-        Nq, NqP, ::Val{NV}, ::Val{NP},
+        Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Axx, Axy, Ayx, Ayy = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt,
-        γ_eff, MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
+        γ_eff, MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     A = vcat(hcat(Axx, Axy), hcat(Ayx, Ayy))
     Ablocks[iel] = A
@@ -65,6 +160,7 @@ function assemble_velocity_operator(
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     Ablocks = similar(dr.vx, SMatrix{2NV, 2NV, eltype(dr.vx), 4NV * NV}, mesh_stokes.nels)
     fill!(dr.∂Rv_x∂vx, 0)
     fill!(dr.PC_vx, 0)
@@ -75,7 +171,7 @@ function assemble_velocity_operator(
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, phases_v, phases_P,
         τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
-        Δt, γP, dr.M_P, Nq, NqP, Val(NV), Val(NP);
+        Δt, γP, dr.M_P, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = mesh_stokes.nels,
     )
     KA.synchronize(backend)
@@ -159,18 +255,18 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
 @inline function element_adjoint_operator_blocks(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-        MP, Nq, NqP, iel, ::Val{NV}, ::Val{NP},
+        MP, Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     local_nodes_v, ∂RVx∂vx, ∂RVx∂vy, ∂RVy∂vx, ∂RVy∂vy =
         element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-        MP, Nq, NqP, iel, Val(NV), Val(NP), τ_old, plastic,
+        MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP), τ_old, plastic,
     )
     A = vcat(hcat(∂RVx∂vx, ∂RVx∂vy), hcat(∂RVy∂vx, ∂RVy∂vy))
 
     local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
-    geo_v_el = geo_v[iel]
+    geo_v_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
     geo_P_el = geo_P[iel]
     vxloc = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc = _gather_local(vy, local_nodes_v, Val(NV))
@@ -178,7 +274,7 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
     P0loc = _gather_local(P0, local_nodes_P, Val(NP))
     T_loc = _gather_local(T, local_nodes_P, Val(NP))
     T0loc = _gather_local(T0, local_nodes_P, Val(NP))
-    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), Val(length(Nq)))
+    τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_v_el))
     phase_v = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
     phase_P = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
 
@@ -210,7 +306,7 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
 end
 
 @kernel function adjoint_operator_assembly_kernel!(
-        Ablocks, Bblocks, Cblocks,
+        Ablocks, Bblocks, Cblocks, defect_A, defect_C,
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy),
         @Const(P), @Const(P0),
@@ -221,18 +317,22 @@ end
         τ_old, plastic,
         η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         @Const(MP),
-        Nq, NqP, ::Val{NV}, ::Val{NP},
+        Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, _, A, B, C = element_adjoint_operator_blocks(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-        MP, Nq, NqP, iel, Val(NV), Val(NP),
+        MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP),
     )
     # One element owns one entry of each block array, so no atomics are needed.
-    Ablocks[iel] = A
+    _store_velocity_block!(Ablocks, iel, A)
     Bblocks[iel] = B
-    Cblocks[iel] = C
+    _store_pressure_coupling!(Cblocks, iel, C)
+    normA = norm(A)
+    normC = norm(C)
+    defect_A[iel] = iszero(normA) ? zero(normA) : norm(A - transpose(A)) / normA
+    defect_C[iel] = iszero(normC) ? zero(normC) : norm(C - transpose(B)) / normC
     rowsums_x = SVector{NV}(ntuple(i -> sum(abs(A[i, j]) for j in 1:2NV), Val(NV)))
     rowsums_y = SVector{NV}(ntuple(i -> sum(abs(A[NV + i, j]) for j in 1:2NV), Val(NV)))
     for (i, inod) in enumerate(local_nodes_v)
@@ -263,28 +363,45 @@ function assemble_adjoint_operator(
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     nels = mesh_stokes.nels
     Tv = eltype(dr.vx)
 
-    Ablocks = similar(dr.vx, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
+    # A viscous tangent is symmetric: A keeps only its upper triangle and C is Bᵀ
+    # and is not stored at all. The kernel still forms both blocks whole and
+    # reports how far each identity is from holding; the checks below turn a
+    # violated assumption into an error rather than a wrong gradient.
+    symmetric = plastic === nothing
+    Ablocks = symmetric ?
+        similar(dr.vx, SVector{_packed_symmetric_length(2NV), Tv}, nels) :
+        similar(dr.vx, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
     Bblocks = similar(dr.vx, SMatrix{2NV, NP, Tv, 2NV * NP}, nels)
-    Cblocks = similar(dr.vx, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
+    Cblocks = symmetric ? nothing :
+        similar(dr.vx, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
+    defect_A = similar(dr.vx, nels)
+    defect_C = similar(dr.vx, nels)
 
     fill!(dr.∂Rv_x∂vx, 0)
     fill!(dr.PC_vx, 0)
     fill!(dr.∂Rv_y∂vy, 0)
     fill!(dr.PC_vy, 0)
     adjoint_operator_assembly_kernel!(backend, workgroup)(
-        Ablocks, Bblocks, Cblocks,
+        Ablocks, Bblocks, Cblocks, defect_A, defect_C,
         dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
         dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, dr.M_P,
-        Nq, NqP, Val(NV), Val(NP);
+        Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = nels,
     )
     KA.synchronize(backend)
+    if symmetric
+        _assert_frozen_symmetry(maximum(defect_A), "‖A - Aᵀ‖/‖A‖",
+            "packed only the upper triangle of its velocity block", nels, Tv)
+        _assert_frozen_symmetry(maximum(defect_C), "‖C - Bᵀ‖/‖C‖",
+            "dropped its pressure-coupling block", nels, Tv)
+    end
     return FrozenAdjointOperator(Ablocks, Bblocks, Cblocks)
 end
 
@@ -305,7 +422,7 @@ end
     )
     λP_loc = _gather_local(λP, local_nodes_P, Val(NP))
 
-    resv = transpose(Ablocks[iel]) * λv + transpose(Cblocks[iel]) * λP_loc
+    resv = _velocity_apply(Ablocks[iel], λv) + _pressure_coupling(Cblocks, Bblocks, iel) * λP_loc
     resp = transpose(Bblocks[iel]) * λv
 
     for (i, inod) in enumerate(local_nodes_v)

@@ -13,7 +13,7 @@ temperature and body-force vector without rebuilding the solver state.
 # Type parameters
 - `nphases` — number of material phases (compile-time constant)
 - `_T`       — nodal float array type (e.g. `Vector{Float64}` on CPU, `CuArray` on GPU)
-- `_TI`      — nodal integer array type (same backend as `_T`, element type `Int`)
+- `_TI`      — nodal integer array type (same backend as `_T`, element type `Int32`)
 - `FP`       — floating-point precision (`Float32` or `Float64`)
 
 # Nodal arrays (length `nnodes`)
@@ -73,7 +73,7 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
         CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
     ) where {N, FP}
         newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
-        newivec() = KernelAbstractions.ones(backend,  Int, nnodes)
+        newivec() = KernelAbstractions.ones(backend,  Int32, nnodes)
         new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂P, PC
             newvec(), newvec(),                      # P, ∂P∂τ

@@ -1,8 +1,15 @@
 using KernelAbstractions: CPU
 
+# One-quadrature-point element geometry built directly from physical gradients.
+# The identity inverse Jacobian makes the stored point reproduce `∂N∂x` exactly,
+# which is what these element-level tests are stated in terms of.
+_lp_geo_points(∂N∂x::SMatrix{N, D, T}, dΩ) where {N, D, T} =
+    (QuadraturePointGeometry(one(SMatrix{D, D, T}), T(dΩ)),)
+_lp_geo_el(∂N∂x::SMatrix, dΩ) = ElementGeometry((∂N∂x,), _lp_geo_points(∂N∂x, dΩ))
+
 @testset "lithostatic residual parameters" begin
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo_el = ((dNdx, 1.0),)
+    geo_el = _lp_geo_el(dNdx, 1.0)
     Nq = (SA[0.5, 0.5],)
 
     Ploc = SA[0.0, 0.0]
@@ -23,7 +30,7 @@ end
 
 @testset "lithostatic residual FP32" begin
     dNdx = @SMatrix Float32[0.0 1.0; 0.0 -1.0]
-    geo_el = ((dNdx, 1.0f0),)
+    geo_el = _lp_geo_el(dNdx, 1.0f0)
     Nq = (SA[0.5f0, 0.5f0],)
     Ploc = SA[0.0f0, 0.0f0]
     Tloc = SA[300.0f0, 300.0f0]
@@ -40,7 +47,7 @@ end
 @testset "lithostatic residual stiffness term" begin
     # Non-zero P exercises the ∇P·∇v stiffness contribution.
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo_el = ((dNdx, 1.0),)
+    geo_el = _lp_geo_el(dNdx, 1.0)
     Nq = (SA[0.5, 0.5],)
     # Ploc non-zero: Pq = 1.0, so ρ = ρ0*(1 + Pq/K) = 2*(1.01) = 2.02
     Ploc = SA[2.0, 0.0]
@@ -59,7 +66,7 @@ end
 
 @testset "lithostatic element jacobian includes EOS pressure term" begin
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo = (((dNdx, 1.0),),)
+    geo = [_lp_geo_points(dNdx, 1.0)]
     Nq = (SA[0.5, 0.5],)
     el2n = reshape(Int32[1, 2], 2, 1)
     T = [300.0, 300.0]
@@ -70,7 +77,7 @@ end
     K = (100.0,)
 
     local_nodes, rowsums, diags = FEMTools.lp_element_jacobian(
-        T, P, el2n, geo, phases, ρ0, α, K, 300.0, SA[0.0, -1.0], Nq, 1, Val(2),
+        T, P, el2n, geo, phases, ρ0, α, K, 300.0, SA[0.0, -1.0], Nq, (dNdx,), 1, Val(2),
     )
 
     @test local_nodes == SA[1, 2]
@@ -80,7 +87,7 @@ end
 
 @testset "lithostatic residual multi-phase" begin
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo_el = ((dNdx, 1.0),)
+    geo_el = _lp_geo_el(dNdx, 1.0)
     Nq = (SA[0.5, 0.5],)
     Ploc = SA[0.0, 0.0]
     Tloc = SA[300.0, 300.0]
@@ -159,7 +166,7 @@ for FP in (FP32, FP64)
         end
 
         @testset "phases field" begin
-            @test eltype(dr.phases) === Int
+            @test eltype(dr.phases) === Int32
             @test length(dr.phases) == nnodes
             @test all(==(1), dr.phases)
         end
@@ -174,7 +181,7 @@ end
     # As for the thermal residual: interpolating 1/K rather than K keeps K=Inf
     # finite where a quadratic shape function is negative.
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo_el = ((dNdx, 1.0),)
+    geo_el = _lp_geo_el(dNdx, 1.0)
     Nq = (SA[-0.25, 1.25],)
 
     Tloc = SA[300.0, 300.0]

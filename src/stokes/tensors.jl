@@ -123,15 +123,16 @@ function _rotate_stress!(
     el2n_v,
     geo_v,
     dt,
-    ::ReferenceElement{TV},
+    element_v::ReferenceElement{TV},
 ) where {NV, TV <: AbstractElement{2, NV}}
     nels = size(el2n_v, 2)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
 
     for iel in 1:nels
         local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
-        geo_el = geo_v[iel]
+        geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
 
         for q in eachindex(geo_el)
             ∂N∂x, = geo_el[q]

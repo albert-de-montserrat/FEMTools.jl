@@ -99,6 +99,9 @@ generate_element_groups
 
 ```@docs
 precompute_geometry
+QuadraturePointGeometry
+ElementGeometry
+element_geometry
 FEMTools.precompute_geometry_kernel!
 ```
 

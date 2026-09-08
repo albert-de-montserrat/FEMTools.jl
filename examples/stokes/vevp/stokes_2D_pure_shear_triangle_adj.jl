@@ -35,7 +35,7 @@ For `vᵧʰ = Σᵢ Nᵢ Vᵧᵢ`, the derivative with respect to a global veloc
 freedom is the consistently assembled load vector `∂J/∂Vᵧᵢ = -∫_Ωₒᵇₛ Nᵢ dΩ`.
 
 Each kernel invocation handles one element. Integration points outside the
-observation box contribute nothing. `geo[iel][q][2]` is the physical quadrature
+observation box contribute nothing. `geo[iel][q].dΩ` is the physical quadrature
 measure `|det(J)|ωq`. Neighbouring elements share velocity nodes, so element
 load vectors are scattered with atomic additions.
 """
@@ -68,7 +68,7 @@ load vectors are scattered with atomic additions.
         # For a discontinuous indicator, quadrature naturally approximates the
         # fraction of a cut element lying inside the observation box.
         if xmin < xq[1] < xmax && ymin < xq[2] < ymax
-            dΩ = geo[iel][q][2]
+            dΩ = geo[iel][q].dΩ
             element_load -= N_at_q * dΩ
         end
     end
@@ -121,7 +121,7 @@ end
     @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
     @Const(τ_old), G_element, K_element,
     @Const(η), @Const(α), @Const(ρ0), @Const(g), Tref, Δt,
-    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+    @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
@@ -145,7 +145,7 @@ end
         SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
     )
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
-        (vx_e, vy_e), P_e, nothing, T_e, geo[iel], phase_e,
+        (vx_e, vy_e), P_e, nothing, T_e, element_geometry(geo, iel, ∂N∂ξ_v), phase_e,
         (η[phase],), (G_element[iel],), (α[phase],),
         (ρ0[phase],), (K_element[iel],), g, Tref, Δt, Nq, NqP,
         τ_old_e,
@@ -155,13 +155,13 @@ end
 
 function launch_momentum_moduli_contraction!(out, vx, vy, P, T, λvx, λvy,
     el2n, dofsP, geo, phases, τ_old, G_element, K_element,
-    η, α, ρ0, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
+    η, α, ρ0, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
     momentum_moduli_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
         el2n, dofsP, geo, phases, τ_old, G_element, K_element,
-        η, α, ρ0, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
+        η, α, ρ0, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
 end
@@ -171,7 +171,7 @@ end
     @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
     @Const(λP),
     @Const(el2n), @Const(dofsP), @Const(geo_v), @Const(geo_P), @Const(phases),
-    ηb_element, @Const(α), Δt, @Const(NqP), ::Val{NV}, ::Val{NP},
+    ηb_element, @Const(α), Δt, @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
@@ -189,20 +189,20 @@ end
     phase_e = SVector{NP, Int}(ntuple(_ -> 1, Val(NP)))
     RP_e = FEMTools.integrate_PH_pressure_residual(
         (vx_e, vy_e), P_e, P0_e, T_e, T0_e,
-        geo_v[iel], geo_P[iel], phase_e,
+        element_geometry(geo_v, iel, ∂N∂ξ_v), geo_P[iel], phase_e,
         (α[phase],), (ηb_element[iel],), Δt, NqP,
     )
     contracted_residual[iel] = dot(λP_e, RP_e)
 end
 
 function launch_pressure_moduli_contraction!(out, vx, vy, P, P0, T, T0, λP,
-    el2n, dofsP, geo_v, geo_P, phases, ηb_element, α, Δt, NqP,
+    el2n, dofsP, geo_v, geo_P, phases, ηb_element, α, Δt, NqP, ∂N∂ξ_v,
     ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
     pressure_moduli_contraction_kernel!(backend, workgroup)(out, vx, vy, P, P0, T, T0, λP,
-        el2n, dofsP, geo_v, geo_P, phases, ηb_element, α, Δt, NqP,
+        el2n, dofsP, geo_v, geo_P, phases, ηb_element, α, Δt, NqP, ∂N∂ξ_v,
         Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -234,6 +234,7 @@ function moduli_sensitivities(
 ) where {NV, NP}
     nels = mesh_stokes.nels
     Nq_v = shape_function_values(element_v)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
 
     # --- momentum block: ∂R_v/∂G and ∂R_v/∂K -------------------------------
@@ -258,6 +259,7 @@ function moduli_sensitivities(
         Enzyme.Duplicated(K_element, bulk_momentum_sensitivity),
         Enzyme.Const(η), Enzyme.Const(α), Enzyme.Const(ρ0), Enzyme.Const(g),
         Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
+        Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
     )
 
@@ -279,7 +281,7 @@ function moduli_sensitivities(
         Enzyme.Const(mesh_stokes.el2n), Enzyme.Const(mesh_stokes.DoFsP),
         Enzyme.Const(geo_v), Enzyme.Const(geo_P), Enzyme.Const(phases),
         Enzyme.Duplicated(ηb_element, bulk_pressure_sensitivity),
-        Enzyme.Const(α), Enzyme.Const(Δt), Enzyme.Const(Nq_P),
+        Enzyme.Const(α), Enzyme.Const(Δt), Enzyme.Const(Nq_P), Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
     )
 

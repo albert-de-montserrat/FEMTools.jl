@@ -115,6 +115,7 @@ export LinearElement, QuadraticElement, CubicElement
 export ReferenceElement, ShapeFunctions, IntegrationPoints
 export order
 export Mesh, MixedMesh, MixedMeshCache
+export QuadraturePointGeometry, ElementGeometry, element_geometry
 export DirichletBoundaryCondition, apply_bc!
 
 # Mesh construction and graph utilities.
@@ -134,12 +135,14 @@ export eval_shape_function,
     eval_shape_function_gradient,
     eval_shape_function_jacobian,
     shape_function_values,
+    shape_function_gradients,
+    quadrature_table,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
 export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesMaterial, StokesDR, DruckerPrager,
+export StokesMaterial, StokesDR, Stokes3DWorkspace, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,

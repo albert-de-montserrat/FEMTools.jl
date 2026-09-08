@@ -429,20 +429,110 @@ generate_dofs(::ReferenceElement, npoints) = [Int32(i) for i in 1:npoints]
 # KA kernels
 # ---------------------------------------------------------------------------
 
-function _integration_coordinates(ip::IntegrationPoints{nDim}, q) where {nDim}
-    return SVector{nDim}(ntuple(d -> getfield(ip, d)[q], Val(nDim)))
+"""
+    QuadraturePointGeometry(J⁻¹, dΩ)
+
+Element geometry at one quadrature point: the inverse of the isoparametric
+Jacobian and the quadrature weight scaled by `|det J|`.
+
+This is what a precomputed geometry array stores per element and per point.
+Physical shape-function gradients are `∂N∂ξ * J⁻¹` and are formed at the point of
+use by [`ElementGeometry`](@ref); `∂N∂ξ` is a property of the reference element
+and is the same for every element, so storing it per element would cost
+`N · nDim` numbers per point where `J⁻¹` costs `nDim²`.
+
+The type carries no `iterate` method: code that expects the physical gradients
+must go through `ElementGeometry` rather than destructure a stored point.
+"""
+struct QuadraturePointGeometry{nDim, FP, L}
+    J⁻¹::SMatrix{nDim, nDim, FP, L}
+    dΩ::FP
 end
 
-_geometry_jacobian(element, point, ::Val{nDim}) where {nDim} =
-    eval_shape_function_jacobian(element, point)
-_geometry_jacobian(element::ReferenceElement{T}, point, ::Val{1}) where {N, T <: AbstractElement{1, N}} =
-    SMatrix{N, 1}(eval_shape_function_jacobian(element, point))
+"""
+    ElementGeometry(∂N∂ξ, points)
+
+Physical geometry of one element, indexable by quadrature point.
+
+`geo_el[q]` returns `(∂N∂x, dΩ)`, with `∂N∂x` the `N × nDim` matrix of physical
+shape-function gradients at point `q`. `∂N∂ξ` holds the reference-element
+gradients from [`shape_function_gradients`](@ref), shared by the whole mesh, and
+`points` the per-element [`QuadraturePointGeometry`](@ref).
+
+`∂N∂ξ` may be any container indexable by quadrature point: the `NTuple` those
+functions return, or the array [`quadrature_table`](@ref) places on a backend.
+It must hold at least `length(points)` entries.
+
+The value is built inside assembly kernels from arguments that are already
+there, so the gradients are re-formed per element rather than stored per element.
+
+Use [`element_geometry`](@ref) to build one from a geometry array.
+"""
+struct ElementGeometry{NQ, G, P}
+    ∂N∂ξ::G
+    points::NTuple{NQ, P}
+end
+
+@inline Base.length(::ElementGeometry{NQ}) where {NQ} = NQ
+@inline Base.size(geo::ElementGeometry) = (length(geo),)
+@inline Base.firstindex(::ElementGeometry) = 1
+@inline Base.lastindex(geo::ElementGeometry) = length(geo)
+@inline Base.eachindex(geo::ElementGeometry) = Base.OneTo(length(geo))
+@inline Base.iterate(geo::ElementGeometry, q::Int = 1) =
+    q > length(geo) ? nothing : (geo[q], q + 1)
+
+@inline function Base.getindex(geo::ElementGeometry, q::Integer)
+    point = geo.points[q]
+    return (geo.∂N∂ξ[q] * point.J⁻¹, point.dΩ)
+end
+
+"""
+    quadrature_points_val(geo::ElementGeometry) -> Val
+
+Number of quadrature points of `geo`, wrapped in a `Val` so that it selects
+`SVector` lengths inside assembly kernels.
+
+The count comes from the per-element data, which fixes it at compile time
+whatever container holds the reference-element gradients.
+"""
+@inline quadrature_points_val(::ElementGeometry{NQ}) where {NQ} = Val(NQ)
+
+"""
+    element_geometry(geo, iel, ∂N∂ξ) -> ElementGeometry
+
+View the geometry of element `iel` in the precomputed array `geo`, using the
+reference-element gradients `∂N∂ξ` to form physical gradients on access.
+
+`∂N∂ξ` must come from the element whose connectivity built `geo`, and from the
+quadrature rule `geo` was built at.
+"""
+@inline element_geometry(geo, iel, ∂N∂ξ) = ElementGeometry(∂N∂ξ, geo[iel])
+
+"""
+    _geometry_entry(T, J, ω) -> T
+
+Build one stored geometry entry of type `T` from the isoparametric Jacobian `J`
+and the quadrature weight `ω`.
+
+A `QuadraturePointGeometry` keeps the inverse Jacobian and the weighted volume; a
+plain float keeps the weighted volume alone, for a field whose gradients are
+never needed. The output array's element type selects between them, so one kernel
+fills both.
+"""
+@inline _geometry_entry(::Type{<:QuadraturePointGeometry}, J, ω) =
+    QuadraturePointGeometry(inv(J), abs(det(J)) * ω)
+@inline _geometry_entry(::Type{FP}, J, ω) where {FP <: AbstractFloat} =
+    FP(abs(det(J)) * ω)
 
 """
     precompute_geometry(coords, el2n, element; backend=KA.get_backend(coords), workgroup=256)
 
-Precompute physical shape-function gradients and weighted element volumes for
+Precompute the inverse isoparametric Jacobian and weighted element volume for
 all integration points of `element`.
+
+The result is an array of `NTuple{NQ, QuadraturePointGeometry}`, one entry per
+element. Combine it with [`shape_function_gradients`](@ref) through
+[`element_geometry`](@ref) to obtain physical shape-function gradients.
 """
 function precompute_geometry(
     coords,
@@ -453,23 +543,22 @@ function precompute_geometry(
 ) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
     ip = element.integration_points
     NQ = length(ip.ω)
-    points = ntuple(q -> _integration_coordinates(ip, q), Val(NQ))
-    jacobians = ntuple(q -> _geometry_jacobian(element, points[q], Val(nDim)), Val(NQ))
-    Geometry = NTuple{NQ, Tuple{SMatrix{N, nDim, FP, N * nDim}, FP}}
+    ∂N∂ξq = shape_function_gradients(element, ip)
+    Geometry = NTuple{NQ, QuadraturePointGeometry{nDim, FP, nDim * nDim}}
     geometry = KA.allocate(backend, Geometry, size(el2n, 2))
     if backend isa CPU
         for iel in axes(el2n, 2)
             local_nodes = local_nodes_of(el2n, iel, Val(N))
             c = element_coordinate_matrix(coords, local_nodes)
             geometry[iel] = ntuple(Val(NQ)) do q
-                J = c' * jacobians[q]
-                (jacobians[q] * inv(J), abs(det(J)) * ip.ω[q])
+                J = c' * ∂N∂ξq[q]
+                _geometry_entry(QuadraturePointGeometry{nDim, FP, nDim * nDim}, J, ip.ω[q])
             end
         end
         return geometry
     end
     precompute_geometry_kernel!(backend, workgroup)(
-        geometry, coords, el2n, jacobians, ip.ω, Val(N); ndrange = size(el2n, 2),
+        geometry, coords, el2n, ∂N∂ξq, ip.ω, Val(N); ndrange = size(el2n, 2),
     )
     KA.synchronize(backend)
     return geometry
@@ -480,10 +569,15 @@ end
 
 KernelAbstractions kernel that fills `geo` with per-element geometry data.
 
-For each element `iel`, computes `(∂N∂x_q, dΩ_q)` at every quadrature point `q`
-and stores the result as a tuple at `geo[iel]`. Here `∂N∂x_q` is the matrix of
-physical-space shape-function gradients (`N × nDim`) and `dΩ_q` is the
-quadrature weight scaled by `|det J|`.
+For each element `iel`, computes the inverse isoparametric Jacobian `J⁻¹` and the
+quadrature weight scaled by `|det J|` at every quadrature point `q`, and stores
+them at `geo[iel]`. `∂N∂ξq` supplies the reference-element gradients and is used
+only to form `J`.
+
+The element type of `geo` selects what is kept: an `NTuple` of
+[`QuadraturePointGeometry`](@ref) keeps the inverse Jacobian and the weighted
+volume, while an `NTuple` of floats keeps only the weighted volume, for a field
+whose physical gradients no consumer needs.
 
 Because this kernel depends only on mesh geometry, it only needs to be called
 once per mesh and the result can be reused across nonlinear or pseudo-transient
@@ -495,6 +589,6 @@ iterations.
     c = element_coordinate_matrix(coords, local_nodes)
     geo[iel] = ntuple(Val(length(ω))) do q
         J = c' * ∂N∂ξq[q]
-        (∂N∂ξq[q] * inv(J), abs(det(J)) * ω[q])
+        _geometry_entry(eltype(eltype(geo)), J, ω[q])
     end
 end
