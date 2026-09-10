@@ -26,17 +26,23 @@ Pass zero-filled arrays for a cold solve, or fields from the previous design
 iteration to warm-start an optimization loop.
 
 Because the forward state is frozen, the adjoint residual is affine in `λ` with a
-constant operator. With `frozen_operator` (the default) that operator is
-assembled once as per-element blocks and then applied as a dense element product,
-so no rheology is evaluated and no primal residual is recomputed during the
-solve; see [`FrozenAdjointOperator`](@ref) for the blocks and their memory cost.
-Setting `frozen_operator = false` selects the reverse-mode path instead, which
-rebuilds the same products by automatic differentiation on every iteration: far
-slower, but it stores nothing per element and so remains the option when the
-block storage is too large.
+constant operator, and `operator` chooses how that operator is applied:
 
-With `measure_λmax` (the default, and only available alongside `frozen_operator`)
-the largest eigenvalue of the preconditioned velocity block is measured by power
+- `:blocks` (the default) assembles it once as per-element blocks and applies
+  them as dense element products, so no rheology is evaluated and no primal
+  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
+  for the blocks and their memory cost.
+- `:matrix_free` stores nothing per element and rebuilds the same products by
+  forward-mode directional differentiation on every apply, at roughly three
+  element residual evaluations apiece. It requires `plastic === nothing`, whose
+  symmetric tangent is what lets a directional derivative stand in for a
+  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
+- `:enzyme` also stores nothing per element and rebuilds the products by
+  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
+  three and the only one that handles a plastic tangent without stored blocks.
+
+With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
+largest eigenvalue of the preconditioned velocity block is measured by power
 iteration rather than bounded by Gershgorin row sums. The bound is correct but
 loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
 
@@ -85,12 +91,12 @@ function solve_stokes_adjoint_dyrel!(
     verbose = true,
     verbose_inner = false,
     collect_history = false,
-    frozen_operator = true,
+    operator = :blocks,
     measure_λmax = true,
 )
     M_P = dr.M_P
 
-    # Scratch shared by both residual paths: adjoint residuals, DYREL rates, and
+    # Scratch shared by every residual path: adjoint residuals, DYREL rates, and
     # the velocity pullback the Chebyshev update reads.
     ResλVx = zero(dr.Rv_x)
     ResλVy = zero(dr.Rv_y)
@@ -105,16 +111,28 @@ function solve_stokes_adjoint_dyrel!(
     zero_vx_bc = fill!(similar(λvx, length(vx_nodes)), 0)
     zero_vy_bc = fill!(similar(λvy, length(vy_nodes)), 0)
 
-    # The operator is constant at the frozen forward state, so assembling it once
-    # replaces the three reverse-mode sweeps every iteration would otherwise run.
-    # Its assembly also fills the Jacobi diagonal and Gershgorin row sums from the
-    # velocity blocks already in hand.
-    op = frozen_operator ?
+    # The operator is constant at the frozen forward state, so every path applies
+    # the same thing; they differ in what they store to do it. Assembling the
+    # blocks also fills the Jacobi diagonal and Gershgorin row sums from the
+    # velocity blocks already in hand, which the other two must assemble for
+    # themselves.
+    op = if operator === :blocks
         assemble_adjoint_operator(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
-    ) : nothing
-    if op === nothing
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        )
+    elseif operator === :matrix_free
+        matrix_free_adjoint_operator(
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        )
+    elseif operator === :enzyme
+        nothing
+    else
+        throw(ArgumentError(
+            "operator must be :blocks, :matrix_free, or :enzyme, got $(repr(operator))"))
+    end
+    if operator !== :blocks
         assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
             dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
@@ -152,8 +170,8 @@ function solve_stokes_adjoint_dyrel!(
         @info "Adjoint λmax" λmax_measured=λmax_vx λmax_gershgorin ratio=λmax_gershgorin / λmax_vx λmax_iterations
 
     # Buffers, seeds and pullbacks that only the Enzyme reverse passes touch. The
-    # frozen operator replaces those passes outright, so on the default path these
-    # nine mesh-sized arrays are never allocated.
+    # other two paths replace those passes outright, so these nine mesh-sized
+    # arrays are never allocated for them.
     enzyme_scratch = op !== nothing ? nothing : (;
         Rv_x_buf = zero(dr.Rv_x),
         Rv_y_buf = zero(dr.Rv_y),

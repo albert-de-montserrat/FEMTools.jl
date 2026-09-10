@@ -217,6 +217,7 @@ solve_stokes_3d!
 solve_stokes_adjoint_3d!
 stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
+FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
 ```
 
@@ -269,11 +270,11 @@ validate that contract with a central finite difference as demonstrated in
 ### Two-dimensional frozen operator and solver controls
 
 The forward state must be converged before the adjoint solve. At that fixed
-state the transpose Jacobian is constant, so the default
-`frozen_operator = true` path assembles three dense blocks per element once and
-reuses them throughout the Powell–Hestenes / DYREL solve. Each subsequent
-operator application is only an element gather, dense products, and scatter;
-it does not reevaluate the rheology or invoke automatic differentiation.
+state the transpose Jacobian is constant, and `operator` chooses how it is
+applied throughout the Powell–Hestenes / DYREL solve. The default
+`operator = :blocks` assembles the element blocks once; each subsequent
+application is an element gather, dense products, and scatter, reevaluating no
+rheology and invoking no automatic differentiation.
 
 The inner velocity iteration stops after reducing its residual by `rel_drop`;
 the outer pressure iteration continues until `adjoint_tol` or
@@ -282,8 +283,9 @@ the complete adjoint. With `measure_λmax = true`, power iteration measures the
 largest eigenvalue of the Jacobi-preconditioned velocity block instead of using
 its looser Gershgorin bound. The returned statistics report both values and the
 number of power iterations. Set `measure_λmax = false` to use the Gershgorin
-estimate directly; the Enzyme fallback also uses that estimate because it has no
-cheap frozen operator application for power iteration.
+estimate directly; `operator = :enzyme` always uses that estimate, because
+power iteration needs an operator application and the reverse-mode path has
+none to offer cheaply.
 
 `λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint
@@ -295,11 +297,22 @@ residual drops but the pressure residual does not, the outer PH iteration is
 the bottleneck; lowering `rel_drop` only spends more work on the already-solved
 subproblem.
 
-The cached T7/P1-disc operator stores 280 floating-point values per element,
-about 2.2 kB per element in `Float64`. Set `frozen_operator = false` when that
-memory footprint is unsuitable, notably for larger three-dimensional elements.
-The fallback reconstructs the same transpose products with Enzyme on every
-iteration and is therefore slower but avoids the block storage.
+For T7/P1-disc the cached blocks hold 147 floating-point values per element,
+about 1.2 kB per element in `Float64`, once the symmetry of a viscous tangent is
+exploited; a plastic model raises that to 280 values, about 2.2 kB. Two
+alternatives store nothing per element when that footprint is unsuitable,
+notably for larger three-dimensional elements.
+
+`operator = :matrix_free` rebuilds the transpose products by forward-mode
+directional differentiation of the element residuals, at about three residual
+evaluations per element per application. It needs `plastic === nothing`: for a
+symmetric element tangent a directional derivative *is* the transposed product,
+which is what removes the need to store anything. The symmetry is verified once
+at construction rather than assumed.
+
+`operator = :enzyme` rebuilds the same products by reverse-mode differentiation,
+three sweeps per application. It is the slowest of the three and the only one
+that avoids block storage for a plastic tangent.
 
 See `examples/stokes/sinking_block/sinking_block_adj.jl` for a complete solve
 and `examples/benchmarks/adjoint_perf.jl` for a headless mesh/contrast sweep.

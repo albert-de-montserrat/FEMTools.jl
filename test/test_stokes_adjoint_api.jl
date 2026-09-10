@@ -116,6 +116,29 @@ end
     @test warm.λmax_iterations == 0
     @test (λvx, λvy, λP) == λ_before
 
+    # The matrix-free operator drives the same solve while storing no element
+    # blocks, so it must land on the same adjoint field.
+    λvx_mf = zeros(mesh.nnodes)
+    λvy_mf = zeros(mesh.nnodes)
+    λP_mf = zeros(mesh.nnodesP)
+    mf = solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
+        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
+        verbose = false, verbose_inner = false, operator = :matrix_free)
+    @test mf.converged
+    @test mf.λmax ≈ adj.λmax rtol = 1.0e-6
+    @test maximum(abs, λvy_mf .- λvy) / maximum(abs, λvy) < 1.0e-6
+
+    @test_throws "operator must be :blocks, :matrix_free, or :enzyme" (
+        solve_stokes_adjoint_dyrel!(
+            dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+            phases, phases, τ_old, nothing, G, Δt, γP,
+            objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
+            vx_nodes, vy_nodes, verbose = false, operator = :frozen))
+
     # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
     # in the density, so R(ρ₂=1) - R(ρ₂=0) at the frozen forward state is the
     # derivative with respect to the phase-2 density.

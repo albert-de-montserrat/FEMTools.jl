@@ -200,4 +200,41 @@ using DomainSets: ×
     λmax_exact = maximum(abs, eigvals(Symmetric(A)))
     @test λmax ≈ λmax_exact rtol = 5.0e-3
     @test λmax_iterations < 100
+
+    # The matrix-free operator applies the same thing without storing any of it:
+    # a directional derivative of the element residual stands in for each
+    # transposed product, which is exact because the viscous tangent is symmetric.
+    mf = FEMTools.matrix_free_adjoint_operator(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    ResλVx_mf = zeros(mesh.nnodes)
+    ResλVy_mf = zeros(mesh.nnodes)
+    ResλP_mf = zeros(mesh.nnodesP)
+    FEMTools.apply_adjoint_operator!(
+        ResλVx_mf, ResλVy_mf, ResλP_mf, mf, λvx, λvy, λP,
+        mesh, element_v, element_P, backend, wg)
+    @test maximum(abs, ResλVx_mf .- ResλVx_enzyme) / scale_v < 1.0e-12
+    @test maximum(abs, ResλVy_mf .- ResλVy_enzyme) / scale_v < 1.0e-12
+    @test maximum(abs, ResλP_mf .- ResλP_enzyme) / scale_P < 1.0e-12
+
+    # It carries the forward state itself plus the reference tables, and nothing
+    # sized by the element count. The tables must be backend arrays: this kernel
+    # launches once per adjoint iteration, and a tuple would be rebuilt into the
+    # launch argument pack every time.
+    @test mf.state.vx === dr.vx
+    @test mf.state.geo_v === cache.geo_v
+    @test all(t isa AbstractVector && length(t) == nq
+        for t in (mf.state.Nq, mf.state.NqP, mf.state.∂N∂ξ_v))
+
+    # Power iteration needs only an apply, so it measures the same eigenvalue.
+    λmax_mf, _ = FEMTools.estimate_adjoint_λmax(
+        mf, mesh, element_v, element_P, dr.PC_vx, dr.PC_vy,
+        vx_nodes, vy_nodes, backend, wg)
+    @test λmax_mf ≈ λmax rtol = 1.0e-6
+
+    # A plastic tangent has no symmetry for the forward-mode products to exploit.
+    @test_throws "a plastic model gives a non-normal one" (
+        FEMTools.matrix_free_adjoint_operator(
+            dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+            phases, phases, τ_old, plastic, G, Δt, γP, backend, wg))
 end
