@@ -14,8 +14,8 @@ velocity and pressure residuals, and the companion adjoint example applies the
 transpose of that same discrete operator.
 
 ```sh
-julia --project=examples examples/stokes/sinking_block/sinking_block.jl
-julia --project=examples examples/stokes/sinking_block/sinking_block_adj.jl
+julia --project=examples examples/miniapps/stokes/sinking_block/sinking_block.jl
+julia --project=examples examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl
 ```
 
 The forward script writes `stokes_2D_sinking_block.vtk`. Its main parameters

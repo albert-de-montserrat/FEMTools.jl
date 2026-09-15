@@ -30,7 +30,7 @@ function _strain_rate_stress_diagnostics(
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
         stress_at_ip = element_stress(iel, local_nodes)
-        geo_el = geo_v[iel]
+        geo_el = element_geometry(geo_v, iel)
 
         totals = ntuple(_ -> zero(FP), length(_DIAGNOSTIC_FIELDS))
         volume = zero(FP)

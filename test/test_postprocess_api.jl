@@ -11,7 +11,7 @@ function _postprocess_geometry(coords, el2n, nels, element::ReferenceElement{E})
     FP = eltype(ip.ω)
     ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
     ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo = Vector{NTuple{NQ, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}}(undef, nels)
+    geo = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
     FEMTools.precompute_geometry_kernel!(CPU(), 1)(
         geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV);
         ndrange = nels,

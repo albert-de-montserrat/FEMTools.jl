@@ -59,7 +59,7 @@ end
 
 @testset "lithostatic element jacobian includes EOS pressure term" begin
     dNdx = @SMatrix [0.0 1.0; 0.0 -1.0]
-    geo = (((dNdx, 1.0),),)
+    geo = reshape([(dNdx, 1.0)], 1, 1)
     Nq = (SA[0.5, 0.5],)
     el2n = reshape(Int32[1, 2], 2, 1)
     T = [300.0, 300.0]

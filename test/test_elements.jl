@@ -167,8 +167,46 @@ end
 end
 
 @testset "generated triangle quadrature input validation" begin
-    @test_throws ArgumentError gauss_legendre_triangle(0)
-    @test_throws ArgumentError gauss_legendre_triangle(Float32, -1)
+    @test_throws "quadrature order must be positive, got 0" gauss_legendre_triangle(0)
+    @test_throws "quadrature order must be positive, got -1" gauss_legendre_triangle(Float32, -1)
+    @test_throws "quadrature order must be positive, got 0" FEMTools._gauss_legendre_01(Float64, 0)
+end
+
+@testset "Gauss-Legendre rule on the unit interval" begin
+    for FP in (FP64, FP32), n in 1:5
+        pts, wts = FEMTools._gauss_legendre_01(FP, n)
+        @test length(pts) == n
+        @test length(wts) == n
+        @test eltype(pts) === FP
+        @test eltype(wts) === FP
+        @test all(p -> 0 < p < 1, pts)
+        @test sum(wts) ≈ 1 rtol = 8eps(FP)
+        # An n-point rule is exact for polynomials of degree ≤ 2n-1.
+        for k in 0:(2n - 1)
+            @test sum(wts .* pts .^ k) ≈ 1 / (k + 1) rtol = 1.0e3 * eps(FP)
+        end
+    end
+end
+
+@testset "generated triangle quadrature accuracy" begin
+    for n in 1:5
+        ip = gauss_legendre_triangle(n)
+        @test length(ip.ω) == n^2
+        @test ip.ζ === nothing
+        @test all(>(0), ip.ξ)
+        @test all(>(0), ip.η)
+        @test all(ip.ξ .+ ip.η .< 1)
+        @test sum(ip.ω) ≈ 1 / 2          # area of the reference triangle
+        # The Duffy Jacobian costs one degree in ξ, leaving exactness up to
+        # total degree 2n-2; ∫ ξᵃ ηᵇ dΩ = a! b! / (a+b+2)! on the reference triangle.
+        for a in 0:(2n - 2), b in 0:(2n - 2 - a)
+            exact = factorial(a) * factorial(b) / factorial(a + b + 2)
+            @test sum(ip.ω .* ip.ξ .^ a .* ip.η .^ b) ≈ exact
+        end
+    end
+    ip32 = gauss_legendre_triangle(Float32, 3)
+    @test eltype(ip32.ω) === Float32
+    @test sum(ip32.ω) ≈ 0.5f0
 end
 
 @testset "tetrahedron integration rules" begin

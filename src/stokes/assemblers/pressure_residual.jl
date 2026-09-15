@@ -173,8 +173,8 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
         geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = geo_v[iel]
-    geo_P_el  = geo_P[iel]
+    geo_v_el  = element_geometry(geo_v, iel)
+    geo_P_el  = element_geometry(geo_P, iel)
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
     P_loc     = _gather_local(P,  local_nodes_P, Val(NP))
@@ -216,8 +216,8 @@ end
     nodes = local_nodes_of(el2n, cell, Val(27))
     velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
     residual = zero(SVector{4, eltype(RP)})
-    for q in eachindex(geometry[cell])
-        gradient, dΩ = geometry[cell][q]
+    for q in axes(geometry, 1)
+        gradient, dΩ = geometry[q, cell]
         residual -= NqP[q] * (compute_velocity_divergence(velocity, gradient) * dΩ)
     end
     for i in 1:4

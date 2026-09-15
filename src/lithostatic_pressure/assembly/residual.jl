@@ -9,7 +9,7 @@ residual with its global node indices.
     args = (
         _gather_local(P, nodes, Val(N)),
         _gather_local(T, nodes, Val(N)),
-        geo[iel],
+        element_geometry(geo, iel),
         _gather_phase(phases, nodes, iel, Val(N)),
         ρ0, α, K, Tref, g, Nq, Val(N),
     )
@@ -27,7 +27,7 @@ Return element node indices, absolute Jacobian row sums, and absolute diagonal.
     Ploc = _gather_local(P, nodes, Val(N))
     phase_loc = _gather_phase(phases, nodes, iel, Val(N))
     J = ForwardDiff.jacobian(Ploc) do p
-        lp_integrate_residual(p, Tloc, geo[iel], phase_loc, ρ0, α, K, Tref, g, Nq, Val(N))
+        lp_integrate_residual(p, Tloc, element_geometry(geo, iel), phase_loc, ρ0, α, K, Tref, g, Nq, Val(N))
     end
     rowsums, diags = jacobian_rowsums_and_diagonal(J)
     return nodes, rowsums, diags

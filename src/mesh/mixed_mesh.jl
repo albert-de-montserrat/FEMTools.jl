@@ -191,8 +191,10 @@ same backend for the mesh, cache, solver state, phase arrays, and boundary
 arrays; mixing host and device inputs in an assembly kernel is unsupported.
 
 Fields:
-- `geo_v`: primary-field shape-function gradients and weighted volumes.
-- `geo_P`: secondary-field shape-function gradients and weighted volumes.
+- `geo_v`: primary-field shape-function gradients and weighted volumes, as an
+  `NQ × nels` matrix indexed quadrature point first.
+- `geo_P`: secondary-field shape-function gradients and weighted volumes, in
+  the same layout.
 - `element_v`, `element_P`: reference elements used to build the cache.
 """
 struct MixedMeshCache{GV, GP, EV, EP}
@@ -218,10 +220,10 @@ function MixedMeshCache(
     ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
     ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
 
-    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}
-    GeoP = NTuple{NQ_v, Tuple{SMatrix{NP, 2, FP, 2NP}, FP}}
-    geo_v = KA.allocate(backend, GeoV, mesh.nels)
-    geo_P = KA.allocate(backend, GeoP, mesh.nels)
+    GeoV = Tuple{SMatrix{NV, 2, FP, 2NV}, FP}
+    GeoP = Tuple{SMatrix{NP, 2, FP, 2NP}, FP}
+    geo_v = KA.allocate(backend, GeoV, NQ_v, mesh.nels)
+    geo_P = KA.allocate(backend, GeoP, NQ_v, mesh.nels)
 
     TDev   = TA(backend)
     coords = TDev(mesh.coords)
