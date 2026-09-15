@@ -528,6 +528,10 @@ function solve_stokes_dyrel!(
             bc_values[i]
         end
     end
+    # The first residual must see the prescribed boundary velocities too.
+    for component in 1:3
+        apply_dirichlet!(velocity[component], fixed_nodes[component], velocity_bc[component], backend, workgroup)
+    end
     err_v = err_P = err = Inf
     iter = 0
     for iteration in 1:total_iterMax
