@@ -128,10 +128,10 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
     lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
-    P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly - c[2]) for c in coords_litho]
+    P0_litho = Float64[ρ0[1] * abs(g[2]) * (-c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
-    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2] - Ly) ≤ litho_tol]
+    top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2]) ≤ litho_tol]
     bc_litho = DirichletBoundaryCondition(nothing, top_nodes_litho, zeros(Float64, length(top_nodes_litho)))
     solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
 
