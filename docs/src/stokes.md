@@ -219,8 +219,9 @@ The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 linear visco-elastic ice rheology. Mesh advection is enabled by default and
 rebuilds the geometric cache after each Lagrangian update.
 
-See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
-discretisations, physical setup, output, figure, and material-gradient checks.
+See [Sinking block](sinking_block.md) and [Sinking block (3-D)](sinking_block_3d.md)
+for the discretisations, physical setup, output, figure, and material-gradient
+checks of each.
 
 The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
 Gmsh mesh on the host, then uploads mesh arrays, mixed connectivity,
