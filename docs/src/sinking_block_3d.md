@@ -158,11 +158,12 @@ unchanged for the same reason. [`solve_stokes_adjoint_3d!`](@ref) is the
 matching compatibility wrapper.
 
 [`stokes_material_gradient_3d`](@ref) then contracts ``\lambda`` against
-``\partial b/\partial\rho`` and ``(\partial A/\partial\eta)u`` for one phase,
-phase 2 by default. Density changes the gravity load; viscosity changes that
-phase's viscous matrix contribution. Both derivatives are applied as residual
-evaluations with unit material properties, so neither derivative matrix is ever
-assembled — the adjoint example builds no system matrix at any point.
+``\partial b/\partial\rho`` and ``(\partial A/\partial\eta)u`` for every phase
+at once, returning one gradient tuple per property. Density changes the
+gravity load; viscosity changes a phase's viscous matrix contribution. Both
+derivatives are applied as residual evaluations with unit material properties,
+so neither derivative matrix is ever assembled — the adjoint example builds no
+system matrix at any point.
 
 ## Verification
 
