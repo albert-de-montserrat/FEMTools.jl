@@ -68,7 +68,8 @@ example scripts that include it, not by the package test suite.
 - Mixed velocity and pressure connectivities must describe the same number of
   elements.
 - Geometry is an `NQ × nels` matrix; `element_geometry(geo, iel)` views one
-  and quadrature point. Reject singular or inverted mappings where the
+  element column. Entries store physical gradients and integration weights.
+  Reject singular or inverted mappings where the
   mathematical path cannot support them.
 - Kernel-consumed mesh arrays must be moved to the selected backend together.
   Host-side topology preparation is acceptable; mixed host/device solver input

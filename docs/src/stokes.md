@@ -147,7 +147,11 @@ stats = solve_stokes_dyrel!(
 `fixed_nodes` is an `NTuple{3}` containing the constrained nodes for each
 velocity component, held at zero unless `bc_values` supplies one velocity per
 entry of `fixed_nodes`, which is how a far-field flow is imposed on the
-boundary. The matching `solve_stokes_adjoint_dyrel!` method accepts the same
+boundary. Each component's values must match the length and ordering of its
+constrained-node array. The solver applies them before the first residual
+assembly and after every velocity update. A mismatched length raises
+`DimensionMismatch`; the initial guess need not satisfy the constraints.
+The matching `solve_stokes_adjoint_dyrel!` method accepts the same
 storage plus a three-component objective load. `solve_stokes_3d!` and
 `solve_stokes_adjoint_3d!` remain compatibility wrappers.
 

@@ -29,4 +29,29 @@ using KernelAbstractions: CPU
     for component in 1:3
         @test velocity[component][fixed_nodes[component]] == bc_values[component]
     end
+
+    # Starting from an already constrained guess must produce the same first
+    # iteration as letting the solver apply those constraints itself.
+    constrained_velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
+    for component in 1:3
+        constrained_velocity[component][fixed_nodes[component]] .= bc_values[component]
+    end
+    constrained_pressure = zeros(4, mesh.nels)
+    constrained_stats = solve_stokes_dyrel!(
+        constrained_velocity, constrained_pressure, mesh, ones(Int, mesh.nels),
+        (1.0,), (1.0,), (0.0, 0.0, 0.0), fixed_nodes;
+        bc_values, ncheck = 1, total_iterMax = 1, verbose = false,
+    )
+    @test stats.err_P ≈ constrained_stats.err_P
+    @test pressure ≈ constrained_pressure
+    for component in 1:3
+        @test velocity[component] ≈ constrained_velocity[component]
+    end
+
+    bad_values = (bc_values[1][1:(end - 1)], bc_values[2], bc_values[3])
+    @test_throws DimensionMismatch solve_stokes_dyrel!(
+        ntuple(_ -> zeros(mesh.nnodes), 3), zeros(4, mesh.nels), mesh,
+        ones(Int, mesh.nels), (1.0,), (1.0,), (0.0, 0.0, 0.0), fixed_nodes;
+        bc_values = bad_values, total_iterMax = 1, verbose = false,
+    )
 end

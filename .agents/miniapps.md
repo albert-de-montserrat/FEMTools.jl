@@ -150,8 +150,8 @@ New or polished primary miniapps should follow this shape:
 
 Polish existing miniapps before adding near-duplicates:
 
-1. Make every primary 2-D/3-D package-solver miniapp includable, headless, and
-   callable without global side effects.
+1. Keep headless numerical definitions in shared helpers without default solves;
+   runnable drivers execute their default case when run or included.
 2. Remove environment activation from scripts and use the examples project as
    the single dependency declaration.
 3. Move hard-coded accelerator selection behind a backend argument or retain it
@@ -180,7 +180,7 @@ For a miniapp change:
   bug or relies on changed core behavior;
 - record exact hardware/backend/problem size for benchmark claims.
 
-The current suite's parse list in `test/test_type_stability.jl` is explicit and
+The current suite's parse list in `test/test_example_paths.jl` is explicit and
 does not cover this entire inventory. Update it when a miniapp becomes part of
 the maintained set; add a tiny execution test only when it can remain stable
 and reasonably fast.

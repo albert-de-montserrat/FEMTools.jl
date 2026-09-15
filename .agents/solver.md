@@ -304,6 +304,9 @@ v\leftarrow v-ωD_v^{-1}(R^v-f).
 ```
 
 Prescribed 3-D velocities are applied before the first residual assembly and
+repinned after each update. Omitting `bc_values` prescribes zero; component
+lengths must match `fixed_nodes`. The constant pressure mode is mass-weighted
+to zero after each pressure update.
 The four cell-local pressure residuals test `-div(v)` against `(1,ξ,η,ζ)`.
 
 ### Discrete adjoints

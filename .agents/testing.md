@@ -26,7 +26,16 @@ given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
 executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
 
-The 3-D sparse reference tests include
+The 3-D sparse reference tests include the function-only
+`examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` helper.
+`test/test_stokes_3d_boundary_values.jl` checks nonzero initial boundary values,
+agreement with an already constrained initial guess, and malformed values.
+`test/test_example_paths.jl` rejects syntax-error expressions and checks shared
+meshing/setup includes and documented paths. It uses only `Test`, so it can
+run before package instantiation:
+`julia --startup-file=no test/test_example_paths.jl`.
+
+## Commands
 
 Full package test from the repository root:
 

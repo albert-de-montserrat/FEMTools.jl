@@ -19,6 +19,8 @@ be an array — the usual case, one entry per node or per integration point — 
 a scalar, which describes a single sample rather than a field:
 
 ```julia
+using FEMTools: VectorField2D, SymmetricTensor2D
+
 v = VectorField2D(backend, Float64, nnodes)   # x and y arrays of length nnodes
 τ = SymmetricTensor2D(backend, Float64, nnodes)
 ```
@@ -58,6 +60,8 @@ tensor as scalars, in the same Voigt order. This is what a field yields at a
 sample:
 
 ```julia
+using FEMTools: VoigtTensor
+
 τi = VoigtTensor(τ, i)     # equivalently VoigtTensor(τ[i])
 ```
 
