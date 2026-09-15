@@ -12,9 +12,11 @@ The solver finds a velocity `v` and pressure `P` satisfying the momentum and
 continuity balances
 
 ```math
-\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+\begin{aligned}
+&\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \\
+&\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
 - \alpha\frac{\partial T}{\partial t} = 0,
+\end{aligned}
 ```
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
