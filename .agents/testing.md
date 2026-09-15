@@ -16,7 +16,9 @@ The suite covers:
 - constructor, export/public API, helper, and verbosity contracts;
 - `Float32`/`Float64`, type inference, JET optimization checks, Aqua quality
   checks, and selected zero-allocation hot paths;
-- parsing of maintained example scripts;
+- parsing of maintained example scripts, including the volcano drivers;
+- field-container constructor inference, continuity-source storage, and the
+  distinct 3-D Voigt versus Stokes assembler stress orders;
 - chamber-interface conformance and phase separation for the unstructured 3-D volcano mesh;
 - a one-element 3-D mixed pressure-scaling check and component-wise AD through
   the 3-D plastic momentum residual;
@@ -28,6 +30,15 @@ The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
 executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
+
+The 3-D sparse reference tests include the function-only
+`examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` helper.
+`test/test_stokes_3d_boundary_values.jl` checks nonzero initial boundary values,
+agreement with an already constrained initial guess, and malformed values.
+`test/test_example_paths.jl` rejects syntax-error expressions and checks shared
+meshing/setup includes and documented paths. It uses only `Test`, so it can
+run before package instantiation:
+`julia --startup-file=no test/test_example_paths.jl`.
 
 ## Commands
 

@@ -249,12 +249,12 @@ function main(;
     # Seed the interior with the pure-shear field that satisfies the boundary
     # conditions. The relaxation diverges from an initial guess with a non-zero
     # divergence, so this seed is required, not merely a warm start.
-    copyto!(dr.vx, [0 * ε̇ * c[1] for c in coords_cpu])
-    fill!(dr.vy, 0)
-    copyto!(dr.vz, [0 * ε̇ * c[3] for c in coords_cpu])
-    apply_bc!(dr.vx, bc_vx)
-    apply_bc!(dr.vy, bc_vy)
-    apply_bc!(dr.vz, bc_vz)
+    copyto!(dr.v.x, [0 * ε̇ * c[1] for c in coords_cpu])
+    fill!(dr.v.y, 0)
+    copyto!(dr.v.z, [0 * ε̇ * c[3] for c in coords_cpu])
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
+    apply_bc!(dr.v.z, bc_vz)
 
     # Warm-start the pressure with the crustal load of the overlying column so
     # the first Powell-Hestenes step does not have to build it from zero.

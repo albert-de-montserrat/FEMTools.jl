@@ -197,8 +197,8 @@ function main(;
         CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9,
         stress_size = (NQ_v, mesh_stokes.nels),
     )
-    τ = (dr.τxx, dr.τyy, dr.τxy)
-    τ_old = (dr.τxx_old, dr.τyy_old, dr.τxy_old)
+    τ = (dr.τ.xx, dr.τ.yy, dr.τ.xy)
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
 
     thermal = ThermalDiffusionDR(
         backend, mesh_T.nnodes, ThermalMaterial(; k, Cp, ρ0, α, K); ϵ = ϵ_T,
@@ -235,10 +235,10 @@ function main(;
     # Seed the interior with the pure-shear field that satisfies the boundary
     # conditions. The relaxation diverges from an initial guess with a non-zero
     # divergence, so this seed is required, not merely a warm start.
-    copyto!(dr.vx, [ε̇ * c[1] for c in coords_cpu])
-    copyto!(dr.vy, [-ε̇ * (c[2] + depth / L_c) for c in coords_cpu])
-    apply_bc!(dr.vx, bc_vx)
-    apply_bc!(dr.vy, bc_vy)
+    copyto!(dr.v.x, [ε̇ * c[1] for c in coords_cpu])
+    copyto!(dr.v.y, [-ε̇ * (c[2] + depth / L_c) for c in coords_cpu])
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
 
     # Warm-start the pressure with the crustal load of the overlying column so
     # the first Powell-Hestenes step does not have to build it from zero.
@@ -297,8 +297,8 @@ function main(;
         )
 
         P_cpu  = Array(dr.P)
-        vx_cpu = Array(dr.vx)
-        vy_cpu = Array(dr.vy)
+        vx_cpu = Array(dr.v.x)
+        vy_cpu = Array(dr.v.y)
         post = compute_strain_rate_stress_postprocess(
             vx_cpu, vy_cpu, el2n_v_cpu, Array(geo_v), τ, element_v,
         )
@@ -306,9 +306,9 @@ function main(;
         max_tauII_history[istep]  = maximum(post.tauII) * σ_c
         mean_P_chamber[istep]     = mean(@view P_cpu[chamber_P_dofs]) * σ_c
 
-        copyto!(dr.τxx_old, dr.τxx)
-        copyto!(dr.τyy_old, dr.τyy)
-        copyto!(dr.τxy_old, dr.τxy)
+        copyto!(dr.τ_old.xx, dr.τ.xx)
+        copyto!(dr.τ_old.yy, dr.τ.yy)
+        copyto!(dr.τ_old.xy, dr.τ.xy)
 
         @info "Physical time step" istep nsteps t_kyr = t / kyr mean_tauII_MPa =
             mean_tauII_history[istep] / 1.0e6 max_tauII_MPa =

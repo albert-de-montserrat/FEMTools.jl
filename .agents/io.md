@@ -10,6 +10,8 @@ Core I/O is intentionally small:
   `MixedMesh` uses its T11 or Hex27 velocity connectivity; the separate
   pressure connectivity is interpolation data, not cell geometry.
 - Scalar point fields and cell fields are supported and length-validated.
+  Vector fields must be passed as tuples of component arrays; convert a
+  VectorField3D with Tuple(velocity) before calling write_vtk.
 - `write_stokes_vtk` maps mixed pressure/velocity and derived stress/strain
   fields through the generic writer in both 2-D and 3-D. In 2-D it writes
   velocity as both `Vx`/`Vy` scalar components and the glyphable vector `V`;

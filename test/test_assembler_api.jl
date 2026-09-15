@@ -7,7 +7,7 @@ using StaticArrays
 function _line_assembler_fixture(dNdx)
     element = ReferenceElement(LinearElement{1, 2, Float64})
     geo_el = ntuple(_ -> (dNdx, 1.0), length(shape_function_values(element)))
-    return element, reshape(Int32[1, 2], 2, 1), [geo_el], [Int32[1]], CPU(), 1
+    return element, reshape(Int32[1, 2], 2, 1), reshape(collect(geo_el), :, 1), [Int32[1]], CPU(), 1
 end
 
 @testset "heat assemblers accept compute_jacobian keyword" begin

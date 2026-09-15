@@ -72,23 +72,22 @@ These exercise FEMTools solver states and public solver entry points.
 
 | File | Mesh / method | Purpose |
 |---|---|---|
-| `examples/heat_diffusion/2D_heat_diffusion.jl` | structured Q2/Q9 | Multi-phase transient heat diffusion with the DR solver |
-| `examples/heat_diffusion/2D_heat_diffusion_triangles.jl` | structured T3 | Linear-triangle variant of the thermal DR problem |
-| `examples/heat_diffusion/2D_heat_diffusion_unstructured.jl` | Gmsh T3 with circular holes | Coupled lithostatic initialization and transient heat diffusion |
-| `examples/heat_diffusion/2D_heat_diffusion_unstructured_T6.jl` | Gmsh T6 with holes | Quadratic unstructured thermal/lithostatic workflow with node reordering |
-| `examples/lithostatic_pressure/lithostatic_pressure2D.jl` | unstructured T3 | Dense-inclusion lithostatic-pressure solve and visualization |
-| `examples/stokes/buildup/stokes_2D_elastic_buildup.jl` | structured T7/P1-disc | Viscoelastic stress buildup under imposed deformation |
-| `examples/stokes/buildup/stokes_2D_elastic_buildup_hole.jl` | Gmsh T7/P1-disc | Gravitational loading around a tunnel/free surface |
-| `examples/stokes/sinking_block/sinking_block.jl` | Gmsh T7/P1-disc | Forward dense-inclusion sinking-block Stokes solve |
-| `examples/stokes/sinking_block/sinking_block_adj.jl` | Gmsh T7/P1-disc | Forward plus discrete-adjoint density/viscosity sensitivities |
-| `examples/stokes/vevp/stokes_2D_pure_shear.jl` | structured T7/P1-disc | Multi-step visco-elasto-plastic pure shear |
-| `examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl` | Gmsh T7/P1-disc | Unstructured pure shear with an inclusion |
-| `examples/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl` | Gmsh T7/P1-disc | Discrete-adjoint sensitivities for the unstructured pure-shear model |
-| `examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl` | Gmsh T7/P1-disc | Pure shear with mesh advection |
-| `examples/stokes/vevp/stokes_2D_dike_triangle_adv.jl` | Gmsh T7/P1-disc with graded interface refinement | 40 km × 20 km free-surface dike-influx model with free-slip walls/base, lithostatic pressure initialization, weak visco-elastic vertical dike, and optional selected-step adjoint sensitivities |
-| `examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
-| `examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
-| `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
+| `examples/miniapps/thermal/2D_heat_diffusion/2D_heat_diffusion.jl` | structured Q2/Q9 | Multi-phase transient heat diffusion with the DR solver |
+| `examples/miniapps/thermal/2D_heat_diffusion_triangles/2D_heat_diffusion_triangles.jl` | structured T3 | Linear-triangle variant of the thermal DR problem |
+| `examples/miniapps/thermal/2D_heat_diffusion_unstructured/2D_heat_diffusion_unstructured.jl` | Gmsh T3 with circular holes | Coupled lithostatic initialization and transient heat diffusion |
+| `examples/miniapps/thermal/2D_heat_diffusion_unstructured_T6/2D_heat_diffusion_unstructured_T6.jl` | Gmsh T6 with holes | Quadratic unstructured thermal/lithostatic workflow with node reordering |
+| `examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl` | unstructured T3 | Dense-inclusion lithostatic-pressure solve and visualization |
+| `examples/miniapps/stokes/stokes_2D_elastic_buildup/stokes_2D_elastic_buildup.jl` | structured T7/P1-disc | Viscoelastic stress buildup under imposed deformation |
+| `examples/miniapps/stokes/stokes_2D_elastic_buildup_hole/stokes_2D_elastic_buildup_hole.jl` | Gmsh T7/P1-disc | Gravitational loading around a tunnel/free surface |
+| `examples/miniapps/stokes/sinking_block/sinking_block.jl` | Gmsh T7/P1-disc | Forward dense-inclusion sinking-block Stokes solve |
+| `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` | Gmsh T7/P1-disc | Forward plus discrete-adjoint density/viscosity sensitivities |
+| `examples/miniapps/stokes/stokes_2D_pure_shear/stokes_2D_pure_shear.jl` | structured T7/P1-disc | Multi-step visco-elasto-plastic pure shear |
+| `examples/miniapps/stokes/stokes_2D_pure_shear_triangle/stokes_2D_pure_shear_triangle.jl` | Gmsh T7/P1-disc | Unstructured pure shear with an inclusion |
+| `examples/miniapps/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl` | Gmsh T7/P1-disc | Discrete-adjoint sensitivities for the unstructured pure-shear model |
+| `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_adv/stokes_2D_pure_shear_triangle_adv.jl` | Gmsh T7/P1-disc | Pure shear with mesh advection |
+| `examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
+| `examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
+| `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 | `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear |
 
 ## 2-D building-block miniapps
@@ -98,21 +97,21 @@ owning substantial assembly or solve logic in the script.
 
 | File | Purpose |
 |---|---|
-| `examples/2D_diffusion_FEMTools.jl` | Q4 transient Gaussian diffusion with explicit sparse assembly and analytical comparison |
-| `examples/Poisson/2D_Poisson.jl` | Q4 Poisson assembly/solve baseline |
-| `examples/Poisson/2D_Poisson_AD.jl` | Q9 Poisson residual/Jacobian experiment comparing serial, colored, and atomic assembly |
-| `examples/Poisson/2D_Poisson_AD_KA.jl` | CUDA/KernelAbstractions version of the AD Poisson experiment |
-| `examples/elasticity/2D_Elasticiy_DR_KA.jl` | Plane-strain cantilever solved with script-local dynamic relaxation |
-| `examples/elasticity/2D_Elasticiy_Direct_KA.jl` | Plane-strain cantilever using sparse direct solution and KA geometry/data movement |
+| `examples/miniapps/thermal/2D_diffusion_FEMTools/2D_diffusion_FEMTools.jl` | Q4 transient Gaussian diffusion with explicit sparse assembly and analytical comparison |
+| `examples/miniapps/thermal/2D_Poisson/2D_Poisson.jl` | Q4 Poisson assembly/solve baseline |
+| `examples/miniapps/thermal/2D_Poisson_AD/2D_Poisson_AD.jl` | Q9 Poisson residual/Jacobian experiment comparing serial, colored, and atomic assembly |
+| `examples/miniapps/thermal/2D_Poisson_AD_KA/2D_Poisson_AD_KA.jl` | CUDA/KernelAbstractions version of the AD Poisson experiment |
+| `examples/miniapps/stokes/2D_Elasticiy_DR_KA/2D_Elasticiy_DR_KA.jl` | Plane-strain cantilever solved with script-local dynamic relaxation |
+| `examples/miniapps/stokes/2D_Elasticiy_Direct_KA/2D_Elasticiy_Direct_KA.jl` | Plane-strain cantilever using sparse direct solution and KA geometry/data movement |
 
 ## 3-D package-solver miniapps
 
 | File | Mesh / method | Purpose |
 |---|---|---|
-| `examples/heat_diffusion/3D_heat_diffusion_unstructured_hex.jl` | Gmsh Tet4 despite the historical `_hex` filename | Box with cylindrical inclusions, lithostatic initialization, and transient heat diffusion |
-| `examples/lithostatic_pressure/lithostatic_pressure3D.jl` | Gmsh Hex8 | Three-dimensional dense-inclusion lithostatic-pressure solve and VTK output |
-| `examples/stokes/sinking_block/sinking_block_3D.jl` | Gmsh Hex27/Q2 with cell-local P1 pressure | Matrix-free forward 3-D sinking block on CPU or accelerator backend |
-| `examples/stokes/sinking_block/sinking_block_3D_adj.jl` | same forward mesh/state | Matrix-free 3-D discrete adjoint and material gradients |
+| `examples/miniapps/thermal/3D_heat_diffusion_unstructured_hex/3D_heat_diffusion_unstructured_hex.jl` | Gmsh Tet4 despite the historical `_hex` filename | Box with cylindrical inclusions, lithostatic initialization, and transient heat diffusion |
+| `examples/miniapps/stokes/lithostatic_pressure3D/lithostatic_pressure3D.jl` | Gmsh Hex8 | Three-dimensional dense-inclusion lithostatic-pressure solve and VTK output |
+| `examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl` | Gmsh Hex27/Q2 with cell-local P1 pressure | Matrix-free forward 3-D sinking block on CPU or accelerator backend |
+| `examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl` | same forward mesh/state | Matrix-free 3-D discrete adjoint and material gradients |
 | `examples/stokes/volcano/volcano_thermal_stokes_3D.jl` | unstructured chamber-conforming T11/P1-disc; CPU or selected KernelAbstractions backend | Coupled thermal--Stokes volcanic edifice with visco-elasto-plastic crust and an ellipsoidal chamber |
 | `examples/stokes/volcano/volcano_thermal_stokes_topo_3D.jl` | same element pair and solver, free surface read from a DEM | Etna under its sampled topography, free slip on the walls and base, chamber beneath the summit |
 
@@ -120,12 +119,12 @@ owning substantial assembly or solve logic in the script.
 
 | File | Purpose |
 |---|---|
-| `examples/3D_diffusion_FEMTools.jl` | Hex8 transient Gaussian diffusion with explicit sparse assembly and analytical comparison |
-| `examples/Poisson/3D_Poisson.jl` | Hex8 Poisson assembly/solve baseline |
-| `examples/Poisson/3D_Poisson_AD.jl` | Hex8 AD residual/Jacobian assembly experiment |
-| `examples/Poisson/3D_Poisson_AD_KA.jl` | CUDA/KA AD Poisson experiment with chunked element Jacobians |
-| `examples/Poisson/KA_sandbox/3D_Poisson_AD_KA.jl` | Earlier CUDA/KA 3-D Poisson sandbox |
-| `examples/Poisson/KA_sandbox/3D_Poisson_AD_KA_opt.jl` | Optimized variant of the 3-D Poisson sandbox |
+| `examples/miniapps/thermal/3D_diffusion_FEMTools/3D_diffusion_FEMTools.jl` | Hex8 transient Gaussian diffusion with explicit sparse assembly and analytical comparison |
+| `examples/miniapps/thermal/3D_Poisson/3D_Poisson.jl` | Hex8 Poisson assembly/solve baseline |
+| `examples/miniapps/thermal/3D_Poisson_AD/3D_Poisson_AD.jl` | Hex8 AD residual/Jacobian assembly experiment |
+| `examples/miniapps/thermal/3D_Poisson_AD_KA/3D_Poisson_AD_KA.jl` | CUDA/KA AD Poisson experiment with chunked element Jacobians |
+| `examples/miniapps/thermal/3D_Poisson_AD_KA_sandbox/3D_Poisson_AD_KA.jl` | Earlier CUDA/KA 3-D Poisson sandbox |
+| `examples/miniapps/thermal/3D_Poisson_AD_KA_opt/3D_Poisson_AD_KA_opt.jl` | Optimized variant of the 3-D Poisson sandbox |
 
 The `KA_sandbox/poisson_1step.jl` and `poisson_2step.jl` files are not in this
 inventory: they are 3-D finite-difference/KA experiments but do not use
@@ -138,18 +137,18 @@ applications.
 
 | File | Role |
 |---|---|
-| `examples/benchmarks/assembly_perf_2D.jl` | 2-D sparse/colored/atomic diffusion assembly comparison |
-| `examples/benchmarks/assembly_perf_3D.jl` | 3-D counterpart of the assembly comparison |
-| `examples/benchmarks/adjoint_perf.jl` | Includes the 2-D sinking-block adjoint and sweeps mesh size/viscosity contrast |
-| `examples/benchmarks/forward_lambda_perf.jl` | Compares Gershgorin and measured forward spectral bounds on the sinking block |
-| `examples/benchmarks/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
-| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation, order conversion, and the volcano cross-section geometry |
-| `examples/stokes/sinking_block/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
-| `examples/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
+| `examples/benchmarks/thermal/assembly_perf_2D/assembly_perf_2D.jl` | 2-D sparse/colored/atomic diffusion assembly comparison |
+| `examples/benchmarks/thermal/assembly_perf_3D/assembly_perf_3D.jl` | 3-D counterpart of the assembly comparison |
+| `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` | Includes the 2-D sinking-block adjoint and sweeps mesh size/viscosity contrast |
+| `examples/benchmarks/stokes/forward_lambda_perf/forward_lambda_perf.jl` | Compares Gershgorin and measured forward spectral bounds on the sinking block |
+| `examples/benchmarks/stokes/forward_lambda_shear_band_perf/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
+| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion |
+| `examples/miniapps/stokes/mesher/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
+| `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
+| `examples/miniapps/stokes/2D_Elasticity_stress_postprocess/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 | `examples/stokes/volcano/volcano_mesh_3D.jl` | Gmsh T10 mesher fragmented by the chamber ellipsoid and enriched to T11 with cell bubbles |
 | `examples/stokes/volcano/volcano_mesh_topo_3D.jl` | Same mesher with the top surface displaced onto a sampled topography; reuses the cone mesher's helpers |
 | `examples/stokes/volcano/Etna_Topo.jld2` | Etna elevation tile: `x`, `y`, `surf` in km on a 256 x 256 Cartesian grid |
-| `examples/elasticity/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 
 ## Miniapp contract
 
@@ -159,8 +158,8 @@ New or polished primary miniapps should follow this shape:
    scientific and execution parameters visible at the boundary.
 2. Return a `NamedTuple` containing the fields and convergence/output metadata
    needed by tests, benchmarks, and downstream plotting.
-3. Run the top-level entry point unconditionally. Reusable code that must be
-   included without launching a solve belongs in a support file.
+3. Execute the default case unconditionally. Put definitions needed by tests
+   or other drivers in a shared helper without a top-level solve.
 4. Support a headless, no-output mode such as `show_plot=false` and
    `write_output=false`.
 5. Accept a backend argument when the implementation is backend-neutral; do not
@@ -178,12 +177,15 @@ New or polished primary miniapps should follow this shape:
 10. Report non-convergence explicitly and do not plot or differentiate a failed
     solve as though it were valid.
 
+The previously documented dike-influx driver is absent from the current tree;
+its Stokes manual description is retained as historical workflow context.
+
 ## Direction
 
 Polish existing miniapps before adding near-duplicates:
 
-1. Make every primary 2-D/3-D package-solver miniapp headless-capable and
-   callable through a keyword-driven entry point.
+1. Keep headless numerical definitions in shared helpers without default solves;
+   runnable drivers execute their default case when run or included.
 2. Remove environment activation from scripts and use the examples project as
    the single dependency declaration.
 3. Move hard-coded accelerator selection behind a backend argument or retain it
@@ -210,13 +212,14 @@ For a miniapp change:
   hardware are available;
 - assert convergence or the expected analytical/reference error;
 - verify the returned result contract rather than scraping printed output;
-- check that support files can be included without launching a simulation;
+- check that shared setup helpers do not launch a simulation and that runnable
+  drivers execute their default case;
 - verify output in a temporary directory when writing changes;
 - run the relevant package regression tests when the miniapp exposed a core
   bug or relies on changed core behavior;
 - record exact hardware/backend/problem size for benchmark claims.
 
-The current suite's parse list in `test/test_type_stability.jl` is explicit and
+The current suite's parse list in `test/test_example_paths.jl` is explicit and
 does not cover this entire inventory. Update it when a miniapp becomes part of
 the maintained set; add a tiny execution test only when it can remain stable
 and reasonably fast.

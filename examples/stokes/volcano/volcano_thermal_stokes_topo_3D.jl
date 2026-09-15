@@ -285,12 +285,12 @@ function main(;
     # The relaxation diverges from an initial guess with a non-zero divergence,
     # so the seed has to satisfy the boundary conditions and be divergence-free.
     # Rest does both.
-    fill!(dr.vx, 0)
-    fill!(dr.vy, 0)
-    fill!(dr.vz, 0)
-    apply_bc!(dr.vx, bc_vx)
-    apply_bc!(dr.vy, bc_vy)
-    apply_bc!(dr.vz, bc_vz)
+    fill!(dr.v.x, 0)
+    fill!(dr.v.y, 0)
+    fill!(dr.v.z, 0)
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
+    apply_bc!(dr.v.z, bc_vz)
 
     # Warm-start the pressure with the crustal load of the overlying column so
     # the first Powell-Hestenes step does not have to build it from zero.

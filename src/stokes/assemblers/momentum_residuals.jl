@@ -422,7 +422,7 @@ scatter.
 ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = geo_v[iel]
+    geo_v_el  = element_geometry(geo_v, iel)
     vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
     P_loc     = _gather_local(P, local_nodes_P, Val(NP))
     T_loc     = _gather_local(T, local_nodes_P, Val(NP))
@@ -494,7 +494,7 @@ end
     phase = Int(cell_phase[cell])
     phase_loc = SVector{27}(ntuple(_ -> phase, Val(27)))
     residual = integrate_momentum_residual(
-        velocity, pressure, nothing, zero(pressure), geometry[cell], phase_loc,
+        velocity, pressure, nothing, zero(pressure), element_geometry(geometry, cell), phase_loc,
         η, map(x -> oftype(x, Inf), η), map(zero, η), ρ,
         map(x -> oftype(x, Inf), η), g,
         zero(eltype(pressure)), one(eltype(pressure)), Nq, NqP,
@@ -526,8 +526,8 @@ end
 )
     cell = @index(Global)
     phase = Int(cell_phase[cell])
-    for q in eachindex(geometry[cell])
-        gradient, dΩ = geometry[cell][q]
+    for q in axes(geometry, 1)
+        gradient, dΩ = geometry[q, cell]
         for a in 1:27, component in 1:3
             value = η[phase] * (dot(gradient[a, :], gradient[a, :]) +
                     gradient[a, component]^2 / 3) * dΩ
@@ -600,7 +600,7 @@ row sums provide a conservative smoother/preconditioner and spectral estimate.
 ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_el    = geo[iel]
+    geo_el    = element_geometry(geo, iel)
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
     P_loc     = _gather_local(P, local_nodes_P, Val(NP))
@@ -720,8 +720,8 @@ end
 ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = geo_v[iel]
-    geo_P_el  = geo_P[iel]
+    geo_v_el  = element_geometry(geo_v, iel)
+    geo_P_el  = element_geometry(geo_P, iel)
     vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
     P_loc     = _gather_local(P, local_nodes_P, Val(NP))
     P0loc     = _gather_local(P0, local_nodes_P, Val(NP))

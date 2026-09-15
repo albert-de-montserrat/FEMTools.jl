@@ -5,6 +5,10 @@
 The package uses matrix-free finite-element residual assembly and
 pseudo-transient dynamic relaxation (DR).
 
+Stokes velocity work fields use vector containers. Convert them with `Tuple`,
+and use `stress(dr)`/`stress_old(dr)` for assembler stress order; 3-D tensors
+store shear components in Voigt order, while assemblers expect `(xy, xz, yz)`.
+
 Shared DR behavior lives in `src/dynamic_relaxation/`. A problem subtype
 provides arrays through `dr_fields`, a label through `dr_name`, and scalar
 controls such as `CFL`, `c_fact`, and `ϵ`. `solve_dynamic_relaxation!` assembles
@@ -312,7 +316,10 @@ P\leftarrow P+γ_P M_P^{-1}R^p,
 v\leftarrow v-ωD_v^{-1}(R^v-f).
 ```
 
-The constant pressure mode is mass-weighted to zero after each pressure update.
+Prescribed 3-D velocities are applied before the first residual assembly and
+repinned after each update. Omitting `bc_values` prescribes zero; component
+lengths must match `fixed_nodes`. The constant pressure mode is mass-weighted
+to zero after each pressure update.
 The four cell-local pressure residuals test `-div(v)` against `(1,ξ,η,ζ)`.
 
 The `StokesDR`/`MixedMesh` 3-D path instead extends the Powell-Hestenes/DYREL

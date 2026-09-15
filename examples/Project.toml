@@ -21,5 +21,6 @@ WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
 FEMTools = {path = ".."}
 
 [compat]
+Enzyme = "0.13.199"
 JLD2 = "0.5, 0.6"
 TimerOutputs = "1.1.0"
