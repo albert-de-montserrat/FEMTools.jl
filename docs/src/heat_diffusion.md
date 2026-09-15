@@ -113,6 +113,15 @@ The resulting temperature field is:
 
 ![2-D heat diffusion result](assets/2d_heat_diffusion_result.svg)
 
+## Coupling to Stokes flow
+
+`solver!` advances temperature on its own. To relax temperature and an
+incompressible Stokes flow together within one time step, use
+[`solve_coupled_dyrel!`](@ref), which interleaves one thermal DR iteration with
+every inner Stokes velocity iteration and feeds the resulting temperature into
+the buoyancy and pressure terms. The [Stokes](stokes.md) page describes the
+node-numbering requirement and the extra statistics it returns.
+
 ## Assembly
 
 Shared element integration lives in `assembly/residual.jl`; atomic and colored

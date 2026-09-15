@@ -366,6 +366,13 @@ end
         "examples/miniapps/stokes/stokes_2D_pure_shear_triangle_adv/stokes_2D_pure_shear_triangle_adv.jl",
         "examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl",
         "examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl",
+        "examples/gmsh_meshing.jl",
+        "examples/miniapps/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
+        "examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
+        "examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl",
+        "examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl",
+        "examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl",
+        "examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl",
     ]
     for script in scripts
         @test Meta.parseall(read(joinpath(pkgdir(FEMTools), script), String)) isa Expr

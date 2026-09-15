@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "2aa319818b44e737f16d1262cfe3fb41d9b95b10"
+project_hash = "87e730df0e82ac5bf3c98ae24fab25774d3a067f"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1958,18 +1958,6 @@ version = "0.1.6"
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 version = "0.11.3"
-
-[[deps.Triangle_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "dc78dce9d23d180020f25d3c10b0f552f5f8b7b5"
-uuid = "5639c1d2-226c-5e70-8d55-b3095415a16a"
-version = "1.6.3+2"
-
-[[deps.Triangulate]]
-deps = ["DocStringExtensions", "Triangle_jll"]
-git-tree-sha1 = "fd348d50587253dff8efb7a34b997effccf44427"
-uuid = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
-version = "3.0.1"
 
 [[deps.TriplotBase]]
 git-tree-sha1 = "4d4ed7f294cda19382ff7de4c137d24d16adc89b"

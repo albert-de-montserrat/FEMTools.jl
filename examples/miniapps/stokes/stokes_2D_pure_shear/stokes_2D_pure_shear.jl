@@ -486,4 +486,4 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()

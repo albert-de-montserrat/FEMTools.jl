@@ -81,4 +81,4 @@ function main(; mesh_size = 0.12, nz = 8, CFL = 0.9, c_fact = 0.9,
     return (; coords, el2n, P, phases)
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+main()
