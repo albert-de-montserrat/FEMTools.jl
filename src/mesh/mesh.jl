@@ -423,6 +423,54 @@ function generate_coordinates(
 end
 
 """
+    generate_coordinates(element::ReferenceElement{<:QuadraticElement{3, 11}}, Ω, nels)
+
+Generate coordinates for a structured T10+bubble tetrahedral mesh (T10 +
+centroid bubble node).
+
+The first `(2nx+1)×(2ny+1)×(2nz+1)` entries are the same refined tensor grid
+`QuadraticElement{3,27}` uses — every tet corner and edge midpoint lands on it
+(see `generate_element2node`). The remaining `6·nx·ny·nz` entries are each
+tetrahedron's centroid, appended one per element in the same loop order used
+by `generate_element2node(QuadraticElement{3,11})`.
+"""
+function generate_coordinates(
+    ::ReferenceElement{QuadraticElement{3, 11, T}},
+    Ω,
+    nels::NTuple{3, <:Integer},
+) where {T}
+    nx, ny, nz = nels
+    coords = _tensor_grid_coordinates(T, Ω, nels, 2)
+
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
+    d = ((right[1] - left[1]) / nx, (right[2] - left[2]) / ny, (right[3] - left[3]) / nz)
+
+    # Same corner offsets (in refined-grid units) as `generate_element2node`;
+    # the centroid is the average of the four physical corner positions, which
+    # for these affinely-mapped (straight-edged) tets is exact.
+    tets = (
+        ((0, 0, 0), (2, 0, 0), (2, 2, 0), (2, 2, 2)),
+        ((0, 0, 0), (2, 0, 2), (2, 0, 0), (2, 2, 2)),
+        ((0, 0, 0), (2, 2, 0), (0, 2, 0), (2, 2, 2)),
+        ((0, 0, 0), (0, 2, 0), (0, 2, 2), (2, 2, 2)),
+        ((0, 0, 0), (0, 0, 2), (2, 0, 2), (2, 2, 2)),
+        ((0, 0, 0), (0, 2, 2), (0, 0, 2), (2, 2, 2)),
+    )
+
+    for ez in 0:(nz - 1), ey in 0:(ny - 1), ex in 0:(nx - 1)
+        base = (2ex, 2ey, 2ez)
+        for tet in tets
+            avg_offset = ntuple(d_ -> sum(c[d_] for c in tet) / 4, Val(3))
+            centroid = SVector{3, T}(ntuple(d_ -> left[d_] + (base[d_] + avg_offset[d_]) * d[d_] / 2, Val(3)))
+            push!(coords, centroid)
+        end
+    end
+
+    return coords
+end
+
+"""
     generate_dofs(element, npoints)
 
 Generate one degree of freedom per mesh point.

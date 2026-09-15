@@ -190,6 +190,64 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
 end
 
 """
+    assemble_pressure_residual_matrices_atomix!(RP, vx, vy, vz, el2n_v, el2nP,
+                                                geo_v, nels, element_v, element_P,
+                                                backend, workgroup)
+
+Assemble the purely viscous 3-D pressure residual `RP = -∫ Nᵢ (∇·v) dΩ` on a
+`MixedMesh` (T10+bubble velocity / P1-disc tetrahedron pressure), reusing
+[`compute_velocity_divergence`](@ref). Matches the raw-array Hex27 3-D
+solver's pressure residual: no thermal or bulk-viscosity terms (contrast with
+the 2-D [`integrate_PH_pressure_residual`](@ref), which this omits), and the
+divergence and quadrature weight both come from the velocity element's own
+geometry (`geo_v`), not a separate pressure geometry. `RP` is indexed over
+pressure DoFs; since P1-disc pressure DoFs are element-exclusive, the scatter
+needs no atomics.
+"""
+function assemble_pressure_residual_matrices_atomix!(
+    RP,
+    vx, vy, vz,
+    el2n_v, el2nP,
+    geo_v,
+    nels,
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+    backend, workgroup,
+) where {TV <: AbstractElement{3, NV}, TP <: AbstractElement{3, NP}} where {NV, NP}
+    NqP = shape_function_values(element_P, element_v.integration_points)
+
+    fill!(RP, 0)
+    pressure_residual_mixedmesh_3d_kernel!(backend, workgroup)(
+        RP, vx, vy, vz, el2n_v, el2nP, geo_v, NqP, Val(NV), Val(NP);
+        ndrange = nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function pressure_residual_mixedmesh_3d_kernel!(
+    RP, @Const(vx), @Const(vy), @Const(vz),
+    @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(NqP),
+    ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_v_el = element_geometry(geo_v, iel)
+    velocity = (
+        _gather_local(vx, local_nodes_v, Val(NV)),
+        _gather_local(vy, local_nodes_v, Val(NV)),
+        _gather_local(vz, local_nodes_v, Val(NV)),
+    )
+    Re = zero(SVector{NP, eltype(vx)})
+    for q in eachindex(geo_v_el)
+        ∂N∂x, dΩ = geo_v_el[q]
+        Re -= NqP[q] * (compute_velocity_divergence(velocity, ∂N∂x) * dΩ)
+    end
+    _add_local!(RP, local_nodes_P, Re, Val(false))
+end
+
+"""
     assemble_stokes_pressure_residual_3d!(RP, v, mesh; workgroup=256)
 
 Assemble `-∇·v` against the four cell-local modes `(1, ξ, η, ζ)`.

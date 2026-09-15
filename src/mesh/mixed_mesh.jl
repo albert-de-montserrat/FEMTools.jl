@@ -95,6 +95,12 @@ function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::A
     return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
+# Free-slip in 3-D is expressed with axis-aligned fixed-node sets rather than a
+# per-node normal/tangential rotation, so no solver path reads this. Kept as an
+# explicit zero-vector stub — matching `normals`' documented meaning for an
+# interior node — rather than real face-normal averaging that nothing needs.
+_compute_node_normals(coords::AbstractVector{<:SVector{3, FP}}, ::AbstractMatrix{<:Integer}) where FP =
+    fill(zero(SVector{3, FP}), length(coords))
 
 function MixedMesh(
     element::ReferenceElement,
@@ -243,6 +249,50 @@ function MixedMeshCache(
     return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end
 
+"""
+    MixedMeshCache(backend, workgroup, mesh::MixedMesh{3}, element_v, element_P)
+
+Precompute geometry for both fields of a three-dimensional mixed mesh at the
+velocity integration points, mirroring the 2-D method above with a third
+reference coordinate and `SMatrix{·,3,·}` geometry blocks.
+"""
+function MixedMeshCache(
+    backend,
+    workgroup,
+    mesh::MixedMesh{3},
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+) where {NV, NP, FP, TV <: AbstractElement{3, NV, FP}, TP <: AbstractElement{3, NP, FP}}
+    ip_v = element_v.integration_points
+    NQ_v = length(ip_v.ω)
+
+    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q], ip_v.ζ[q]), NQ_v)
+    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
+    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
+
+    GeoV = Tuple{SMatrix{NV, 3, FP, 3NV}, FP}
+    GeoP = Tuple{SMatrix{NP, 3, FP, 3NP}, FP}
+    geo_v = KA.allocate(backend, GeoV, NQ_v, mesh.nels)
+    geo_P = KA.allocate(backend, GeoP, NQ_v, mesh.nels)
+
+    TDev   = TA(backend)
+    coords = TDev(mesh.coords)
+    el2n   = TDev(mesh.el2n)
+    el2nP  = TDev(mesh.el2nP)
+
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo_v, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
+        ndrange = mesh.nels,
+    )
+    precompute_geometry_kernel!(backend, workgroup)(
+        geo_P, coords, el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP);
+        ndrange = mesh.nels,
+    )
+    KA.synchronize(backend)
+
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+end
+
 # ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------
@@ -250,29 +300,33 @@ end
 """
     generate_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
-Build the linear triangle topology and element-to-DoF map for discontinuous
+Build the linear simplex topology and element-to-DoF map for discontinuous
 linear pressure elements.
 
-`el2n` may be either T3 or T6 triangle connectivity. The returned `p_el2n`
-uses rows 1:3, i.e. the corner nodes of each triangle. The returned
-`p_el2dof` gives each element its own three pressure DoFs:
-`p_el2dof[:, iel] == 3(iel - 1) .+ (1:3)`.
+`el2n` may be T3/T6/T7 triangle connectivity or T10/T11 tetrahedron
+connectivity — the corner count (3 or 4) follows from `coords`'s spatial
+dimension `nDim`. The returned `p_el2n` uses rows `1:(nDim+1)`, i.e. the
+corner nodes of each simplex. The returned `p_el2dof` gives each element its
+own `nDim+1` pressure DoFs: `p_el2dof[:, iel] == (nDim+1)(iel - 1) .+ (1:(nDim+1))`.
 
 Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates
 corner coordinates per element so a discontinuous nodal pressure field can be
 plotted or initialized directly on pressure DoFs.
 """
-function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
-    size(el2n, 1) >= 3 || throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+function generate_discontinuous_linear_mesh(
+        coords::AbstractVector{<:SVector{nDim}}, el2n::AbstractMatrix{<:Integer},
+    ) where {nDim}
+    NP = nDim + 1
+    size(el2n, 1) >= NP || throw(ArgumentError("simplex connectivity needs at least $NP local (corner) nodes"))
 
     nels      = size(el2n, 2)
-    p_el2n    = Matrix{Int32}(el2n[1:3, :])
-    p_el2dof  = Matrix{Int32}(undef, 3, nels)
-    p_dof_coords = Vector{eltype(coords)}(undef, 3 * nels)
+    p_el2n    = Matrix{Int32}(el2n[1:NP, :])
+    p_el2dof  = Matrix{Int32}(undef, NP, nels)
+    p_dof_coords = Vector{eltype(coords)}(undef, NP * nels)
 
     for iel in 1:nels
-        base = 3 * (iel - 1)
-        for a in 1:3
+        base = NP * (iel - 1)
+        for a in 1:NP
             dof = base + a
             p_el2dof[a, iel] = Int32(dof)
             p_dof_coords[dof] = coords[p_el2n[a, iel]]

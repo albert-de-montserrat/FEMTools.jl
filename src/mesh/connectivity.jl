@@ -263,6 +263,72 @@ function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels:
 end
 
 """
+    generate_element2node(element::ReferenceElement{<:QuadraticElement{3, 11}}, nels)
+
+Build element-to-node connectivity for a structured quadratic tetrahedral
+(T10 + centroid bubble) mesh.
+
+Each hexahedral cell of the `(nx, ny, nz)` grid splits into six tetrahedra
+sharing the cell's `(0,0,0)`–`(1,1,1)` diagonal (the uniform Kuhn/Freudenthal
+triangulation — unlike the 2-D triangle split, this needs no per-cell diagonal
+alternation, since every cell shares the same diagonal direction and the
+triangles two neighbors draw on a shared face always agree). Each tet's four
+corners are listed so the element has positive Jacobian determinant, matching
+`LinearElement{3,4}`'s reference-node convention.
+
+Nodes 1–4 are the tetrahedron corners and 5–10 the edge midpoints, ordered
+`(1,2),(2,3),(1,3),(1,4),(2,4),(3,4)` per `QuadraticElement{3,11}`'s reference
+ordering. Every Kuhn-tet edge connects two grid corners that differ by 0 or 1
+along each axis, so its midpoint always lands on the same refined
+`(2nx+1)×(2ny+1)×(2nz+1)` grid `QuadraticElement{3,27}` uses — this is what
+makes a midpoint shared between two tets (whether across a hex-cell face or
+between tets sharing the cell's internal diagonal) resolve to the same node
+automatically. Node 11 is the tetrahedron centroid, unique per element and
+appended after all grid nodes — see `generate_coordinates`.
+"""
+function generate_element2node(::ReferenceElement{QuadraticElement{3, 11, T}}, nels::NTuple{3, <:Integer}) where T
+    nx, ny, nz = nels
+    stride_y = 2nx + 1
+    stride_z = (2nx + 1) * (2ny + 1)
+    n_grid   = stride_z * (2nz + 1)
+    el2n     = zeros(Int32, 11, 6 * nx * ny * nz)
+
+    node(ix, iy, iz) = iz * stride_z + iy * stride_y + ix + 1
+
+    # Corner offsets in refined-grid units (0 or 2) relative to the cell's own
+    # (0,0,0) corner. Each row lists one tet's four corners, chosen so the
+    # ordering is positively oriented (see the docstring above).
+    tets = (
+        ((0, 0, 0), (2, 0, 0), (2, 2, 0), (2, 2, 2)),
+        ((0, 0, 0), (2, 0, 2), (2, 0, 0), (2, 2, 2)),
+        ((0, 0, 0), (2, 2, 0), (0, 2, 0), (2, 2, 2)),
+        ((0, 0, 0), (0, 2, 0), (0, 2, 2), (2, 2, 2)),
+        ((0, 0, 0), (0, 0, 2), (2, 0, 2), (2, 2, 2)),
+        ((0, 0, 0), (0, 2, 2), (0, 0, 2), (2, 2, 2)),
+    )
+    edges = ((1, 2), (2, 3), (1, 3), (1, 4), (2, 4), (3, 4))
+
+    iel = 1
+    for ez in 0:(nz - 1), ey in 0:(ny - 1), ex in 0:(nx - 1)
+        base = (2ex, 2ey, 2ez)
+        for tet in tets
+            corners = ntuple(k -> base .+ tet[k], Val(4))
+            corner_nodes = ntuple(k -> node(corners[k]...), Val(4))
+            mid_nodes = ntuple(Val(6)) do k
+                a, b = edges[k]
+                mid = (corners[a] .+ corners[b]) .÷ 2
+                node(mid...)
+            end
+            centroid_node = Int32(n_grid + iel)
+            el2n[:, iel] .= Int32[corner_nodes..., mid_nodes..., centroid_node]
+            iel += 1
+        end
+    end
+
+    return el2n
+end
+
+"""
     generate_element2node(element::ReferenceElement{<:QuadraticElement{3, 27}}, nels)
 
 Build element-to-node connectivity for a structured quadratic hexahedral mesh.

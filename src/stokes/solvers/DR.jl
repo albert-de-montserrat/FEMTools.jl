@@ -614,6 +614,107 @@ function update_stokes_current_stress!(
 end
 
 """
+    solve_stokes_dyrel!(dr::StokesDR{<:Any,3}, mesh_stokes::MixedMesh, geo_v,
+                        element_v, element_P, fixed_nodes; kwargs...)
+
+Solve the purely viscous 3-D Stokes system on a `MixedMesh` (T10+bubble
+velocity / P1-disc tetrahedron pressure), sharing `StokesDR`'s state and
+public solver entry point with the 2-D method. Velocity and pressure are
+updated in place from `dr.v`/`dr.P`.
+
+Unlike the 2-D `MixedMesh` method, this uses the simpler damped-Jacobi
+velocity update and explicit Arrow-Hurwicz pressure update the raw-array
+Hex27 3-D solver already validates for this same purely viscous, symmetric
+operator — not the Chebyshev-accelerated Powell-Hestenes/DYREL scheme 2-D's
+viscoelastoplastic physics needs. Every iteration recomputes the diagonal
+preconditioner and lumped pressure mass fresh via
+[`stokes_preconditioner_mixedmesh_3d`](@ref) rather than reading `dr.PC_v`/
+`dr.M_P`, matching the raw-array 3-D solver's own convention; `dr.T`,
+`dr.Tref`, and `dr.K` stay at their inert defaults (`T=0`, `Tref=0`, `K=Inf`)
+and `dr.G` should be `Inf` per phase, since this method carries no thermal or
+compressibility coupling — construct `dr` accordingly.
+
+`fixed_nodes` is an `NTuple{3}` of constrained velocity-node index arrays
+(one per component); `bc_values` prescribes the constrained velocities
+(`nothing` holds them at zero). `ncheck` controls how often the residual is
+checked, `ϵ_tol` the absolute combined tolerance, `total_iterMax` the
+iteration budget (`iterMax` supplies its default), and `velocity_step`/`γP`
+scale the velocity and pressure updates. `load`, when given, is an
+`NTuple{3}` momentum right-hand side (used by the adjoint method). Returns a
+`NamedTuple` with `iter`, `err`, `err_v`, `err_P`, `converged`,
+`reached_total_iter`.
+"""
+function solve_stokes_dyrel!(
+    dr::StokesDR{<:Any, 3}, mesh_stokes::MixedMesh, geo_v,
+    element_v::ReferenceElement, element_P::ReferenceElement,
+    fixed_nodes::NTuple{3};
+    ncheck = 100, ϵ_tol = 1e-5, iterMax = 3000, total_iterMax = iterMax,
+    velocity_step = 0.6, γP = 0.2, bc_values = nothing, load = nothing,
+    workgroup = 256, verbose = true,
+)
+    backend = KA.get_backend(dr.v.x)
+    diagonal, pressure_mass = stokes_preconditioner_mixedmesh_3d(
+        mesh_stokes, geo_v, element_v, element_P, dr.phases_v, dr.η; workgroup,
+    )
+    velocity   = Tuple(dr.v)
+    residual_v = Tuple(dr.Rv)
+
+    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
+    velocity_bc = if bc_values === nothing
+        zero_bc
+    else
+        ntuple(3) do i
+            length(bc_values[i]) == length(fixed_nodes[i]) ||
+                throw(DimensionMismatch("bc_values[$i] has $(length(bc_values[i])) entries but fixed_nodes[$i] has $(length(fixed_nodes[i]))"))
+            bc_values[i]
+        end
+    end
+    # The first residual must see the prescribed boundary velocities too.
+    for component in 1:3
+        apply_dirichlet!(velocity[component], fixed_nodes[component], velocity_bc[component], backend, workgroup)
+    end
+
+    err_v = err_P = err = Inf
+    iter = 0
+    for iteration in 1:total_iterMax
+        iter = iteration
+        assemble_pressure_residual_matrices_atomix!(
+            dr.RP, velocity..., mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v,
+            mesh_stokes.nels, element_v, element_P, backend, workgroup,
+        )
+        @. dr.P += γP * dr.RP / pressure_mass
+        remove_pressure_mean!(dr.P, pressure_mass)
+        assemble_momentum_residual_matrices_atomix!(
+            residual_v..., velocity..., dr.P, dr.T,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
+            element_v, element_P, dr.phases_v,
+            dr.η, dr.G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, one(eltype(dr.P)),
+            backend, workgroup,
+        )
+        if load !== nothing
+            for component in 1:3
+                @. residual_v[component] -= load[component]
+            end
+        end
+        for component in 1:3
+            apply_dirichlet!(residual_v[component], fixed_nodes[component], zero_bc[component], backend, workgroup)
+            @. velocity[component] -= velocity_step * residual_v[component] / diagonal[component]
+            apply_dirichlet!(velocity[component], fixed_nodes[component], velocity_bc[component], backend, workgroup)
+        end
+        (iszero(iter % ncheck) || iter == total_iterMax) || continue
+        err_v = maximum(norm, residual_v)
+        err_P = norm(dr.RP)
+        err = max(err_v, err_P)
+        isfinite(err) || error("non-finite residual in 3D MixedMesh DYREL solve")
+        verbose && @printf("iter = %06d err = %.3e - norm[Rv=%.3e, Rp=%.3e]\n",
+            iter, err, err_v, err_P)
+        err < ϵ_tol && break
+    end
+    return (; itPH = 1, iter, iterations = iter, err, err_v, err_P, err_p = err_P,
+        converged = err < ϵ_tol, reached_total_iter = iter >= total_iterMax && err >= ϵ_tol)
+end
+
+"""
     solve_stokes_dyrel!(velocity, pressure, mesh, cell_phase, η, ρ, g,
                         fixed_nodes; kwargs...)
 

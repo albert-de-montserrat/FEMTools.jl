@@ -432,6 +432,84 @@ _stress_output(::Nothing, _) = nothing
     IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
 
 """
+    assemble_momentum_residual_matrices_atomix!(Rv_x, Rv_y, Rv_z, vx, vy, vz, P, T,
+                                                el2n_v, el2nP, geo_v, nels,
+                                                element_v, element_P, phases,
+                                                η, G, α, ρ0, K, g, Tref, Δt,
+                                                backend, workgroup)
+
+Assemble the purely viscous 3-D Stokes momentum residuals `Rv_x`, `Rv_y`,
+`Rv_z` on a `MixedMesh` (T10+bubble velocity / P1-disc tetrahedron pressure)
+using Atomix-backed atomic scatter.
+
+Reuses the same purely-viscous element operator
+[`integrate_momentum_residual`](@ref) (`v::NTuple{3}` method) the raw-array
+Hex27 3-D solver assembles, with no Powell-Hestenes pressure augmentation
+(`Pnum` is not part of this discretization's pressure update — see
+[`solve_stokes_dyrel!`](@ref)'s 3-D `MixedMesh` method). `phases` is a
+velocity-node integer array selecting the material phase, matching the
+2-D convention.
+"""
+function assemble_momentum_residual_matrices_atomix!(
+    Rv_x, Rv_y, Rv_z,
+    vx, vy, vz,
+    P, T,
+    el2n_v, el2nP,
+    geo_v,
+    nels,
+    element_v::ReferenceElement{TV},
+    element_P::ReferenceElement{TP},
+    phases,
+    η, G, α, ρ0, K,
+    g, Tref, Δt,
+    backend, workgroup,
+) where {TV <: AbstractElement{3, NV}, TP <: AbstractElement{3, NP}} where {NV, NP}
+    Nq  = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+
+    fill!(Rv_x, 0)
+    fill!(Rv_y, 0)
+    fill!(Rv_z, 0)
+    momentum_residual_mixedmesh_3d_kernel!(backend, workgroup)(
+        Rv_x, Rv_y, Rv_z, vx, vy, vz, P, T,
+        el2n_v, el2nP, geo_v, phases, η, G, α, ρ0, K, g, Tref, Δt,
+        Nq, NqP, Val(NV), Val(NP);
+        ndrange = nels,
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function momentum_residual_mixedmesh_3d_kernel!(
+    Rv_x, Rv_y, Rv_z,
+    @Const(vx), @Const(vy), @Const(vz), @Const(P), @Const(T),
+    @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(phases),
+    @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K),
+    @Const(g), @Const(Tref), @Const(Δt),
+    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_v_el  = element_geometry(geo_v, iel)
+    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
+    vzloc     = _gather_local(vz, local_nodes_v, Val(NV))
+    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
+    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
+    phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
+    Re_x, Re_y, Re_z = integrate_momentum_residual(
+        (vxloc, vyloc, vzloc), P_loc, nothing, T_loc,
+        geo_v_el, phase_loc, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP,
+    )
+    for (i, inod) in enumerate(local_nodes_v)
+        Atomix.@atomic :monotonic Rv_x[inod] += Re_x[i]
+        Atomix.@atomic :monotonic Rv_y[inod] += Re_y[i]
+        Atomix.@atomic :monotonic Rv_z[inod] += Re_z[i]
+    end
+end
+
+"""
     assemble_stokes_momentum_residual_3d!(R, v, P, mesh, cell_phase, η, ρ, g;
                                           workgroup=256)
 
@@ -513,6 +591,62 @@ end
             pressure_mass[mode, cell] += modes[q][mode]^2 * dΩ
         end
     end
+end
+
+"""
+    stokes_preconditioner_mixedmesh_3d(mesh_stokes::MixedMesh, geo_v, element_v,
+                                       element_P, phases, η; workgroup=256)
+
+Diagonal Jacobi preconditioner and lumped pressure mass for the purely viscous
+`MixedMesh` 3-D solver, mirroring [`stokes_preconditioner_3d`](@ref)'s
+closed-form (no `ForwardDiff`) estimate — same-component terms only, no
+cross-velocity-component coupling — which the raw-array 3-D solver already
+validates as sufficient for this symmetric, purely viscous operator. `phases`
+is a velocity-node integer array (the `MixedMesh` convention), interpolated to
+each quadrature point rather than read as one phase per element.
+"""
+function stokes_preconditioner_mixedmesh_3d(
+    mesh_stokes::MixedMesh, geo_v,
+    element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
+    phases, η; workgroup = 256,
+) where {TV <: AbstractElement{3, NV}, TP <: AbstractElement{3, NP}} where {NV, NP}
+    backend = KA.get_backend(geo_v)
+    FP = eltype(eltype(mesh_stokes.coords))
+    diagonal = ntuple(_ -> similar(mesh_stokes.coords, FP, mesh_stokes.nnodes), 3)
+    pressure_mass = similar(diagonal[1], mesh_stokes.nnodesP)
+    foreach(x -> fill!(x, 0), diagonal)
+    fill!(pressure_mass, 0)
+    Nq  = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    stokes_preconditioner_mixedmesh_3d_kernel!(backend, workgroup)(
+        diagonal, pressure_mass, mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v,
+        phases, η, Nq, NqP, Val(NV), Val(NP);
+        ndrange = mesh_stokes.nels,
+    )
+    KA.synchronize(backend)
+    return diagonal, pressure_mass
+end
+
+@kernel function stokes_preconditioner_mixedmesh_3d_kernel!(
+    diagonal, pressure_mass, @Const(el2n_v), @Const(el2nP), @Const(geo_v),
+    @Const(phases), @Const(η), @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
+    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
+    geo_v_el  = element_geometry(geo_v, iel)
+    phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
+    pmass = zero(SVector{NP, eltype(pressure_mass)})
+    for q in eachindex(geo_v_el)
+        ∂N∂x, dΩ = geo_v_el[q]
+        ηq = interp2ip_phase(Nq[q], η, phase_loc)
+        for a in 1:NV, component in 1:3
+            value = ηq * (dot(∂N∂x[a, :], ∂N∂x[a, :]) + ∂N∂x[a, component]^2 / 3) * dΩ
+            Atomix.@atomic :monotonic diagonal[component][local_nodes_v[a]] += value
+        end
+        pmass = pmass + NqP[q] .^ 2 .* dΩ
+    end
+    _add_local!(pressure_mass, local_nodes_P, pmass, Val(false))
 end
 
 _gather_or_scalar(x::Number, _, ::Val) = x
