@@ -49,11 +49,14 @@ _zero_vector_field(::Val{2}, new_array) = VectorField2D(new_array(), new_array()
 _zero_vector_field(::Val{3}, new_array) =
     VectorField3D(new_array(), new_array(), new_array())
 
-_zero_symmetric_tensor(::Val{2}, new_array) =
-    SymmetricTensor2D(new_array(), new_array(), new_array(), new_array())
-_zero_symmetric_tensor(::Val{3}, new_array) = SymmetricTensor3D(
+# The solver never reads the invariant slot, so it gets a zero-length array of
+# the component type: stress history is element-sized and a full slot would add
+# one unused array per tensor.
+_zero_symmetric_tensor(::Val{2}, new_array, new_empty) =
+    SymmetricTensor2D(new_array(), new_array(), new_array(), new_empty())
+_zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
     new_array(), new_array(), new_array(), new_array(),
-    new_array(), new_array(), new_array(),
+    new_array(), new_array(), new_empty(),
 )
 
 """
@@ -131,8 +134,8 @@ temperature for the linearised EOS, default 0).
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Individual components are reached through the field containers, e.g. `dr.v.x`
-and `dr.τ.xy`; the invariant slots `dr.τ.II` and `dr.τ_old.II` are allocated but
-left to the caller.
+and `dr.τ.xy`; the invariant slots `dr.τ.II` and `dr.τ_old.II` are zero-length
+arrays, so they add no per-element storage and are not available as scratch.
 
 Stress components default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
@@ -223,10 +226,11 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
         newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
         newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
+        newτ0() = KernelAbstractions.zeros(backend, FP,  map(zero, stress_dims)...)
         newiv() = KernelAbstractions.ones(backend,  Int32, v_dims...)
         newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
-        newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ)
+        newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
         new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
             typeof(newiv()), typeof(newP()), typeof(newip()), FP,

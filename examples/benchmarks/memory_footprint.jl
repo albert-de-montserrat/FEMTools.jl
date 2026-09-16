@@ -50,11 +50,13 @@ summed without special-casing.
 device_bytes(A::AbstractArray) = sizeof(eltype(A)) * length(A)
 device_bytes(::Nothing) = 0
 device_bytes(x::Union{Tuple, NamedTuple}) = sum(device_bytes, x; init = 0)
+device_bytes(x::Union{FEMTools.AbstractVectorField, FEMTools.AbstractSymmetricTensor}) =
+    sum(f -> device_bytes(getfield(x, f)), fieldnames(typeof(x)); init = 0)
 
 # Deviatoric stress history and per-node phase tags are tracked as their own
 # components: both are candidates for removal or narrowing, so they must not be
 # hidden inside the nodal total.
-const STRESS_FIELDS = (:τxx, :τyy, :τxy, :τxx_old, :τyy_old, :τxy_old)
+const STRESS_FIELDS = (:τ, :τ_old)
 const PHASE_FIELDS = (:phases_v, :phases_P)
 
 """
@@ -72,7 +74,7 @@ function stokes_dr_bytes(dr)
         # Scalar solver parameters and the per-phase material tuples are not
         # bulk state; only the field arrays scale with the mesh.
         v = getfield(dr, f)
-        v isa AbstractArray && (nodal += device_bytes(v))
+        v isa Union{AbstractArray, FEMTools.AbstractVectorField} && (nodal += device_bytes(v))
     end
     return (; stress, phase, nodal)
 end

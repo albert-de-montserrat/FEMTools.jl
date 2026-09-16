@@ -183,6 +183,11 @@ end
         @test size(dr.τ_old.xy) == (3, 4)
         @test all(iszero, Array(dr.τ.xx))
         @test all(iszero, Array(dr.τ_old.xx))
+        @test size(dr.τ.II) == size(dr.τ_old.II) == (0, 0)
+
+        dr3 = StokesDR(CPU(), 10, 12, η, ηb, α; g = (FP(0), FP(0), FP(0)), stress_size = (3, 4))
+        @test size(dr3.τ.xy) == (3, 4)
+        @test size(dr3.τ.II) == size(dr3.τ_old.II) == (0, 0)
     end
 end
 

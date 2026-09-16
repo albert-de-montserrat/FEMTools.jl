@@ -861,5 +861,37 @@ The solver validates velocity/pressure axes and boundary-node counts before
 using a workspace. Residual and pullback scratch is overwritten by the residual
 paths; the DYREL rates carry momentum between iterations, so the solver zeroes
 them at the start of every solve. A workspace can therefore survive across
-design iterations: two cold solves through the same workspace are bitwise
-identical (tested).
+design iterations: two cold solves through the same workspace take the same
+iteration count and agree to roundoff (tested with `rtol = 1e-12`). They are
+bitwise identical only under one thread; with more, threaded assembly sums
+element contributions in scheduling order and the last digits move.
+
+## 7. Re-measurement after the container and mesh refactors
+
+Two refactors landed after the baseline: stress and velocity state moved into
+`VectorField2D`/`SymmetricTensor2D` containers, and the precomputed geometry
+moved into `MixedMesh.geometry`. The harness now counts the containers
+(`STRESS_FIELDS = (:τ, :τ_old)`) and reads geometry from the mesh. Measured
+against the recorded baseline, Julia 1.12.7, six threads, CPU:
+
+| | Stress | Total | B/element |
+|:---|---:|---:|---:|
+| baseline | 2.625 MiB | 10.658 MiB | 1 364.3 |
+| containers, full `II` slots | 3.500 | 11.533 | 1 476.3 |
+| `II` slots zero-length | 2.625 | 10.658 | **1 364.3** |
+
+`SymmetricTensor2D` carries an invariant slot `II` beside the three components,
+and `StokesDR` allocated it at full stress size in both `τ` and `τ_old`: two
+arrays, 112 B/element in 2-D, that no solver path reads. `StokesDR` now
+allocates `II` as a zero-length array of the component type, so the container
+type is unchanged. In 3-D the saving is one of seven arrays per
+tensor.
+
+Everything else is unchanged: geometry, nodal state, phase tags, topology,
+normals, and host allocation per iteration all measure 1.00× the baseline, so
+moving the cache into `MixedMesh` cost nothing.
+
+The 3-D geometry probe also settles how far F1 moved the 3-D limit. Hex27
+geometry is 2 160 B/element against the 17 712 of §2, so a 64³ Hex27 mesh holds
+0.53 GiB of geometry rather than 4.32 GiB.
+

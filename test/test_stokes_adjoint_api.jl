@@ -117,8 +117,9 @@ end
     @test (λvx, λvy, λP) == λ_before
 
     # A reused workspace carries no state between solves: two cold solves through
-    # the same scratch follow identical iterations. It rejects a different
-    # boundary layout.
+    # the same scratch follow identical iterations. The multipliers agree to
+    # roundoff only, since threaded assembly sums contributions in scheduling
+    # order. It rejects a different boundary layout.
     workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)
     cold_solve() = begin
         λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
@@ -135,7 +136,7 @@ end
     @test first_stats.converged
     @test first_stats.iter > 0
     @test second_stats.iter == first_stats.iter
-    @test second_λ == first_λ
+    @test all(map((a, b) -> isapprox(a, b; rtol = 1.0e-12), second_λ, first_λ))
     short_workspace = StokesAdjointWorkspace(dr, vx_nodes[2:end], vy_nodes)
     @test_throws "vx boundary values" solve_stokes_adjoint_dyrel!(
         dr, mesh, geo_v, geo_P, element_v, element_P,
