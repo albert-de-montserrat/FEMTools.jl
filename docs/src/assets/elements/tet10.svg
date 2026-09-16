@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 290" font-family="Helvetica, Arial, sans-serif">
+  <rect x="1" y="1" width="258" height="288" rx="10" fill="#ffffff" stroke="#d0d5dd" stroke-width="1.5"/>
+
+  <!-- edges: (1,2) (2,3) (1,3) (1,4) (2,4) (3,4) -->
+  <line x1="45" y1="200" x2="195" y2="200" stroke="#1f2937" stroke-width="2"/>
+  <line x1="195" y1="200" x2="120" y2="252.5" stroke="#1f2937" stroke-width="2"/>
+  <line x1="45" y1="200" x2="120" y2="252.5" stroke="#1f2937" stroke-width="2"/>
+  <line x1="45" y1="200" x2="45" y2="50" stroke="#1f2937" stroke-width="2"/>
+  <line x1="195" y1="200" x2="45" y2="50" stroke="#1f2937" stroke-width="2"/>
+  <line x1="120" y1="252.5" x2="45" y2="50" stroke="#1f2937" stroke-width="2"/>
+
+  <!-- edge-midpoint nodes: 5=12 6=23 7=13 8=14 9=24 10=34 -->
+  <circle cx="120" cy="200" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="157.5" cy="226.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="82.5" cy="226.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="45" cy="125" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="120" cy="125" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="82.5" cy="151.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+
+  <!-- corner nodes -->
+  <circle cx="45" cy="200" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="195" cy="200" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="120" cy="252.5" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="45" cy="50" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+
+  <!-- corner labels -->
+  <text x="28.5" y="207" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">1</text>
+  <text x="212" y="205" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">2</text>
+  <text x="124" y="270" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">3</text>
+  <text x="37.5" y="30" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">4</text>
+
+  <!-- edge-midpoint labels -->
+  <text x="130" y="217" font-size="11" fill="#111827" text-anchor="middle">5</text>
+  <text x="169" y="241" font-size="11" fill="#111827" text-anchor="middle">6</text>
+  <text x="77" y="245" font-size="11" fill="#111827" text-anchor="middle">7</text>
+  <text x="33" y="118" font-size="11" fill="#111827" text-anchor="middle">8</text>
+  <text x="130" y="106" font-size="11" fill="#111827" text-anchor="middle">9</text>
+  <text x="68" y="143" font-size="11" fill="#111827" text-anchor="middle">10</text>
+</svg>

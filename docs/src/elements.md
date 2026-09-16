@@ -1,7 +1,9 @@
 # Elements
 
 Element types are lightweight tags parameterized by reference dimension and
-number of vertices or nodes.
+number of vertices or nodes. See [Supported Elements](@ref) for a visual
+catalog of every element implemented below, with sketches of their local
+node numbering.
 
 ## Element Tags
 

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 320" font-family="Helvetica, Arial, sans-serif">
+  <rect x="1" y="1" width="298" height="318" rx="10" fill="#ffffff" stroke="#d0d5dd" stroke-width="1.5"/>
+
+  <!-- hidden back-face edges: (3,4) (7,8) (4,8) (3,7) -->
+  <line x1="252.5" y1="271.25" x2="102.5" y2="271.25" stroke="#1f2937" stroke-width="2" stroke-dasharray="6,4"/>
+  <line x1="252.5" y1="121.25" x2="102.5" y2="121.25" stroke="#1f2937" stroke-width="2" stroke-dasharray="6,4"/>
+  <line x1="102.5" y1="271.25" x2="102.5" y2="121.25" stroke="#1f2937" stroke-width="2" stroke-dasharray="6,4"/>
+  <line x1="252.5" y1="271.25" x2="252.5" y2="121.25" stroke="#1f2937" stroke-width="2" stroke-dasharray="6,4"/>
+
+  <!-- visible edges: bottom (1,2) top (5,6) verticals (1,5) (2,6) -->
+  <line x1="27.5" y1="218.75" x2="177.5" y2="218.75" stroke="#1f2937" stroke-width="2"/>
+  <line x1="27.5" y1="68.75" x2="177.5" y2="68.75" stroke="#1f2937" stroke-width="2"/>
+  <line x1="27.5" y1="218.75" x2="27.5" y2="68.75" stroke="#1f2937" stroke-width="2"/>
+  <line x1="177.5" y1="218.75" x2="177.5" y2="68.75" stroke="#1f2937" stroke-width="2"/>
+
+  <!-- visible edges: (2,3) (1,4) (6,7) (5,8) -->
+  <line x1="177.5" y1="218.75" x2="252.5" y2="271.25" stroke="#1f2937" stroke-width="2"/>
+  <line x1="27.5" y1="218.75" x2="102.5" y2="271.25" stroke="#1f2937" stroke-width="2"/>
+  <line x1="177.5" y1="68.75" x2="252.5" y2="121.25" stroke="#1f2937" stroke-width="2"/>
+  <line x1="27.5" y1="68.75" x2="102.5" y2="121.25" stroke="#1f2937" stroke-width="2"/>
+
+  <!-- face-center nodes: 21 bottom, 22 front, 23 right, 24 back, 25 left, 26 top -->
+  <circle cx="140" cy="245" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+  <circle cx="102.5" cy="143.75" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+  <circle cx="215" cy="170" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+  <circle cx="177.5" cy="196.25" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+  <circle cx="65" cy="170" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+  <circle cx="140" cy="95" r="6" fill="#9b59b6" stroke="#5e2d73" stroke-width="1.5"/>
+
+  <!-- edge-midpoint nodes: 9..20 -->
+  <circle cx="102.5" cy="218.75" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="215" cy="245" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="177.5" cy="271.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="65" cy="245" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="102.5" cy="68.75" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="215" cy="95" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="177.5" cy="121.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="65" cy="95" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="27.5" cy="143.75" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="177.5" cy="143.75" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="252.5" cy="196.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="102.5" cy="196.25" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+
+  <!-- body-center node: 27 -->
+  <circle cx="140" cy="170" r="6.5" fill="#27ae60" stroke="#155f34" stroke-width="1.5"/>
+
+  <!-- corner nodes -->
+  <circle cx="27.5" cy="218.75" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="177.5" cy="218.75" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="252.5" cy="271.25" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="102.5" cy="271.25" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="27.5" cy="68.75" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="177.5" cy="68.75" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="252.5" cy="121.25" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="102.5" cy="121.25" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+
+  <!-- corner labels -->
+  <text x="12.8" y="225.1" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">1</text>
+  <text x="187.3" y="231.4" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">2</text>
+  <text x="264.4" y="282.0" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">3</text>
+  <text x="96.9" y="286.2" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">4</text>
+  <text x="15.6" y="58.1" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">5</text>
+  <text x="183.1" y="53.8" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">6</text>
+  <text x="267.2" y="114.9" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">7</text>
+  <text x="92.7" y="108.6" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">8</text>
+
+  <!-- body-center label -->
+  <text x="151" y="166" font-size="11" fill="#111827" text-anchor="middle">27</text>
+</svg>

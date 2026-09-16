@@ -15,7 +15,10 @@ makedocs(;
     checkdocs=:exports,
     pages=[
         "Home" => "index.md",
-        "Elements" => "elements.md",
+        "Elements" => [
+            "Supported Elements" => "elements_catalog.md",
+            "API" => "elements.md",
+        ],
         "Mesh" => "mesh.md",
         "Field Containers" => "field_containers.md",
         "Boundary Conditions" => "boundary_conditions.md",

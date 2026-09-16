@@ -558,6 +558,15 @@ end
     end
 end
 
+"""
+    stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup=256)
+
+Diagonal Jacobi preconditioner and cell-local pressure mass for the purely
+viscous Hex27/P1-disc 3-D solver. Uses a closed-form (no `ForwardDiff`)
+estimate — same-component terms only, no cross-velocity-component
+coupling — which is sufficient for this symmetric, purely viscous operator.
+`cell_phase` gives one phase index per element.
+"""
 function stokes_preconditioner_3d(mesh::Mesh, cell_phase, η; workgroup = 256)
     diagonal = ntuple(_ -> similar(mesh.coords, eltype(eltype(mesh.coords)), mesh.nnodes), 3)
     pressure_mass = similar(first(diagonal), 4, mesh.nels)

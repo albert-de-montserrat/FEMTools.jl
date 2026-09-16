@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" font-family="Helvetica, Arial, sans-serif">
+  <rect x="1" y="1" width="218" height="218" rx="10" fill="#ffffff" stroke="#d0d5dd" stroke-width="1.5"/>
+
+  <!-- element outline -->
+  <polygon points="40,180 180,180 40,40" fill="#eef2ff" stroke="#1f2937" stroke-width="2"/>
+
+  <!-- edge-midpoint nodes -->
+  <circle cx="110" cy="180" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="110" cy="110" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+  <circle cx="40" cy="110" r="6" fill="#f2994a" stroke="#a85b1d" stroke-width="1.5"/>
+
+  <!-- corner nodes -->
+  <circle cx="40" cy="180" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="180" cy="180" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+  <circle cx="40" cy="40" r="7" fill="#2f6fed" stroke="#173a8a" stroke-width="1.5"/>
+
+  <!-- labels -->
+  <text x="27" y="193" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">1</text>
+  <text x="196" y="188" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">2</text>
+  <text x="32" y="24" font-size="13" font-weight="600" fill="#111827" text-anchor="middle">3</text>
+  <text x="117" y="199" font-size="11" fill="#111827" text-anchor="middle">4</text>
+  <text x="126" y="103" font-size="11" fill="#111827" text-anchor="middle">5</text>
+  <text x="21" y="107" font-size="11" fill="#111827" text-anchor="middle">6</text>
+</svg>

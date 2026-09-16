@@ -83,7 +83,19 @@ end
     center = SVector(0.5, 0.5, 0.5)
     copyto!(dr.phases_v, Int[all(abs.(c - center) .≤ 0.2) ? 2 : 1 for c in coords])
     fill!(dr.phases_P, 1)
-    fixed_nodes = ntuple(_ -> mesh_v.Γnodes, 3)
+
+    # Free slip: each wall pins only the velocity component normal to it,
+    # matching the fixed-dof pattern `sparse_mixedmesh_stokes_reference` builds
+    # above (a node on an edge or corner appears once per wall it touches).
+    tol = 32eps(Float64)
+    fixed_nodes = ntuple(3) do component
+        Int32[
+            node for (node, c) in pairs(coords)
+            if (component == 1 && (abs(c[1]) ≤ tol || abs(c[1] - 1) ≤ tol)) ||
+               (component == 2 && (abs(c[2]) ≤ tol || abs(c[2] - 1) ≤ tol)) ||
+               (component == 3 && (abs(c[3]) ≤ tol || abs(c[3] - 1) ≤ tol))
+        ]
+    end
 
     stats = solve_stokes_dyrel!(
         dr, mesh_stokes, geo_v, element_v, element_P, fixed_nodes;
