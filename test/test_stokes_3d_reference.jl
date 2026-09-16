@@ -8,9 +8,10 @@ using SparseArrays
 
 Assemble the sinking-block Q2/P1-disc saddle-point system of a
 `run_sinking_block_3d` result directly, as an exact oracle for the matrix-free
-solver. Returns the system matrix `A`, its phase-2 viscosity derivative
-`dA_dη₂`, the gravity load `rhs`, and the `free` degrees of freedom — the
-wall-normal velocities are constrained, plus one pressure mode fixing the gauge.
+solver. Returns the system matrix `A`, its per-phase viscosity derivative
+`dA_dη` (one sparse matrix per phase), the gravity load `rhs`, and the `free`
+degrees of freedom — the wall-normal velocities are constrained, plus one
+pressure mode fixing the gauge.
 """
 function sparse_stokes_reference(forward)
     (; mesh, cell_phase, η, ρ, g) = forward
@@ -18,12 +19,15 @@ function sparse_stokes_reference(forward)
     Nq = shape_function_values(element, element.integration_points)
     ip = element.integration_points
     Pq = ntuple(q -> SVector(1.0, ip.ξ[q], ip.η[q], ip.ζ[q]), length(ip.ω))
+    nphases = length(η)
 
     nv, np = 3mesh.nnodes, 4mesh.nels
     vdof(node, component) = 3(node - 1) + component
     pdof(cell, mode) = nv + 4(cell - 1) + mode
     rows, cols, vals = Int[], Int[], Float64[]
-    ηrows, ηcols, ηvals = Int[], Int[], Float64[]
+    ηrows = ntuple(_ -> Int[], nphases)
+    ηcols = ntuple(_ -> Int[], nphases)
+    ηvals = ntuple(_ -> Float64[], nphases)
     rhs = zeros(nv + np)
 
     for cell in axes(mesh.el2n, 2)
@@ -40,8 +44,11 @@ function sparse_stokes_reference(forward)
                             (2 / 3) * grad[a, i] * grad[b, j]) * dΩ
                     kab = η[phase] * dkab
                     iszero(kab) || (push!(rows, ia); push!(cols, vdof(nodes[b], j)); push!(vals, kab))
-                    phase == 2 && !iszero(dkab) &&
-                        (push!(ηrows, ia); push!(ηcols, vdof(nodes[b], j)); push!(ηvals, dkab))
+                    iszero(dkab) || (
+                        push!(ηrows[phase], ia);
+                        push!(ηcols[phase], vdof(nodes[b], j));
+                        push!(ηvals[phase], dkab)
+                    )
                 end
                 for p in 1:4
                     coupling = -Pq[q][p] * grad[a, i] * dΩ
@@ -64,7 +71,7 @@ function sparse_stokes_reference(forward)
 
     return (;
         A = sparse(rows, cols, vals, nv + np, nv + np),
-        dA_dη₂ = sparse(ηrows, ηcols, ηvals, nv + np, nv + np),
+        dA_dη = ntuple(p -> sparse(ηrows[p], ηcols[p], ηvals[p], nv + np, nv + np), nphases),
         rhs, free,
     )
 end
@@ -72,19 +79,24 @@ end
 """
     density_load_derivative(forward)
 
-Derivative of the sparse gravity load with respect to the phase-2 density.
+Derivative of the sparse gravity load with respect to each phase's density,
+one entry per phase.
 """
 function density_load_derivative(forward)
-    (; mesh, cell_phase) = forward
-    d_rhs = zeros(3mesh.nnodes + 4mesh.nels)
+    (; mesh, cell_phase, η) = forward
+    nphases = length(η)
+    d_rhs = ntuple(_ -> zeros(3mesh.nnodes + 4mesh.nels), nphases)
     element = mesh.element
     Nq = shape_function_values(element, element.integration_points)
     g = SVector(forward.g)
-    for cell in findall(==(2), cell_phase), q in axes(mesh.geometry, 1)
-        _, dΩ = mesh.geometry[q, cell]
+    for cell in axes(mesh.el2n, 2)
+        phase = cell_phase[cell]
         nodes = @view mesh.el2n[:, cell]
-        for a in 1:27, i in 1:3
-            d_rhs[3(nodes[a] - 1) + i] += Nq[q][a] * g[i] * dΩ
+        for q in axes(mesh.geometry, 1)
+            _, dΩ = mesh.geometry[q, cell]
+            for a in 1:27, i in 1:3
+                d_rhs[phase][3(nodes[a] - 1) + i] += Nq[q][a] * g[i] * dΩ
+            end
         end
     end
     return d_rhs
@@ -95,7 +107,7 @@ end
         mesh_size = 0.25, nz = 4, half_width = 0.25, write_output = false,
         verbose = false,
     )
-    (; A, dA_dη₂, rhs, free) = sparse_stokes_reference(forward)
+    (; A, dA_dη, rhs, free) = sparse_stokes_reference(forward)
     solution = vcat(vec(stack(Tuple(forward.velocity); dims = 1)), vec(forward.pressure))
     residual = A * solution - rhs
     @test forward.solve_stats.converged
@@ -153,24 +165,30 @@ end
         iterative_velocity, iterative_adjoint, forward.mesh, forward.cell_phase,
         forward.η, forward.ρ, forward.g,
     )
-    @test gradients.density_gradient ≈ adjoint.density_gradient rtol = 2e-3
-    @test gradients.viscosity_gradient ≈ adjoint.viscosity_gradient rtol = 2e-3
+    nphases = length(forward.η)
+    for p in 1:nphases
+        @test gradients.density_gradient[p] ≈ adjoint.density_gradient[p] rtol = 2e-3
+        @test gradients.viscosity_gradient[p] ≈ adjoint.viscosity_gradient[p] rtol = 2e-3
+    end
 
-    # Centred finite differences on the sparse system: the absolute density step
-    # and the relative viscosity step both perturb only phase 2.
+    # Centred finite differences on the sparse system, one phase at a time: the
+    # absolute density step and the relative viscosity step each perturb only
+    # that phase.
     fd_step = 1e-5
     A_free = A[free, free]
-    d_rhs_dρ₂ = density_load_derivative(forward)
-    plus = A_free \ (rhs[free] + fd_step * d_rhs_dρ₂[free])
-    minus = A_free \ (rhs[free] - fd_step * d_rhs_dρ₂[free])
-    density_gradient_fd = dot(objective_load[free], plus - minus) / (2fd_step)
+    d_rhs_dρ = density_load_derivative(forward)
+    for p in 1:nphases
+        plus = A_free \ (rhs[free] + fd_step * d_rhs_dρ[p][free])
+        minus = A_free \ (rhs[free] - fd_step * d_rhs_dρ[p][free])
+        density_gradient_fd = dot(objective_load[free], plus - minus) / (2fd_step)
 
-    dA_free = dA_dη₂[free, free]
-    viscosity_step = fd_step * forward.η[2]
-    plus = (A_free + viscosity_step * dA_free) \ rhs[free]
-    minus = (A_free - viscosity_step * dA_free) \ rhs[free]
-    viscosity_gradient_fd = dot(objective_load[free], plus - minus) / (2viscosity_step)
+        dA_free = dA_dη[p][free, free]
+        viscosity_step = fd_step * forward.η[p]
+        plus = (A_free + viscosity_step * dA_free) \ rhs[free]
+        minus = (A_free - viscosity_step * dA_free) \ rhs[free]
+        viscosity_gradient_fd = dot(objective_load[free], plus - minus) / (2viscosity_step)
 
-    @test adjoint.density_gradient ≈ density_gradient_fd rtol = 2e-3
-    @test adjoint.viscosity_gradient ≈ viscosity_gradient_fd rtol = 2e-3
+        @test adjoint.density_gradient[p] ≈ density_gradient_fd rtol = 2e-3
+        @test adjoint.viscosity_gradient[p] ≈ viscosity_gradient_fd rtol = 2e-3
+    end
 end
