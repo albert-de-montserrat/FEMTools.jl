@@ -146,7 +146,7 @@ export eval_shape_function,
 # Solver types and user-facing entry points.
 export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesMaterial, StokesDR, Stokes3DWorkspace, DruckerPrager,
+export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,

@@ -26,6 +26,10 @@ Physics layers:
   onto the discontinuous pressure-temperature DoFs.
 - 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure, caller-owned
   arrays, forward/adjoint wrappers, and material gradients.
+- Repeated 2-D adjoint solves may reuse a caller-owned
+  `StokesAdjointWorkspace`. Its common scratch serves every operator mode, while
+  the nine Enzyme-only arrays are allocated only with `enzyme=true`; workspace
+  dimensions and boundary counts are checked before use.
 - The frozen forward/adjoint operator paths intentionally assemble dense
   element blocks for repeated application. Sparse matrices in tests serve as
   reference oracles, not the production solve path.

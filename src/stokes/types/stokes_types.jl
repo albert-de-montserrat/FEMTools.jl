@@ -387,3 +387,54 @@ function Stokes3DWorkspace(
         residual_v, similar(pressure), diagonal, similar(pressure), zero_bc, tables,
     )
 end
+
+"""
+    StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme=false)
+
+Caller-owned scratch for the two-dimensional Stokes adjoint DYREL solver.
+
+The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
+boundary-value buffers that would otherwise be allocated on every adjoint
+solve. Pass it as the `workspace` keyword of
+[`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
+optimization loop. Set `enzyme=true` when the workspace will be used with
+`operator = :enzyme`; the block and matrix-free paths do not allocate those
+additional reverse-mode buffers.
+
+A workspace belongs to the velocity and pressure layouts and boundary-node
+counts from which it was constructed. The solver validates those dimensions
+before use and refills all scratch that carries values, so reuse never carries
+residual state from one solve into the next.
+"""
+struct StokesAdjointWorkspace{TC, TE}
+    common::TC
+    enzyme::TE
+end
+
+function StokesAdjointWorkspace(dr::StokesDR{<:Any, 2}, vx_nodes, vy_nodes; enzyme = false)
+    common = (;
+        ResλVx = zero(dr.Rv.x),
+        ResλVy = zero(dr.Rv.y),
+        ResλP = zero(dr.P),
+        ResλVx0 = zero(dr.Rv.x),
+        ResλVy0 = zero(dr.Rv.y),
+        λrate_vx = zero(dr.v.x),
+        λrate_vy = zero(dr.v.y),
+        dvx = zero(dr.v.x),
+        dvy = zero(dr.v.y),
+        zero_vx_bc = fill!(similar(dr.v.x, length(vx_nodes)), 0),
+        zero_vy_bc = fill!(similar(dr.v.y, length(vy_nodes)), 0),
+    )
+    enzyme_scratch = enzyme ? (;
+        Rv_x_buf = zero(dr.Rv.x),
+        Rv_y_buf = zero(dr.Rv.y),
+        seed_Rv_x = zero(dr.Rv.x),
+        seed_Rv_y = zero(dr.Rv.y),
+        seed_RP = zero(dr.RP),
+        dP = zero(dr.P),
+        dP_scratch = zero(dr.P),
+        Pnum = zero(dr.P),
+        dPnum = zero(dr.P),
+    ) : nothing
+    return StokesAdjointWorkspace(common, enzyme_scratch)
+end

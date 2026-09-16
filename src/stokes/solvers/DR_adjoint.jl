@@ -26,6 +26,11 @@ The input values of `λvx`, `λvy`, and `λP` are preserved as the initial itera
 Pass zero-filled arrays for a cold solve, or fields from the previous design
 iteration to warm-start an optimization loop.
 
+Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
+keyword to reuse mesh-sized scratch across solves. The default constructs a
+fresh workspace for compatibility. A workspace used with `operator = :enzyme`
+must have been constructed with `enzyme=true`.
+
 Because the forward state is frozen, the adjoint residual is affine in `λ` with a
 constant operator, and `operator` chooses how that operator is applied:
 
@@ -94,23 +99,37 @@ function solve_stokes_adjoint_dyrel!(
     collect_history = false,
     operator = :blocks,
     measure_λmax = true,
+    workspace = StokesAdjointWorkspace(
+        dr, vx_nodes, vy_nodes; enzyme = operator === :enzyme),
 )
     M_P = dr.M_P
 
-    # Scratch shared by every residual path: adjoint residuals, DYREL rates, and
-    # the velocity pullback the Chebyshev update reads.
-    ResλVx = zero(dr.Rv.x)
-    ResλVy = zero(dr.Rv.y)
-    ResλP  = zero(dr.P)
-    ResλVx0 = zero(dr.Rv.x)
-    ResλVy0 = zero(dr.Rv.y)
-    λrate_vx = zero(dr.v.x)
-    λrate_vy = zero(dr.v.y)
-    dvx = zero(dr.v.x)
-    dvy = zero(dr.v.y)
-
-    zero_vx_bc = fill!(similar(λvx, length(vx_nodes)), 0)
-    zero_vy_bc = fill!(similar(λvy, length(vy_nodes)), 0)
+    (; ResλVx, ResλVy, ResλP, ResλVx0, ResλVy0, λrate_vx, λrate_vy,
+       dvx, dvy, zero_vx_bc, zero_vy_bc) = workspace.common
+    for (buffer, reference, label) in (
+            (ResλVx, dr.Rv.x, "vx residual"),
+            (ResλVy, dr.Rv.y, "vy residual"),
+            (ResλVx0, dr.Rv.x, "previous vx residual"),
+            (ResλVy0, dr.Rv.y, "previous vy residual"),
+            (λrate_vx, dr.v.x, "vx rate"),
+            (λrate_vy, dr.v.y, "vy rate"),
+            (dvx, dr.v.x, "vx pullback"),
+            (dvy, dr.v.y, "vy pullback"),
+            (ResλP, dr.P, "pressure residual"),
+        )
+        axes(buffer) == axes(reference) || throw(DimensionMismatch(
+            "adjoint workspace $label axes $(axes(buffer)) do not match $(axes(reference))"))
+    end
+    length(zero_vx_bc) == length(vx_nodes) || throw(DimensionMismatch(
+        "adjoint workspace has $(length(zero_vx_bc)) vx boundary values, " *
+        "but vx_nodes has $(length(vx_nodes)) entries"))
+    length(zero_vy_bc) == length(vy_nodes) || throw(DimensionMismatch(
+        "adjoint workspace has $(length(zero_vy_bc)) vy boundary values, " *
+        "but vy_nodes has $(length(vy_nodes)) entries"))
+    # The DYREL rates carry momentum between iterations, so a reused workspace
+    # must start every solve from rest.
+    fill!(λrate_vx, 0)
+    fill!(λrate_vy, 0)
 
     # The operator is constant at the frozen forward state, so every path applies
     # the same thing; they differ in what they store to do it. Assembling the
@@ -173,20 +192,9 @@ function solve_stokes_adjoint_dyrel!(
     # Buffers, seeds and pullbacks that only the Enzyme reverse passes touch. The
     # other two paths replace those passes outright, so these nine mesh-sized
     # arrays are never allocated for them.
-    enzyme_scratch = op !== nothing ? nothing : (;
-        Rv_x_buf = zero(dr.Rv.x),
-        Rv_y_buf = zero(dr.Rv.y),
-        seed_Rv_x = zero(dr.Rv.x),
-        seed_Rv_y = zero(dr.Rv.y),
-        seed_RP = zero(dr.RP),
-        dP = zero(dr.P),
-        dP_scratch = zero(dr.P),
-        # Real augmented-pressure array so its adjoint (∂Rv/∂Pnum)ᵀλv is obtained
-        # directly rather than via the P == Pnum shortcut. Its value is irrelevant
-        # to the transpose (Rv is linear in Pnum), so it stays zero.
-        Pnum = zero(dr.P),
-        dPnum = zero(dr.P),
-    )
+    enzyme_scratch = workspace.enzyme
+    op === nothing && enzyme_scratch === nothing && throw(ArgumentError(
+        "operator = :enzyme requires a StokesAdjointWorkspace constructed with enzyme=true"))
 
     function assemble_adjoint_residual_enzyme!(scratch)
         (; Rv_x_buf, Rv_y_buf, seed_Rv_x, seed_Rv_y, seed_RP, dP, dP_scratch,

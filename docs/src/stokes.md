@@ -41,6 +41,7 @@ operators and the same mixed spaces. It therefore computes gradients of the
 StokesMaterial
 StokesDR
 Stokes3DWorkspace
+StokesAdjointWorkspace
 DruckerPrager
 pressure_mass
 ```
@@ -341,6 +342,13 @@ none to offer cheaply.
 `λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint
 in place to warm-start the next solve.
+
+An optimization loop can also construct
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` once and pass it as
+`workspace` on every adjoint solve. This reuses the residual, rate, pullback,
+and boundary buffers instead of allocating them for every design. Construct it
+with `enzyme=true` only when using `operator = :enzyme`; the default block and
+matrix-free workspaces omit the nine reverse-mode-only arrays.
 
 If the velocity residual stalls, inspect the measured-to-Gershgorin ratio and
 increase the iteration budgets before changing tolerances. If the velocity

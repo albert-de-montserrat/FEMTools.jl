@@ -116,6 +116,33 @@ end
     @test warm.λmax_iterations == 0
     @test (λvx, λvy, λP) == λ_before
 
+    # A reused workspace carries no state between solves: two cold solves through
+    # the same scratch follow identical iterations. It rejects a different
+    # boundary layout.
+    workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)
+    cold_solve() = begin
+        λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+        stats = solve_stokes_adjoint_dyrel!(
+            dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+            phases, phases, τ_old, nothing, G, Δt, γP,
+            objective_vx, objective_vy, λ..., backend, wg;
+            vx_nodes, vy_nodes, adjoint_tol = 1.0e-9, measure_λmax = false,
+            verbose = false, verbose_inner = false, workspace)
+        return stats, λ
+    end
+    first_stats, first_λ = cold_solve()
+    second_stats, second_λ = cold_solve()
+    @test first_stats.converged
+    @test first_stats.iter > 0
+    @test second_stats.iter == first_stats.iter
+    @test second_λ == first_λ
+    short_workspace = StokesAdjointWorkspace(dr, vx_nodes[2:end], vy_nodes)
+    @test_throws "vx boundary values" solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
+        vx_nodes, vy_nodes, verbose = false, workspace = short_workspace)
+
     # The matrix-free operator drives the same solve while storing no element
     # blocks, so it must land on the same adjoint field.
     λvx_mf = zeros(mesh.nnodes)
@@ -180,7 +207,8 @@ end
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
         vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
-        frozen_operator = false, measure_λmax = false,
+        operator = :enzyme, measure_λmax = false,
+        workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme = true),
         verbose = false, verbose_inner = false)
     @test adj_rev.converged
     @test adj_rev.λmax_iterations == 0        # power iteration needs the frozen operator

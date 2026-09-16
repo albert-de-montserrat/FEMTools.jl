@@ -90,7 +90,7 @@ containers; its spatial dimension follows the length of `g`.
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
   `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
-  `DruckerPrager`.
+  `StokesAdjointWorkspace`, `DruckerPrager`.
 - Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
 - Stokes entry points: `solve_stokes_dyrel!`,
   `solve_coupled_dyrel!`,
@@ -171,6 +171,9 @@ Stokes pressure DoFs. Its statistics add `err_T` and `thermal_iterations`.
 
 The expanded positional methods remain available for adjoints and specialized
 workflows, but new normal-user examples should start from the high-level forms.
+Repeated 2-D adjoint solves can pass a `StokesAdjointWorkspace`; its
+reverse-mode scratch is opt-in through `enzyme=true`, matching
+`operator = :enzyme` without charging the default block path for unused arrays.
 
 ## Mutation and ownership contract
 
