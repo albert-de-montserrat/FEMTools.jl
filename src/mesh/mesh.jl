@@ -32,6 +32,9 @@ as nodes on mesh edges shared by exactly one element. `Ω` and `Γ` are set to
 `nothing`. Passing `element` also stores the reference element and precomputes
 the geometry used by single-field solvers. Constructors without `element`
 retain `nothing` for both fields.
+
+`geometry` is the per-element array built by [`precompute_geometry`](@ref);
+[`element_geometry`](@ref) forms one element's physical gradients from it.
 """
 struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
     Ω::D        # model domain

@@ -345,7 +345,9 @@ end
     @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int32}, Float32}
     @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int32}, Float64}
     @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int32}, Float64}
-    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, <:Vector{Float64}, <:Vector{Int32}, <:Matrix{Float64}, Float64}
+    @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, 2, <:FEMTools.VectorField2D{<:Vector{Float64}},
+        <:FEMTools.SymmetricTensor2D{<:Matrix{Float64}}, <:Vector{Int32},
+        <:Vector{Float64}, <:Vector{Int32}, Float64}
     @test (@inferred _mixed_mesh_cache_case()) isa MixedMeshCache
     @test (@inferred _heat_assembly_case()) === nothing
     @test (@inferred _lithostatic_assembly_case()) === nothing
@@ -375,45 +377,5 @@ end
         @eval JET.@test_opt _lithostatic_element_jacobian_case()
         @eval JET.@test_opt _stokes_augmented_component_case()
         @eval JET.@test_opt _pressure_element_residual_case()
-    end
-end
-
-@testset "maintained example scripts parse" begin
-    scripts = [
-        "examples/1D_diffusion_FEMTools.jl",
-        "examples/1D_diffusion_FEMTools_color.jl",
-        "examples/2D_diffusion_FEMTools.jl",
-        "examples/3D_diffusion_FEMTools.jl",
-        "examples/gmsh_meshing.jl",
-        "examples/Poisson/1D_Poisson.jl",
-        "examples/Poisson/1D_Poisson_AD.jl",
-        "examples/Poisson/1D_Poisson_Q2.jl",
-        "examples/Poisson/2D_Poisson.jl",
-        "examples/Poisson/2D_Poisson_AD.jl",
-        "examples/Poisson/2D_Poisson_AD_KA.jl",
-        "examples/Poisson/3D_Poisson.jl",
-        "examples/Poisson/3D_Poisson_AD.jl",
-        "examples/Poisson/3D_Poisson_AD_KA.jl",
-        "examples/elasticity/2D_Elasticity_stress_postprocess.jl",
-        "examples/elasticity/2D_Elasticiy_DR_KA.jl",
-        "examples/elasticity/2D_Elasticiy_Direct_KA.jl",
-        "examples/heat_diffusion/2D_heat_diffusion.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_triangles.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_unstructured.jl",
-        "examples/heat_diffusion/2D_heat_diffusion_unstructured_T6.jl",
-        "examples/heat_diffusion/3D_heat_diffusion_unstructured_hex.jl",
-        "examples/stokes/buildup/stokes_2D_elastic_buildup.jl",
-        "examples/stokes/buildup/stokes_2D_elastic_buildup_hole.jl",
-        "examples/stokes/sinking_block/sinking_block.jl",
-        "examples/stokes/stokes_2D_pure_shear_triangle_hole.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear_triangle.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
-        "examples/stokes/vevp/stokes_2D_pure_shear_triangle_adv.jl",
-        "examples/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
-        "examples/stokes/vevp/stokes_2D_viscous_inclusion_triangle.jl",
-    ]
-    for script in scripts
-        @test Meta.parseall(read(joinpath(pkgdir(FEMTools), script), String)) isa Expr
     end
 end

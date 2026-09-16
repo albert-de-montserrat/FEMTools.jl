@@ -7,9 +7,9 @@ GPU execution through KernelAbstractions.jl.
 
 Two complete examples accompany this page:
 
-- `examples/lithostatic_pressure/lithostatic_pressure2D.jl` uses an unstructured
+- `examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl` uses an unstructured
   triangular mesh derived from the sinking-block example.
-- `examples/lithostatic_pressure/lithostatic_pressure3D.jl` uses Gmsh.jl to
+- `examples/miniapps/stokes/lithostatic_pressure3D/lithostatic_pressure3D.jl` uses Gmsh.jl to
   create an unstructured quadrilateral base and extrudes it into linear Hex8
   elements.
 
@@ -77,7 +77,7 @@ weak form,
 \qquad \text{on } \partial\Omega\setminus\Gamma_\mathrm{top}.
 ```
 
-With ``\mathbf{g}=(0,-g,0)`` and constant density, the one-dimensional
+With ``\mathbf{g}=(0,-g)`` and constant density, the one-dimensional
 reference solution is therefore
 
 ```math
@@ -93,10 +93,10 @@ The examples use this profile as the initial guess. A denser block with
 iteration ``k``, the preconditioned rate and pressure updates are
 
 ```math
-\dot{\mathbf{P}}^{k+1}
-=\mathbf{M}^{-1}\mathbf{R}^k+\beta\dot{\mathbf{P}}^k,
-\qquad
-\mathbf{P}^{k+1}=\mathbf{P}^k+\alpha_\mathrm{DR}\dot{\mathbf{P}}^{k+1},
+\begin{aligned}
+\dot{\mathbf{P}}^{k+1} &= \mathbf{M}^{-1}\mathbf{R}^k+\beta\dot{\mathbf{P}}^k, \\
+\mathbf{P}^{k+1} &= \mathbf{P}^k+\alpha_\mathrm{DR}\dot{\mathbf{P}}^{k+1}.
+\end{aligned}
 ```
 
 where ``\mathbf{M}`` is a diagonal preconditioner assembled from the element
@@ -104,12 +104,12 @@ Jacobian. Spectral estimates ``\lambda_\min`` and ``\lambda_\max`` determine
 the Chebyshev parameters
 
 ```math
-\Delta\tau=\frac{2\,\mathrm{CFL}}{\sqrt{\lambda_\max}},
-\quad c=2c_\mathrm{fact}\sqrt{\lambda_\min},
-\quad
-\alpha_\mathrm{DR}=\frac{2\Delta\tau^2}{2+c\Delta\tau},
-\quad
-\beta=\frac{2-c\Delta\tau}{2+c\Delta\tau}.
+\begin{aligned}
+&\Delta\tau=\frac{2\,\mathrm{CFL}}{\sqrt{\lambda_\max}},
+\quad c=2c_\mathrm{fact}\sqrt{\lambda_\min}, \\
+&\alpha_\mathrm{DR}=\frac{2\Delta\tau^2}{2+c\Delta\tau},
+\quad \beta=\frac{2-c\Delta\tau}{2+c\Delta\tau}.
+\end{aligned}
 ```
 
 Iteration stops when
@@ -128,9 +128,10 @@ corner connectivity and solves on linear T3 pressure elements. The material
 parameters are
 
 ```math
-\rho_1=1,\qquad \rho_2=2,\qquad
-\mathbf{g}=(0,-1),\qquad \alpha_1=\alpha_2=0,
-\qquad K_1=K_2=\infty.
+\begin{aligned}
+&\rho_1=1, \quad \rho_2=2, \quad \mathbf{g}=(0,-1), \\
+&\alpha_1=\alpha_2=0, \quad K_1=K_2=\infty.
+\end{aligned}
 ```
 
 ```julia
@@ -152,7 +153,7 @@ profile around the centre of the domain.
 Run the example from the repository root with
 
 ```sh
-julia --project=examples examples/lithostatic_pressure/lithostatic_pressure2D.jl
+julia --project=examples examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl
 ```
 
 ## Three-dimensional example
@@ -185,7 +186,7 @@ The default mesh has 1,260 nodes and 952 Hex8 elements. The script writes
 for inspection in ParaView:
 
 ```sh
-julia --project=examples examples/lithostatic_pressure/lithostatic_pressure3D.jl
+julia --project=examples examples/miniapps/stokes/lithostatic_pressure3D/lithostatic_pressure3D.jl
 ```
 
 ## Solver API

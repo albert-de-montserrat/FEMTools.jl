@@ -84,6 +84,7 @@ For documentation changes, check:
 - every page intended for publication appears in `docs/make.jl`;
 - code snippets use the right environment and public API;
 - local relative links resolve, including every link from `AGENTS.md`;
+- documented example paths pass `test/test_example_paths.jl`;
 - formulas, field names, and defaults match source;
 - referenced example output is not accidentally committed unless it is a
   deliberate docs asset.

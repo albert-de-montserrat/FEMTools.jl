@@ -109,3 +109,51 @@ end
     bad_el2n = reshape(Int32[1, 2, 3, 4, 5], 5, 1)
     @test_throws ArgumentError Mesh(coords3, bad_el2n)
 end
+
+@testset "unstructured Mesh boundary detection on Q4 and Hex8 grids" begin
+    # 2x2 grid of Q4 cells over the unit square: node 5 is the only one not on
+    # a boundary edge.
+    #   7---8---9
+    #   | 3 | 4 |
+    #   4---5---6
+    #   | 1 | 2 |
+    #   1---2---3
+    coords = SVector{2, Float64}[SVector(x, y) for y in (0.0, 0.5, 1.0) for x in (0.0, 0.5, 1.0)]
+    el2n = Int32[
+        1 2 4 5
+        2 3 5 6
+        5 6 8 9
+        4 5 7 8
+    ]
+    mesh = Mesh(coords, el2n)
+
+    @test mesh.nels == 4
+    @test mesh.nnodes == 9
+    @test mesh.Γnodes == Int32[1, 2, 3, 4, 6, 7, 8, 9]
+
+    # 2x2x2 grid of Hex8 cells over the unit cube, node ordering x fastest then
+    # y then z: the centre node 14 is the only interior one.
+    coords3 = SVector{3, Float64}[
+        SVector(x, y, z) for z in (0.0, 0.5, 1.0) for y in (0.0, 0.5, 1.0) for x in (0.0, 0.5, 1.0)
+    ]
+    node(i, j, k) = Int32(i + 3 * (j - 1) + 9 * (k - 1))
+    el2n3 = reduce(hcat, [
+        Int32[node(a, b, c), node(a + 1, b, c), node(a, b + 1, c), node(a + 1, b + 1, c),
+              node(a, b, c + 1), node(a + 1, b, c + 1), node(a, b + 1, c + 1), node(a + 1, b + 1, c + 1)]
+            for c in 1:2 for b in 1:2 for a in 1:2
+    ])
+    mesh3 = Mesh(coords3, el2n3)
+
+    @test mesh3.nels == 8
+    @test mesh3.nnodes == 27
+    @test mesh3.Γnodes == Int32[n for n in 1:27 if n != 14]
+end
+
+@testset "unstructured Mesh rejects unsupported element arities" begin
+    coords = SVector{2, Float64}[SVector(Float64(i), 0.0) for i in 1:5]
+    bad_el2n = reshape(Int32[1, 2, 3, 4, 5], 5, 1)
+    @test_throws "cannot infer 2D boundary edge paths for elements with 5 local nodes" Mesh(coords, bad_el2n)
+
+    coords3 = SVector{3, Float64}[SVector(Float64(i), 0.0, 0.0) for i in 1:5]
+    @test_throws "cannot infer 3D boundary face paths for elements with 5 local nodes" Mesh(coords3, bad_el2n)
+end

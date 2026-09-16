@@ -2,6 +2,9 @@
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup)
 
 Launch the Stokes geometry precompute kernel and synchronize the backend.
+
+`geo` is caller-allocated and must be `length(ω) × nels`, matching the layout
+[`precompute_geometry_kernel!`](@ref) writes.
 """
 precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup) where {N} =
     launch!(precompute_geometry_kernel!, backend, workgroup, nels,

@@ -86,7 +86,7 @@ using DomainSets: ×
     Rv_y_buf = zeros(mesh.nnodes)
     FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
         Rv_x_buf, copy(λvx), Rv_y_buf, copy(λvy),
-        dr.vx, dvx, dr.vy, dvy, dr.P, dP, dr.T, Pnum, dPnum,
+        dr.v.x, dvx, dr.v.y, dvy, dr.P, dP, dr.T, Pnum, dPnum,
         mesh, cache.geo_v, element_v, element_P,
         phases, τ_old, nothing,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt, wg)
@@ -126,17 +126,17 @@ using DomainSets: ×
     @test all(FEMTools._unpack_symmetric(op.A[i], Val(NV2)) ≈ velocity_op.A[i]
               for i in 1:mesh.nels)
     λcold, ncold, power_x, power_y = FEMTools.estimate_velocity_λmax(
-        velocity_op, mesh, element_v, dr.PC_vx, dr.PC_vy,
+        velocity_op, mesh, element_v, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg)
     λwarm, nwarm, _, _ = FEMTools.estimate_velocity_λmax(
-        velocity_op, mesh, element_v, dr.PC_vx, dr.PC_vy,
+        velocity_op, mesh, element_v, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg; x = power_x, y = power_y)
     @test λwarm ≈ λcold rtol = 1.0e-2
     @test nwarm < ncold
-    rowsum_vx_op = copy(dr.∂Rv_x∂vx)
-    rowsum_vy_op = copy(dr.∂Rv_y∂vy)
-    PC_vx_op = copy(dr.PC_vx)
-    PC_vy_op = copy(dr.PC_vy)
+    rowsum_vx_op = copy(dr.∂Rv∂v.x)
+    rowsum_vy_op = copy(dr.∂Rv∂v.y)
+    PC_vx_op = copy(dr.PC_v.x)
+    PC_vy_op = copy(dr.PC_v.y)
     ResλVx_op = zeros(mesh.nnodes)
     ResλVy_op = zeros(mesh.nnodes)
     ResλP_op = zeros(mesh.nnodesP)
@@ -154,16 +154,16 @@ using DomainSets: ×
     # The measured λmax must reproduce the spectral radius of the symmetrically
     # Jacobi-scaled free-velocity block, not merely be smaller than Gershgorin.
     FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
-        dr.∂Rv_x∂vx, dr.PC_vx, dr.∂Rv_y∂vy, dr.PC_vy,
-        dr.vx, dr.vy, dr.P, dr.P0, dr.T, dr.T0,
+        dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+        dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh.el2n, mesh.DoFsP, cache.geo_v, cache.geo_P, mesh.nels,
         element_v, element_P, phases, phases,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
         dr.ηb, Δt, γP, dr.M_P, backend, wg; τ_old)
-    @test rowsum_vx_op ≈ dr.∂Rv_x∂vx
-    @test rowsum_vy_op ≈ dr.∂Rv_y∂vy
-    @test PC_vx_op ≈ dr.PC_vx
-    @test PC_vy_op ≈ dr.PC_vy
+    @test rowsum_vx_op ≈ dr.∂Rv∂v.x
+    @test rowsum_vy_op ≈ dr.∂Rv∂v.y
+    @test PC_vx_op ≈ dr.PC_v.x
+    @test PC_vy_op ≈ dr.PC_v.y
     # A plastic model gives a non-normal tangent, so the block must be kept even
     # though this particular state may not be at yield.
     plastic = DruckerPrager(
@@ -176,12 +176,12 @@ using DomainSets: ×
     @test size(op_plastic.C[1]) == (length(element_P), 2 * length(element_v))
 
     λmax, λmax_iterations = FEMTools.estimate_adjoint_λmax(
-        op, mesh, element_v, element_P, dr.PC_vx, dr.PC_vy,
+        op, mesh, element_v, element_P, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg)
-    free_vx = setdiff(eachindex(dr.vx), vx_nodes)
-    free_vy = setdiff(eachindex(dr.vy), vy_nodes)
-    free = vcat(free_vx, length(dr.vx) .+ free_vy)
-    PC = vcat(dr.PC_vx, dr.PC_vy)
+    free_vx = setdiff(eachindex(dr.v.x), vx_nodes)
+    free_vy = setdiff(eachindex(dr.v.y), vy_nodes)
+    free = vcat(free_vx, length(dr.v.x) .+ free_vy)
+    PC = vcat(dr.PC_v.x, dr.PC_v.y)
     A = zeros(length(free), length(free))
     basis_vx = zeros(mesh.nnodes)
     basis_vy = zeros(mesh.nnodes)
@@ -221,14 +221,14 @@ using DomainSets: ×
     # sized by the element count. The tables must be backend arrays: this kernel
     # launches once per adjoint iteration, and a tuple would be rebuilt into the
     # launch argument pack every time.
-    @test mf.state.vx === dr.vx
+    @test mf.state.v.x === dr.v.x
     @test mf.state.geo_v === cache.geo_v
     @test all(t isa AbstractVector && length(t) == nq
         for t in (mf.state.Nq, mf.state.NqP, mf.state.∂N∂ξ_v))
 
     # Power iteration needs only an apply, so it measures the same eigenvalue.
     λmax_mf, _ = FEMTools.estimate_adjoint_λmax(
-        mf, mesh, element_v, element_P, dr.PC_vx, dr.PC_vy,
+        mf, mesh, element_v, element_P, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg)
     @test λmax_mf ≈ λmax rtol = 1.0e-6
 

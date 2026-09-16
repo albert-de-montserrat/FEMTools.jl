@@ -97,12 +97,19 @@ generate_element_groups
 
 ## Geometry Precomputation
 
+Element geometry holds one [`QuadraturePointGeometry`](@ref) per element and
+quadrature point: the inverse isoparametric Jacobian and the weighted measure
+`|det J| ωq`. `element_geometry(geo, iel, ∂N∂ξ)` pairs an element's entries with
+the reference-element gradients `∂N∂ξ = shape_function_gradients(element)` and
+forms the physical shape-function gradients on access.
+
 ```@docs
 precompute_geometry
 QuadraturePointGeometry
 ElementGeometry
 element_geometry
 FEMTools.precompute_geometry_kernel!
+FEMTools.element_geometry
 ```
 
 ## VTK Output

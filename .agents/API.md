@@ -78,6 +78,14 @@ kernel argument pack, which is rebuilt on every launch, so a solver builds the
 arrays once and passes those; the per-call assembler wrappers still take
 reference elements and rebuild tuples.
 
+### Field containers
+
+Import `FEMTools.VectorField2D/3D` and `FEMTools.SymmetricTensor2D/3D`
+explicitly. Vector components use `.x`, `.y`, and `.z`; stress components
+include the invariant `II`. `Tuple` unpacks independent components for
+assemblers. `StokesDR` owns `v`, `Rv`, `PC_v`, `τ`, and `τ_old`
+containers; its spatial dimension follows the length of `g`.
+
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,

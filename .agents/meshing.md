@@ -67,8 +67,10 @@ example scripts that include it, not by the package test suite.
 - `mesh.nnodes == length(mesh.coords)` and `mesh.nels == size(mesh.el2n, 2)`.
 - Mixed velocity and pressure connectivities must describe the same number of
   elements.
-- Geometry stores physical gradients and integration weights for each element
-  and quadrature point. Reject singular or inverted mappings where the
+- Geometry stores one `QuadraturePointGeometry` (inverse Jacobian and weighted
+  volume) per element and quadrature point; `element_geometry(geo, iel, ∂N∂ξ)`
+  forms physical gradients from it on access.
+  Reject singular or inverted mappings where the
   mathematical path cannot support them.
 - Kernel-consumed mesh arrays must be moved to the selected backend together.
   Host-side topology preparation is acceptable; mixed host/device solver input

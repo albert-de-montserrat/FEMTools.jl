@@ -41,7 +41,7 @@ end
     nels = 1
     geotype = NTuple{NQ, QuadraturePointGeometry{2, Float64, 4}}
 
-    geo = KernelAbstractions.allocate(backend, geotype, nels)
+    geo = KernelAbstractions.allocate(backend, geotype, NQ, nels)
     precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(3), nels, backend, workgroup)
 
     # Unit reference triangle: quadrature weights sum to its area, and the
@@ -49,4 +49,17 @@ end
     geo_el = element_geometry(geo, 1, ∂N∂ξq)
     @test sum(p -> p.dΩ, geo[1]) ≈ 0.5
     @test all(∂N∂x ≈ geo_el[1][1] for (∂N∂x, _) in geo_el)
+end
+
+@testset "remove_pressure_mean! removes the mass-weighted gauge" begin
+    P = [1.0, -3.0, 5.0, 2.0]
+    M_P = [0.5, 1.5, 2.0, 1.0]
+    expected = sum(P .* M_P) / sum(M_P)
+
+    p_mean = FEMTools.remove_pressure_mean!(P, M_P)
+
+    @test p_mean ≈ expected
+    @test sum(P .* M_P) ≈ 0 atol = 1.0e-12
+    # A second pass has nothing left to remove.
+    @test FEMTools.remove_pressure_mean!(copy(P), M_P) ≈ 0 atol = 1.0e-12
 end

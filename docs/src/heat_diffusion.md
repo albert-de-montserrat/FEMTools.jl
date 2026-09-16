@@ -74,7 +74,7 @@ dr   = ThermalDiffusionDR(CPU(), mesh.nnodes, material; CFL=0.9)
 
 ## Structured 2-D Example
 
-The script `examples/heat_diffusion/2D_heat_diffusion.jl` solves transient heat
+The script `examples/miniapps/thermal/2D_heat_diffusion/2D_heat_diffusion.jl` solves transient heat
 diffusion on a structured 2-D quadratic mesh. It uses a hot lower boundary
 (`1573 K`), a cold upper boundary (`273 K`), and insulated side boundaries:
 
@@ -106,7 +106,7 @@ then advances the field with `solver!` for 50 time steps. Run it from the
 examples environment:
 
 ```sh
-julia --project=examples examples/heat_diffusion/2D_heat_diffusion.jl
+julia --project=examples examples/miniapps/thermal/2D_heat_diffusion/2D_heat_diffusion.jl
 ```
 
 The resulting temperature field is:
