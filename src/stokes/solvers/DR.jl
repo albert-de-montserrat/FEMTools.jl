@@ -33,7 +33,7 @@ function _transfer_temperature!(T_P, T, mesh::MixedMesh, backend, workgroup)
 end
 
 """
-    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh, cache,
+    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh,
                          bc_T, bc_vx, bc_vy, Δt, γP;
                          Tref=273, workgroup=256, kwargs...)
 
@@ -54,7 +54,6 @@ function solve_coupled_dyrel!(
     stokes::StokesDR,
     thermal_mesh::Mesh,
     stokes_mesh::MixedMesh,
-    cache::MixedMeshCache,
     bc_T::DirichletBoundaryCondition,
     bc_vx::DirichletBoundaryCondition,
     bc_vy::DirichletBoundaryCondition,
@@ -81,16 +80,16 @@ function solve_coupled_dyrel!(
 
     coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref)
     return solve_stokes_dyrel!(
-        stokes, stokes_mesh, cache, bc_vx, bc_vy, Δt, γP;
+        stokes, stokes_mesh, bc_vx, bc_vy, Δt, γP;
         workgroup, _thermal = coupled, kwargs...,
     )
 end
 
 """
-    solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP;
+    solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
                         plastic=nothing, workgroup=256, kwargs...)
 
-Solve the Stokes system using geometry and elements from `cache`, material and
+Solve the Stokes system using geometry and elements from `mesh.geometry`, material and
 stress history from `dr`, and one Dirichlet boundary-condition object per
 velocity component. Phase layouts and stress history may be overridden with
 the `phases_v`, `phases_P`, and `τ_old` keywords.
@@ -102,7 +101,6 @@ third component.
 function solve_stokes_dyrel!(
     dr::StokesDR{<:Any, 2},
     mesh::MixedMesh,
-    cache::MixedMeshCache,
     bc_vx::DirichletBoundaryCondition,
     bc_vy::DirichletBoundaryCondition,
     Δt,
@@ -114,7 +112,7 @@ function solve_stokes_dyrel!(
     workgroup = 256,
     kwargs...,
 )
-    isnothing(cache.element_v) && throw(ArgumentError("cache has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"))
+    cache = _mesh_geometry(mesh)
     backend = KA.get_backend(mesh.coords)
     return solve_stokes_dyrel!(
         dr, mesh, cache, cache.element_v, cache.element_P,
@@ -550,10 +548,10 @@ function solve_stokes_dyrel!(
 end
 
 """
-    update_stokes_current_stress!(dr, mesh, cache, τ, Δt;
+    update_stokes_current_stress!(dr, mesh, τ, Δt;
                                   plastic=nothing, workgroup=256)
 
-Refresh integration-point stresses using cache-owned elements, solver-owned
+Refresh integration-point stresses using the elements in `mesh.geometry`, solver-owned
 material and stress history, and optional phase-layout overrides. `τ` receives
 the in-plane components in Voigt order; the history defaults to the components
 of `dr.τ_old`. Two-dimensional states only.
@@ -561,7 +559,6 @@ of `dr.τ_old`. Two-dimensional states only.
 function update_stokes_current_stress!(
     dr::StokesDR{<:Any, 2},
     mesh::MixedMesh,
-    cache::MixedMeshCache,
     τ,
     Δt;
     plastic = nothing,
@@ -569,6 +566,7 @@ function update_stokes_current_stress!(
     τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
     workgroup = 256,
 )
+    cache = _mesh_geometry(mesh)
     backend = KA.get_backend(mesh.coords)
     return update_stokes_current_stress!(
         dr, mesh, cache, cache.element_v, cache.element_P,

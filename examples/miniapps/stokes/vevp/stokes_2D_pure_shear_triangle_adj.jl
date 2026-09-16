@@ -415,8 +415,7 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -476,7 +475,7 @@ function main(;
 
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup, phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, γfact, Δt; workgroup, phases_v = phases_v_cpu,
     )
 
     # ---------------------------------------------------------------------------
@@ -489,7 +488,7 @@ function main(;
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
 
     t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
         phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
         ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0 = 0.75,
         verbose, verbose_inner = false,
@@ -660,7 +659,7 @@ function main(;
         shear_modulus_sensitivity, bulk_modulus_sensitivity,
         bulk_momentum_part, bulk_pressure_part,
         shear_modulus_gradient_by_phase, bulk_modulus_gradient_by_phase,
-        internals = (; cache, element_v, element_P, cell_phase, phases_v_cpu,
+        internals = (; geometry = mesh_stokes.geometry, element_v, element_P, cell_phase, phases_v_cpu,
             η, α, ρ0, G = G_stokes, K, g, Tref, Δt, NV, NP),
     )
 end

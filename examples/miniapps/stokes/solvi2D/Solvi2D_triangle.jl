@@ -1,3 +1,5 @@
+using FEMTools
+
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", "..", ".."))
 
@@ -9,7 +11,6 @@ using DomainSets
 using DomainSets: ×
 using KernelAbstractions
 using Gmsh
-using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, scatterlines!, lines!, Point2f, DataAspect
 using ExactFieldSolutions
 
@@ -107,8 +108,7 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v = cache.geo_v
+    (; geo_v) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -185,7 +185,7 @@ function main(;
     # adapts the pressure step to viscosity contrasts.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup, phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, γfact, Δt; workgroup, phases_v = phases_v_cpu,
     )
 
     time_history = zeros(Float64, nsteps)
@@ -210,7 +210,7 @@ function main(;
     params = (mm = η[1], mc = η[2], rc = 0.1, gr = 0.0, er =1.0)
     for iel in 1:mesh_stokes.nels
         barycentre = coords_v_cpu[el2n_v_cpu[7, iel]] .- 0.5
-        sol = Stokes2D_Schmid2003(barycentre; params)
+        sol = Stokes2D_Schmid2003_circle(barycentre; params)
         el_P_anal[iel] = sol.p
     end
 
@@ -223,7 +223,7 @@ function main(;
         @info "Physical time step" istep nsteps t
 
         solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+            dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
             phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
             ncheck,
             ϵ_tol,
@@ -235,7 +235,7 @@ function main(;
         )
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, cache, τ, Δt;
+            dr, mesh_stokes, τ, Δt;
             phases_v = phases_v_cpu, τ_old, plastic, workgroup,
         )
 
@@ -309,4 +309,5 @@ function main(;
     return (; time = time_history, mean_tauII = mean_tauII_history, post)
 end
 
-main()
+main();
+println("Done.")

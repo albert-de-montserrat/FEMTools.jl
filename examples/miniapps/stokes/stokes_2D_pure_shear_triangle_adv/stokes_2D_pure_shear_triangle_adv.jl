@@ -139,7 +139,6 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -271,12 +270,12 @@ function main(;
         dt_history[istep] = dt_step
         time_history[istep] = t
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, cache, γfact, dt_step; workgroup, phases_v = phases_v_cpu,
+            γP, dr, mesh_stokes, γfact, dt_step; workgroup, phases_v = phases_v_cpu,
         )
         @info "Physical time step" istep nsteps t Δt=dt_step Δt_max=Δt
 
         solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, cache, bc_vx, bc_vy, dt_step, γP;
+            dr, mesh_stokes, bc_vx, bc_vy, dt_step, γP;
             phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
             ncheck,
             ϵ_tol,
@@ -288,7 +287,7 @@ function main(;
         )
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, cache, τ, dt_step;
+            dr, mesh_stokes, τ, dt_step;
             phases_v = phases_v_cpu, τ_old, plastic, workgroup,
         )
 
@@ -298,13 +297,13 @@ function main(;
         post = compute_strain_rate_stress_postprocess(
             vx_cpu, vy_cpu,
             el2n_v_cpu,
-            Array(cache.geo_v),
+            Array(mesh_stokes.geometry.geo_v),
             τ,
             element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII)
         if advect_mesh
-            rotate_stress!(dr, mesh_stokes, cache, element_v, dt_step)
+            rotate_stress!(dr, mesh_stokes, dt_step)
         else
             copyto!(dr.τ_old.xx, dr.τ.xx)
             copyto!(dr.τ_old.yy, dr.τ.yy)
@@ -338,9 +337,9 @@ function main(;
             end
             copyto!(mesh_v.coords, coords_v)
             copyto!(mesh_stokes.coords, coords_v)
-            # The advected coordinates invalidate every Jacobian, so rebuild the
-            # geometry cache from the updated mesh.
-            cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+            # The advected coordinates invalidate every Jacobian, so recompute the
+            # mesh geometry.
+            update_geometry!(mesh_stokes)
         end
         # fill!(dr.v.x, 0.0)
         # fill!(dr.v.y, 0.0)

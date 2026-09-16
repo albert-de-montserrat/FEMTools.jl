@@ -61,8 +61,8 @@ inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
 All arrays read or written by kernels—including `mesh_stokes` connectivity,
 `geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
 arrays—must reside on `backend`. Construct unstructured meshes with
-`Mesh(backend, coords, el2n)` and geometry with `MixedMeshCache` to maintain
-that invariant. The Enzyme transpose assemblers execute on the backend inferred
+`Mesh(backend, coords, el2n, element_v)`; a `MixedMesh` built from it computes
+`mesh.geometry` on the same backend. The Enzyme transpose assemblers execute on the backend inferred
 from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(

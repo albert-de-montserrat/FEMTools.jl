@@ -335,8 +335,8 @@ function main(;
     # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
     # one place, so every array read by a subsequent assembly kernel lives on
     # the same device as the solver fields.
-    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
-    mesh_stokes = MixedMesh(mesh_v, element_P)
+    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu, element_v; workgroup)
+    mesh_stokes = MixedMesh(mesh_v, element_P; workgroup)
 
     # Device array constructor for uploading host-built index/BC/phase arrays to
     # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
@@ -353,11 +353,10 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    # Allocate and fill both geometry caches on the selected backend. This also
-    # evaluates the discontinuous-pressure geometry at the velocity quadrature
+    # The mixed mesh holds both geometry arrays on the selected backend. The
+    # discontinuous-pressure geometry is evaluated at the velocity quadrature
     # points, matching the forward and adjoint assemblers.
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -465,7 +464,7 @@ function main(;
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
+        γP, dr, mesh_stokes, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -484,7 +483,7 @@ function main(;
     # ---------------------------------------------------------------------------
 
     t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,

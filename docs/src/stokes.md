@@ -47,8 +47,8 @@ pressure_mass
 ```
 
 The velocity and pressure fields live on separate node sets described by a
-[`MixedMesh`](mesh.md); precompute per-field geometry once with a
-[`MixedMeshCache`](mesh.md). Fill `dr.T` (and `dr.T0`) before solving. The lumped
+[`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
+`mesh.geometry`. Fill `dr.T` (and `dr.T0`) before solving. The lumped
 pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
@@ -96,17 +96,16 @@ material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
 dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
               stress_size=(nq, mesh.nels))
 
-cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
 bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
 bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, vy_vals)
 
 assemble_viscosity_weighted_pressure_scaling!(
-    γP, dr, mesh, cache, γfact, Δt; workgroup,
+    γP, dr, mesh, γfact, Δt; workgroup,
 )
-solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; workgroup)
+solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 ```
 
-`MixedMeshCache` retains the reference elements alongside both geometry arrays,
+`mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
 The pressure kernel interpolates nodal pressure and temperature increments
@@ -121,7 +120,7 @@ gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 
 ```julia
 stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh, cache,
+    thermal, stokes, thermal_mesh, stokes_mesh,
     bc_T, bc_vx, bc_vy, Δt, γP; workgroup,
 )
 stats.converged || error("coupled solve did not converge")
@@ -237,7 +236,7 @@ julia --project=examples examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 4 km-radius semicircular opening cut into its bottom, then applies gravity and
 linear visco-elastic ice rheology. Mesh advection is enabled by default and
-rebuilds the geometric cache after each Lagrangian update.
+recomputes the mesh geometry in place after each Lagrangian update.
 
 See [Sinking block](sinking_block.md) and [Sinking block (3-D)](sinking_block_3d.md)
 for the discretisations, physical setup, output, figure, and material-gradient
@@ -245,7 +244,7 @@ checks of each.
 
 The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
 Gmsh mesh on the host, then uploads mesh arrays, mixed connectivity,
-geometry caches, phase indices, and boundary data before launching kernels:
+geometry, phase indices, and boundary data before launching kernels:
 
 ```julia
 using CUDA

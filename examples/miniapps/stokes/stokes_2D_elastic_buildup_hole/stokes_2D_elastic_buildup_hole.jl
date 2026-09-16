@@ -130,10 +130,10 @@ function main(;
 
     @info "Gravitational-loading FEM model (tunnel below flat terrain)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels tunnel_depth r_hole n_outer=length(outer_nodes)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
     TDev = FEMTools.TA(backend)
     NV = length(element_v)
     NP = length(element_P)
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     stokes_material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
@@ -277,7 +277,7 @@ function main(;
         # making the incompressible coupling far less stiff and Powell-Hestenes
         # converge much faster than the K=Inf hard-incompressible limit.
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, cache.geo_P, element_v, element_P,
+            γP, dr, mesh_stokes, geo_P, element_v, element_P,
             γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
         )
 
@@ -297,7 +297,7 @@ function main(;
         FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
             dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
-            mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
+            mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P,
             phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
             dr.ηb, Δt, γP, dr.M_P,
@@ -324,7 +324,7 @@ function main(;
             FEMTools.assemble_momentum_residual_matrices_atomix!(
                 dr.Rv.x, dr.Rv.y,
                 dr.v.x, dr.v.y, dr.P, dr.T, nothing,
-                mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, mesh_stokes.nels,
+                mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 element_v, element_P,
                 phases_v_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 backend, workgroup,
@@ -335,7 +335,7 @@ function main(;
             FEMTools.assemble_pressure_residual_matrices_atomix!(
                 dr.RP,
                 dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
-                mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
+                mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 element_v, element_P,
                 phases_P_cpu, dr.α, dr.ηb, Δt,
                 backend, workgroup,
@@ -383,7 +383,7 @@ function main(;
                 FEMTools.assemble_pressure_residual_matrices_atomix!(
                     dr.RP,
                     dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
-                    mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                     element_v, element_P,
                     phases_P_cpu, dr.α, dr.ηb, Δt,
                     backend, workgroup,
@@ -394,7 +394,7 @@ function main(;
                 FEMTools.assemble_momentum_residual_matrices_atomix!(
                     dr.Rv.x, dr.Rv.y,
                     dr.v.x, dr.v.y, dr.P, dr.T, dr.Pnum,
-                    mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, mesh_stokes.nels,
+                    mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                     element_v, element_P,
                     phases_v_cpu, τ_old, plastic, nothing, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                     backend, workgroup,
@@ -404,7 +404,7 @@ function main(;
                     FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
                         dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
                         dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
-                        mesh_stokes.el2n, mesh_stokes.DoFsP, cache.geo_v, cache.geo_P, mesh_stokes.nels,
+                        mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                         element_v, element_P,
                         phases_v_cpu, phases_P_cpu, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                         dr.ηb, Δt, γP, dr.M_P,
@@ -465,7 +465,7 @@ function main(;
         post = FEMTools.compute_strain_rate_stress_postprocess(
             vx_cpu, vy_cpu,
             el2n_v_cpu,
-            Array(cache.geo_v),
+            Array(geo_v),
             phases_v_cpu,
             τ_old,
             dr.η, G, Δt,
@@ -491,12 +491,12 @@ function main(;
         # Every velocity node is displaced by v·Δt, so the free top surface
         # subsides and the tunnel deforms. Free-slip keeps boundary nodes on their
         # walls (vy=0 on the base, vx=0 on the sides), so the node sets and the
-        # domain box stay valid; the geometry cache is rebuilt on the new config.
+        # domain box stay valid; the mesh geometry is recomputed in place.
         @inbounds for i in eachindex(coords_v)
             coords_v[i] += Δt * SVector(vx_cpu[i], vy_cpu[i])
         end
         copyto!(mesh_stokes.coords, coords_v)
-        cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+        update_geometry!(mesh_stokes)
     end
 
     isnothing(post) && error("No time steps were executed")

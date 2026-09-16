@@ -134,7 +134,7 @@ function main(;
     NQ_v  = length(ip_v.ω)
     NV    = length(element_v)
     NP    = length(element_P)
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     dr = StokesDR(
         backend,
@@ -209,13 +209,13 @@ function main(;
         apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
         apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, cache.geo_P, element_v, element_P,
+            γP, dr, mesh_stokes, geo_P, element_v, element_P,
             γfact, Float64(Δt), backend, workgroup; phases_v = phases_v_cpu,
         )
         @info "Physical time step" istep nsteps t
 
         solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, cache, element_v, element_P,
+            dr, mesh_stokes, mesh_stokes.geometry, element_v, element_P,
             phases_v_cpu, phases_P_cpu, τ_old, plastic, G, Float64(Δt), γP,
             Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
             ncheck,
@@ -230,7 +230,7 @@ function main(;
         )
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, cache, element_v, element_P, phases_v_cpu,
+            dr, mesh_stokes, mesh_stokes.geometry, element_v, element_P, phases_v_cpu,
             τ_old, plastic, τ, G, Float64(Δt), backend, workgroup,
         )
 
@@ -240,13 +240,13 @@ function main(;
         post = FEMTools.compute_strain_rate_stress_postprocess(
             vx_cpu, vy_cpu,
             el2n_v_cpu,
-            Array(cache.geo_v),
+            Array(geo_v),
             τ,
             element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII)
         # advance stress history with corotational (Jaumann) rotation: τ_old = rotate(τ)
-        rotate_stress!(dr, mesh_stokes, cache, element_v, Float64(Δt))
+        rotate_stress!(dr, mesh_stokes, Float64(Δt))
 
         if advect_mesh
             @inbounds for i in eachindex(coords_v)
@@ -255,7 +255,7 @@ function main(;
             FEMTools.straighten_t7_geometry!(coords_v, el2n_v_cpu)
             copyto!(mesh_stokes.coords, coords_v)
             copyto!(mesh_v.coords, coords_v)
-            cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+            update_geometry!(mesh_stokes)
         end
 
         vtk_path = joinpath(out_dir, @sprintf("stokes_2D_pure_shear_triangle_hole_%04d.vtk", istep))

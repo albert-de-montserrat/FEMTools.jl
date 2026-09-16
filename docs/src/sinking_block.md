@@ -65,8 +65,8 @@ pair inf-sup stable; a plain P2/P1-disc pair would reintroduce pressure
 checkerboard modes.
 
 Both fields are combined into one `MixedMesh(mesh_v, element_P)`
-([Mesh](mesh.md)), and `MixedMeshCache` precomputes both fields' geometry at
-the velocity quadrature points once. Unlike the 3-D example, the 2-D example
+([Mesh](mesh.md)), which precomputes both fields' geometry at the velocity
+quadrature points once and stores it as `mesh_stokes.geometry`. Unlike the 3-D example, the 2-D example
 does build a [`StokesDR`](stokes.md): the mixed-mesh Arrow–Hurwicz/DYREL
 solver needs its lumped pressure mass, viscosity-weighted pressure-step array
 `γP` (from
@@ -95,7 +95,7 @@ both `dr.P` and `dr.P0`. This gives the outer pressure iteration a
 physically-scaled starting point instead of zero, rather than acting as a hard
 constraint on the converged answer.
 
-The forward call is `solve_stokes_dyrel!(dr, mesh_stokes, cache, bc_vx, bc_vy,
+The forward call is `solve_stokes_dyrel!(dr, mesh_stokes, bc_vx, bc_vy,
 Δt, γP; phases_v, phases_P, τ_old, plastic, ncheck, ϵ_tol, iterMax,
 total_iterMax, rel_drop0, ...)`, the same mixed-mesh entry point described in
 [Stokes](stokes.md#Compact-setup): an outer Arrow–Hurwicz pressure update

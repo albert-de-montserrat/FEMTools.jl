@@ -108,12 +108,12 @@ end
     # the 2-D mixed-mesh solvers reject a 3-D state instead of dropping z
     @test !hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr3), MixedMesh, MixedMeshCache,
+        Tuple{typeof(dr3), MixedMesh,
               DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
     )
     @test hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr2), MixedMesh, MixedMeshCache,
+        Tuple{typeof(dr2), MixedMesh,
               DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
     )
 end
@@ -721,9 +721,8 @@ end
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
     mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (3, 3))
-    mesh      = MixedMesh(mesh_v, element_P)
-    cache     = MixedMeshCache(CPU(), 1, mesh, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    mesh      = MixedMesh(mesh_v, element_P; workgroup = 1)
+    (; geo_v, geo_P) = mesh.geometry
     nq        = length(element_v.integration_points.ω)
 
     Nq_tuple  = shape_function_values(element_v)
@@ -801,8 +800,7 @@ function _jacobian_fixture(; single_element = false)
         nodes = mesh_v.el2n[:, 1]
         mesh_v = Mesh(backend, mesh_v.coords[nodes], reshape(Int32.(1:7), 7, 1), element_v)
     end
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup = wg)
 
     # A non-trivial velocity keeps the shear blocks away from zero; the purely
     # viscous residual is linear in it, so central differences are exact.
@@ -812,7 +810,7 @@ function _jacobian_fixture(; single_element = false)
     T = zeros(mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
 
-    return (; backend, wg, element_v, element_P, mesh, cache, vx, vy, P, T, phases,
+    return (; backend, wg, element_v, element_P, mesh, vx, vy, P, T, phases,
         η = (2.0,), G = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (Inf,),
         g = (0.0, 0.0), Tref = 0.0, Δt = 1.0)
 end
@@ -822,7 +820,7 @@ function _momentum_residual(f, vx, vy)
     Rv_y = zeros(f.mesh.nnodes)
     assemble_momentum_residual_matrices_atomix!(
         Rv_x, Rv_y, vx, vy, f.P, f.T, nothing,
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.nels,
         f.element_v, f.element_P, f.phases, nothing, nothing, nothing,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
     )
@@ -833,7 +831,7 @@ function _plain_momentum_jacobian(f)
     blocks = ntuple(_ -> zeros(f.mesh.nnodes), 4)
     FEMTools.assemble_momentum_jacobian_matrices_atomix!(
         blocks..., f.vx, f.vy, f.P, f.T,
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.nels,
         f.element_v, f.element_P, f.phases,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
     )
@@ -894,7 +892,7 @@ end
     augmented = ntuple(_ -> zeros(f.mesh.nnodes), 4)
     FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
         augmented..., f.vx, f.vy, f.P, zero(f.P), f.T, zero(f.T),
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.cache.geo_P, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.geometry.geo_P, f.mesh.nels,
         f.element_v, f.element_P, f.phases, f.phases,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref,
         (Inf,), f.Δt, 0.0, ones(f.mesh.nnodesP), f.backend, f.wg,

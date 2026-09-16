@@ -13,6 +13,7 @@ import FEMTools
         :Mesh,
         :MixedMesh,
         :MixedMeshCache,
+        :update_geometry!,
         :QuadraturePointGeometry,
         :ElementGeometry,
         :element_geometry,

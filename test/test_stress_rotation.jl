@@ -88,3 +88,17 @@ end
         @test cached ≈ raw
     end
 end
+
+@testset "rotate_stress! reads a MixedMesh's geometry" begin
+    Ω = 0.8
+    from_mixed = _rotation_fixture(c -> (-Ω * c[2], Ω * c[1]))
+    from_geo = _rotation_fixture(c -> (-Ω * c[2], Ω * c[1]))
+
+    mixed = MixedMesh(from_mixed.mesh, from_mixed.element; workgroup = 1)
+    rotate_stress!(from_mixed.dr, mixed, from_mixed.Δt)
+    rotate_stress!(from_geo.dr, from_geo.mesh, from_geo.mesh.geometry, from_geo.element, from_geo.Δt)
+
+    for (mixed_τ, raw) in zip(Tuple(from_mixed.dr.τ_old), Tuple(from_geo.dr.τ_old))
+        @test mixed_τ ≈ raw
+    end
+end

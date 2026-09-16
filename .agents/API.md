@@ -52,7 +52,7 @@ implementation; unsupported combinations must fail explicitly.
 - Mesh producers: `generate_element2node`, `generate_node2element`,
   `generate_boundary_elements`, `generate_coordinates`, `generate_dofs`,
   `generate_discontinuous_linear_mesh`.
-- Derived data: `precompute_geometry`, `QuadraturePointGeometry`,
+- Derived data: `precompute_geometry`, `update_geometry!`, `QuadraturePointGeometry`,
   `ElementGeometry`, `element_geometry`, `generate_sparsity_pattern`,
   `color_mesh`, `generate_element_groups`.
 - Boundary application: `apply_bc!`.
@@ -60,8 +60,10 @@ implementation; unsupported combinations must fail explicitly.
 High-level `Mesh` constructors either build a structured mesh from a domain or
 accept validated coordinates/connectivity. Passing a `ReferenceElement`
 precomputes solver geometry; omitting it produces a topology-only mesh.
-`MixedMesh` owns distinct velocity and pressure layouts, while
-`MixedMeshCache` owns their precomputed geometry/reference elements.
+`MixedMesh` owns distinct velocity and pressure layouts and, when built from an
+element-aware velocity mesh, a `MixedMeshCache` in `mesh.geometry` holding their
+precomputed geometry and reference elements. `update_geometry!(mesh)` recomputes
+it in place after the coordinates move.
 
 Precomputed geometry holds one `QuadraturePointGeometry` per element and
 quadrature point: the inverse isoparametric Jacobian and the weighted volume.
@@ -154,13 +156,12 @@ Lithostatic pressure follows the same mesh/material/BC shape with
 
 ```julia
 mesh_v = Mesh(backend, coords, el2n_v, element_v)
-mesh = MixedMesh(mesh_v, element_P)
-cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+mesh = MixedMesh(mesh_v, element_P; workgroup)
 material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
 dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
               stress_size=(nq, mesh.nels))
-assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, cache, γfact, Δt)
-stats = solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP)
+assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, γfact, Δt)
+stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP)
 stats.converged || error("Stokes solve did not converge")
 ```
 
@@ -247,7 +248,7 @@ is easier to document, optimize, and support across CPU/GPU/MPI backends.
 - `solver!` is shared by two scalar physics states, while Stokes uses named
   entry points and distinct 2-D/3-D layouts.
 - Advanced Stokes/adjoint workflows still require long positional signatures;
-  high-level cache-owned methods cover only the common paths.
+  high-level mesh-owned methods cover only the common paths.
 - Several boundary-condition types exist internally but only Dirichlet behavior
   is exported and applied as supported API.
 - Example-local mesh import, plotting, and configuration are not core API.

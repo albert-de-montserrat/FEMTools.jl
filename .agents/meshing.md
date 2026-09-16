@@ -21,7 +21,8 @@ Meshing spans `src/elements/` and `src/mesh/`:
   construction path derives discontinuous linear pressure connectivity and
   nodal normals from a velocity mesh.
 - `MixedMeshCache` stores velocity/pressure geometry and the corresponding
-  reference elements.
+  reference elements. A `MixedMesh` built from an element-aware velocity mesh
+  keeps one in `mesh.geometry`; `update_geometry!` refills it in place.
 - Sparsity, node-to-element adjacency, greedy coloring, color groups, and
   discontinuous linear mesh generation are available.
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:

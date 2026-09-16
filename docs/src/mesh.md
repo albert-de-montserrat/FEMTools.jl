@@ -11,6 +11,7 @@ FEMTools.AbstractMesh
 Mesh
 MixedMesh
 MixedMeshCache
+update_geometry!
 generate_discontinuous_linear_mesh
 ```
 
@@ -19,8 +20,7 @@ device:
 
 ```julia
 mesh_v = Mesh(backend, coords_cpu, el2n_cpu, velocity_element)
-mesh   = MixedMesh(mesh_v, pressure_element)
-cache  = MixedMeshCache(backend, workgroup, mesh, velocity_element, pressure_element)
+mesh   = MixedMesh(mesh_v, pressure_element; workgroup)
 ```
 
 An element-aware `Mesh` stores its reference element and precomputed geometry;
@@ -30,10 +30,12 @@ available when geometry is not needed.
 
 `MixedMesh(mesh_v, pressure_element)` constructs discontinuous pressure
 connectivity and nodal normals on the CPU, then returns them on the same array
-backend as `mesh_v`. `MixedMeshCache` allocates both geometry arrays on
-`backend` and retains both reference elements, allowing high-level Stokes calls
-to infer geometry, elements, and backend. Avoid mixing host connectivity with
-device solution arrays.
+backend as `mesh_v`. Because `mesh_v` stores its reference element, the mixed
+mesh also computes both fields' geometry on that backend and keeps it, with both
+reference elements, as a [`MixedMeshCache`](@ref) in `mesh.geometry`. High-level
+Stokes calls take geometry, elements, and backend from the mesh alone. After
+moving `mesh.coords`, call `update_geometry!(mesh)` to recompute the geometry in
+place. Avoid mixing host connectivity with device solution arrays.
 
 ## Coordinates and Degrees of Freedom
 

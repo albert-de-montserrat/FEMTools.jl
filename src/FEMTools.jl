@@ -118,7 +118,7 @@ export AbstractLinearElement,
 export LinearElement, QuadraticElement, CubicElement
 export ReferenceElement, ShapeFunctions, IntegrationPoints
 export order
-export Mesh, MixedMesh, MixedMeshCache
+export Mesh, MixedMesh, MixedMeshCache, update_geometry!
 export QuadraturePointGeometry, ElementGeometry, element_geometry
 export DirichletBoundaryCondition, apply_bc!
 
