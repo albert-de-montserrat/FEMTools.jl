@@ -393,37 +393,42 @@ end
 
 """
     stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
-                                cell_phase, η, ρ, g; phase=2)
+                                cell_phase, η, ρ, g; workgroup=256)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
-viscous operator derivative for one material phase. `phase` selects the
-one-based material phase, and the returned named tuple contains
-`density_gradient` and `viscosity_gradient`.
+viscous operator derivative for every material phase at once. The returned
+named tuple contains `density_gradient` and `viscosity_gradient`, each an
+`NTuple` with one entry per phase of `η`/`ρ`.
 """
 function stokes_material_gradient_3d(
     forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
-    cell_phase, η, ρ, g::NTuple{3}; phase = 2, workgroup = 256,
+    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
 )
-    1 ≤ phase ≤ length(η) == length(ρ) || throw(ArgumentError("invalid material phase"))
+    length(η) == length(ρ) || throw(ArgumentError("η and ρ must have the same length"))
+    nphases = length(η)
     pressure = similar(first(forward_velocity), 4, mesh.nels)
     fill!(pressure, 0)
     residual = ntuple(i -> similar(forward_velocity[i]), 3)
     zero_velocity = ntuple(i -> fill!(similar(forward_velocity[i]), 0), 3)
+    zero_g = ntuple(_ -> zero(first(g)), 3)
     zero_phase = map(zero, η)
     tables = stokes_tables_3d(KA.get_backend(first(forward_velocity)), mesh.element)
 
-    density = ntuple(i -> i == phase ? one(ρ[i]) : zero(ρ[i]), length(ρ))
-    assemble_stokes_momentum_residual_3d!(
-        residual, zero_velocity, pressure, mesh, cell_phase, η, density, g;
-        workgroup, tables,
-    )
-    density_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    density_gradient = ntuple(nphases) do phase
+        density = ntuple(i -> i == phase ? one(ρ[i]) : zero(ρ[i]), nphases)
+        assemble_stokes_momentum_residual_3d!(
+            residual, zero_velocity, pressure, mesh, cell_phase, η, density, g; workgroup, tables,
+        )
+        -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    end
 
-    viscosity = ntuple(i -> i == phase ? one(η[i]) : zero(η[i]), length(η))
-    assemble_stokes_momentum_residual_3d!(
-        residual, forward_velocity, pressure, mesh, cell_phase, viscosity,
-        zero_phase, ntuple(_ -> zero(first(g)), 3); workgroup, tables,
-    )
-    viscosity_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    viscosity_gradient = ntuple(nphases) do phase
+        viscosity = ntuple(i -> i == phase ? one(η[i]) : zero(η[i]), nphases)
+        assemble_stokes_momentum_residual_3d!(
+            residual, forward_velocity, pressure, mesh, cell_phase, viscosity, zero_phase, zero_g; workgroup, tables,
+        )
+        -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    end
+
     return (; density_gradient, viscosity_gradient)
 end
