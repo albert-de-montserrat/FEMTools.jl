@@ -221,7 +221,7 @@ using DomainSets: ×
     # sized by the element count. The tables must be backend arrays: this kernel
     # launches once per adjoint iteration, and a tuple would be rebuilt into the
     # launch argument pack every time.
-    @test mf.state.v.x === dr.v.x
+    @test mf.state.vx === dr.v.x
     @test mf.state.geo_v === geo_v
     @test all(t isa AbstractVector && length(t) == nq
         for t in (mf.state.Nq, mf.state.NqP, mf.state.∂N∂ξ_v))
