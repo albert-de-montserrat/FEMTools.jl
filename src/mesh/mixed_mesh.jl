@@ -114,6 +114,7 @@ function MixedMesh(
     DoFsP,
     el2nP;
     workgroup = 256,
+    geometry_precision = eltype(eltype(coords)),
 ) where {nDim}
     coords_cpu = Array(coords)
     el2n_cpu = Array(el2n)
@@ -142,7 +143,7 @@ function MixedMesh(
         Int(maximum(DoFsP)),
         nothing,
     )
-    return _with_geometry(mesh, element, elementP, workgroup)
+    return _with_geometry(mesh, element, elementP, workgroup, geometry_precision)
 end
 
 """
@@ -162,7 +163,12 @@ array backend as `mesh_v`. When `mesh_v` stores its reference element, the
 geometry of both fields is precomputed into `geometry`; otherwise `geometry`
 is `nothing` and the high-level Stokes solvers reject the mesh.
 """
-function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement; workgroup = 256) where {nDim, O1}
+function MixedMesh(
+    mesh_v::Mesh{nDim, O1},
+    element_P::ReferenceElement;
+    workgroup = 256,
+    geometry_precision = eltype(eltype(mesh_v.coords)),
+) where {nDim, O1}
     coords_cpu = Array(mesh_v.coords)
     el2n_cpu   = Array(mesh_v.el2n)
     el2nP_cpu, DoFsP_cpu, _ = generate_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
@@ -193,13 +199,15 @@ function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement; workgrou
         Int(maximum(DoFsP_cpu)),
         nothing,
     )
-    return _with_geometry(mesh, mesh_v.element, element_P, workgroup)
+    return _with_geometry(mesh, mesh_v.element, element_P, workgroup, geometry_precision)
 end
 
-_with_geometry(mesh::MixedMesh, ::Nothing, element_P, workgroup) = mesh
+_with_geometry(mesh::MixedMesh, ::Nothing, element_P, workgroup, geometry_precision) = mesh
 
-function _with_geometry(mesh::MixedMesh{nDim, O1, O2}, element_v::ReferenceElement, element_P, workgroup) where {nDim, O1, O2}
-    geometry = MixedMeshCache(KA.get_backend(mesh.coords), workgroup, mesh, element_v, element_P)
+function _with_geometry(mesh::MixedMesh{nDim, O1, O2}, element_v::ReferenceElement, element_P, workgroup, geometry_precision) where {nDim, O1, O2}
+    geometry = MixedMeshCache(
+        KA.get_backend(mesh.coords), workgroup, mesh, element_v, element_P; geometry_precision,
+    )
     return MixedMesh{nDim, O1, O2,
                      typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n),
                      typeof(mesh.DoFsP), typeof(mesh.el2nP), typeof(mesh.normals),
@@ -219,7 +227,7 @@ function _mesh_geometry(mesh::MixedMesh)
 end
 
 """
-    MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    MixedMeshCache(backend, workgroup, mesh, element_v, element_P; geometry_precision=FP)
 
 Precompute geometry for both fields of a 2D mixed mesh at the velocity
 integration points. A `MixedMesh` built with its reference elements already
@@ -240,6 +248,10 @@ Fields:
   pressure scaling are the only consumers and neither uses secondary-field
   gradients.
 - `element_v`, `element_P`: reference elements used to build the cache.
+
+`geometry_precision` sets the element type of both arrays and defaults to the
+reference elements'. `Float32` halves them under a `Float64` solve; see
+[`precompute_geometry`](@ref) for what that trades.
 """
 struct MixedMeshCache{GV, GP, EV, EP}
     geo_v::GV
@@ -255,11 +267,14 @@ function MixedMeshCache(
     workgroup,
     mesh::MixedMesh{2},
     element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
+    element_P::ReferenceElement{TP};
+    geometry_precision = FP,
 ) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+    _check_geometry_precision(geometry_precision)
     NQ_v = length(element_v.integration_points.ω)
-    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{2, FP, 4}}, mesh.nels)
-    geo_P = KA.allocate(backend, NTuple{NQ_v, FP}, mesh.nels)
+    FPg  = geometry_precision
+    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{2, FPg, 4}}, mesh.nels)
+    geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
     _fill_mixed_geometry!(geo_v, geo_P, backend, workgroup, mesh, element_v, element_P)
     return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end

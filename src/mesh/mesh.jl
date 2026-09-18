@@ -65,7 +65,10 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
         )
     end
 
-    function Mesh(backend, Ω, element::ReferenceElement{T}, nels; workgroup = 256) where T<:AbstractElement{nDim} where nDim
+    function Mesh(
+        backend, Ω, element::ReferenceElement{T}, nels;
+        workgroup = 256, geometry_precision = FP,
+    ) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
 
         TDev       = TA(backend)
         Γ          = boundary(Ω)
@@ -80,7 +83,7 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
         DoFs   = TDev(DoFs_cpu)
         el2n   = TDev(el2n_cpu)
         Γnodes = TDev(Γnodes_cpu)
-        geometry = precompute_geometry(coords, el2n, element; backend, workgroup)
+        geometry = precompute_geometry(coords, el2n, element; backend, workgroup, geometry_precision)
 
         return new{
             nDim,
@@ -147,9 +150,10 @@ function Mesh(
     el2n_cpu::AbstractMatrix{<:Integer},
     element::ReferenceElement{T};
     workgroup = 256,
-) where {nDim, T <: AbstractElement{nDim}}
+    geometry_precision = FP,
+) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
     mesh = Mesh(backend, coords_cpu, el2n_cpu; order = order(element))
-    geometry = precompute_geometry(mesh.coords, mesh.el2n, element; backend, workgroup)
+    geometry = precompute_geometry(mesh.coords, mesh.el2n, element; backend, workgroup, geometry_precision)
     return Mesh{nDim, order(element), Nothing, Nothing,
                 typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n), typeof(mesh.Γnodes),
                 typeof(element), typeof(geometry)}(
@@ -186,10 +190,11 @@ function Mesh(
     coords::Vector{SVector{nDim, FP}},  # vertex coordinates
     DoFs::T2,    # degrees of freedom
     el2n::T3,    # element-to-node connectivity
-    Γnodes::T4,  # boundary nodes
+    Γnodes::T4;  # boundary nodes
+    geometry_precision = FP,
 ) where {D, B, nDim, FP, T2, T3, T4, T<:AbstractElement{nDim}}
 
-    geometry = precompute_geometry(coords, el2n, element)
+    geometry = precompute_geometry(coords, el2n, element; geometry_precision)
 
     return Mesh{
         nDim,
@@ -521,14 +526,34 @@ A `QuadraturePointGeometry` keeps the inverse Jacobian and the weighted volume; 
 plain float keeps the weighted volume alone, for a field whose gradients are
 never needed. The output array's element type selects between them, so one kernel
 fills both.
+
+`J` is the Jacobian at the working precision of the coordinates. `T` fixes the
+stored precision, which may be narrower: the inverse and the determinant are
+formed first and rounded once, on construction.
 """
-@inline _geometry_entry(::Type{<:QuadraturePointGeometry}, J, ω) =
-    QuadraturePointGeometry(inv(J), abs(det(J)) * ω)
+@inline _geometry_entry(T::Type{<:QuadraturePointGeometry}, J, ω) =
+    T(inv(J), abs(det(J)) * ω)
 @inline _geometry_entry(::Type{FP}, J, ω) where {FP <: AbstractFloat} =
     FP(abs(det(J)) * ω)
 
 """
-    precompute_geometry(coords, el2n, element; backend=KA.get_backend(coords), workgroup=256)
+    _check_geometry_precision(FPg)
+
+Reject a `geometry_precision` that is not a concrete floating-point type.
+
+The keyword carries no type annotation, because an abstract one would truncate
+constant propagation and leave the geometry array's element type uninferred at
+every call site. The check restores the diagnostic that annotation would have
+given.
+"""
+@inline function _check_geometry_precision(FPg)
+    (FPg isa Type && FPg <: AbstractFloat && isconcretetype(FPg)) || throw(ArgumentError(
+        "geometry_precision must be a concrete floating-point type, e.g. Float32 or Float64; got $FPg"))
+    return nothing
+end
+
+"""
+    precompute_geometry(coords, el2n, element; backend=KA.get_backend(coords), workgroup=256, geometry_precision=FP)
 
 Precompute the inverse isoparametric Jacobian and weighted element volume for
 all integration points of `element`.
@@ -536,6 +561,14 @@ all integration points of `element`.
 The result is an array of `NTuple{NQ, QuadraturePointGeometry}`, one entry per
 element. Combine it with [`shape_function_gradients`](@ref) through
 [`element_geometry`](@ref) to obtain physical shape-function gradients.
+
+`geometry_precision` sets the element type of the stored geometry, which need not
+match the coordinates'. Geometry is the largest element-indexed array in a mesh —
+86–91 % of a 3-D one — so storing it as `Float32` under a `Float64` solve halves
+that at the cost of an O(2⁻²⁴) relative perturbation of the discrete operator.
+The Jacobian is still inverted at the coordinates' precision and rounded once, on
+store, and the assemblers seed their accumulators from the solution's element
+type, so the narrower value promotes on first use rather than propagating.
 """
 function precompute_geometry(
     coords,
@@ -543,19 +576,21 @@ function precompute_geometry(
     element::ReferenceElement{T};
     backend = KA.get_backend(coords),
     workgroup = 256,
+    geometry_precision = FP,
 ) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
+    _check_geometry_precision(geometry_precision)
     ip = element.integration_points
     NQ = length(ip.ω)
     ∂N∂ξq = shape_function_gradients(element, ip)
-    Geometry = NTuple{NQ, QuadraturePointGeometry{nDim, FP, nDim * nDim}}
-    geometry = KA.allocate(backend, Geometry, size(el2n, 2))
+    Point = QuadraturePointGeometry{nDim, geometry_precision, nDim * nDim}
+    geometry = KA.allocate(backend, NTuple{NQ, Point}, size(el2n, 2))
     if backend isa CPU
         for iel in axes(el2n, 2)
             local_nodes = local_nodes_of(el2n, iel, Val(N))
             c = element_coordinate_matrix(coords, local_nodes)
             geometry[iel] = ntuple(Val(NQ)) do q
                 J = c' * ∂N∂ξq[q]
-                _geometry_entry(QuadraturePointGeometry{nDim, FP, nDim * nDim}, J, ip.ω[q])
+                _geometry_entry(Point, J, ip.ω[q])
             end
         end
         return geometry

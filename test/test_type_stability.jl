@@ -27,6 +27,15 @@ const TRI_MESH_GEO = precompute_geometry(
 const TRI_MESH_WEIGHTS = map(el -> map(p -> p.dΩ, el), TRI_MESH_GEO)
 const TRI_NQ = (SVector(1 / 3, 1 / 3, 1 / 3),)
 
+# The same geometry stored in single precision. Geometry may be narrower than the
+# state it is assembled against: the element accumulators are seeded from the
+# solution's type, so a Float32 J⁻¹ has to promote on first use. If it instead
+# infected the accumulators, the residual below would come back Float32.
+const TRI_MESH_GEO32 = precompute_geometry(
+    [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)],
+    reshape(Int32[1, 2, 3], 3, 1), TRI_ELEMENT; geometry_precision = Float32,
+)
+
 # Backend-resident forms of the same tables. Their lengths are not part of their
 # types, so a kernel that derives a static size from a table rather than from the
 # geometry loses inference here while staying inferrable with the tuples.
@@ -282,14 +291,14 @@ end
 # The element residual is where a table-derived static size would show: the
 # integration-point stress history sizes an `SVector` by the quadrature-point
 # count, which the geometry carries in its type and an array table does not.
-function _stokes_element_residual_case(Nq, ∂N∂ξ)
+function _stokes_element_residual_case(Nq, ∂N∂ξ, geo = TRI_MESH_GEO)
     vx = zeros(3); vy = zeros(3)
     P = zeros(3); T = zeros(3); Pnum = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
     τ_old = (zeros(3, 1), zeros(3, 1), zeros(3, 1))
     return FEMTools.momentum_element_residual(
-        vx, vy, P, T, Pnum, el2n, el2n, TRI_MESH_GEO, phases,
+        vx, vy, P, T, Pnum, el2n, el2n, geo, phases,
         (1.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, -1.0), 0.0, 1.0,
         Nq, Nq, ∂N∂ξ, 1, Val(3), Val(3), τ_old, nothing, nothing,
     )
@@ -359,6 +368,10 @@ end
     )) isa element_residual_type
     @test (@inferred _stokes_element_residual_case(
         TRI_NQ_TABLE, TRI_DNDξ_TABLE,
+    )) isa element_residual_type
+    @test (@inferred _stokes_element_residual_case(
+        shape_function_values(TRI_ELEMENT), shape_function_gradients(TRI_ELEMENT),
+        TRI_MESH_GEO32,
     )) isa element_residual_type
     @test (@inferred _pressure_scaling_assembly_case()) === nothing
 end
