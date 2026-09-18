@@ -111,7 +111,6 @@ QuadraturePointGeometry
 ElementGeometry
 element_geometry
 FEMTools.precompute_geometry_kernel!
-FEMTools.element_geometry
 ```
 
 ## VTK Output

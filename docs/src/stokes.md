@@ -44,6 +44,10 @@ Stokes3DWorkspace
 StokesAdjointWorkspace
 DruckerPrager
 pressure_mass
+FEMTools.velocity
+FEMTools.stress
+FEMTools.pressure
+FEMTools.temperature
 ```
 
 The velocity and pressure fields live on separate node sets described by a
