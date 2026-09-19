@@ -30,11 +30,13 @@ function sparse_stokes_reference(forward)
     ηvals = ntuple(_ -> Float64[], nphases)
     rhs = zeros(nv + np)
 
+    ∂N∂ξ = shape_function_gradients(mesh.element)
     for cell in axes(mesh.el2n, 2)
         nodes = @view mesh.el2n[:, cell]
         phase = cell_phase[cell]
-        for q in axes(mesh.geometry, 1)
-            grad, dΩ = mesh.geometry[q, cell]
+        geo_el = element_geometry(mesh.geometry, cell, ∂N∂ξ)
+        for q in eachindex(geo_el)
+            grad, dΩ = geo_el[q]
             N = Nq[q]
             for a in 1:27, i in 1:3
                 ia = vdof(nodes[a], i)
@@ -92,8 +94,8 @@ function density_load_derivative(forward)
     for cell in axes(mesh.el2n, 2)
         phase = cell_phase[cell]
         nodes = @view mesh.el2n[:, cell]
-        for q in axes(mesh.geometry, 1)
-            _, dΩ = mesh.geometry[q, cell]
+        for q in eachindex(mesh.geometry[cell])
+            dΩ = mesh.geometry[cell][q].dΩ
             for a in 1:27, i in 1:3
                 d_rhs[phase][3(nodes[a] - 1) + i] += Nq[q][a] * g[i] * dΩ
             end

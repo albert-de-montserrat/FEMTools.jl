@@ -154,3 +154,22 @@ function _checked_λmax(jacobian, PC, label)
     end
     return λmax
 end
+
+"""
+    fused_sum(f, arrays...)
+
+Sum `f` applied elementwise across `arrays`, without materialising the
+elementwise result.
+
+The arrays must share axes. Summation is over a lazy `Broadcasted`, so this
+allocates nothing and makes one pass, where writing the same expression as
+`sum(f.(a, b))` allocates one temporary per array-valued subexpression. The
+reduction is the same pairwise one `sum` performs on an array, so the result
+matches the materialised form exactly.
+
+Used by the pseudo-transient solvers for their spectral estimates, which reduce
+several nodal arrays together on every convergence check and would otherwise
+churn a full set of temporaries per check.
+"""
+@inline fused_sum(f, arrays...) =
+    sum(Base.Broadcast.instantiate(Base.Broadcast.broadcasted(f, arrays...)))

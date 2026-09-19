@@ -23,6 +23,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
     Δt, workgroup,
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     RP, vx, vy, P = dr.RP, dr.v.x, dr.v.y, dr.P
     P0, T, T0 = dr.P0, dr.T, dr.T0
     el2n_v, el2nP = mesh_stokes.el2n, mesh_stokes.DoFsP
@@ -49,6 +50,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         Enzyme.Const(dr.ηb),
         Enzyme.Const(Δt),
         Enzyme.Const(NqP),
+        Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)),
         Enzyme.Const(Val(NP)),
         Enzyme.Const(workgroup),

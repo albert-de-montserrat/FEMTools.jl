@@ -1,4 +1,5 @@
 """
+    rotate_stress!(dr, mesh_stokes::MixedMesh, Δt)
     rotate_stress!(dr, mesh_stokes, cache, element_v, Δt)
     rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 
@@ -7,8 +8,14 @@ Advance the deviatoric-stress history by rotating the current stress
 into the components of `dr.τ_old`.
 Unpacks the solver state, connectivity (`mesh_stokes.el2n`), and element
 geometry (`cache.geo_v`) for the low-level `_rotate_stress!` worker.
-`element_v` supplies the velocity-node count `NV`.
+`element_v` supplies the velocity-node count `NV`. The `MixedMesh` form takes
+the geometry and element from `mesh_stokes.geometry`.
 """
+function rotate_stress!(dr, mesh_stokes::MixedMesh, Δt)
+    cache = _mesh_geometry(mesh_stokes)
+    return rotate_stress!(dr, mesh_stokes, cache, cache.element_v, Δt)
+end
+
 function rotate_stress!(dr, mesh_stokes, cache::MixedMeshCache, element_v, Δt)
     return rotate_stress!(dr, mesh_stokes, cache.geo_v, element_v, Δt)
 end
@@ -28,15 +35,16 @@ function _rotate_stress!(
     el2n_v,
     geo_v,
     dt,
-    ::ReferenceElement{TV},
+    element_v::ReferenceElement{TV},
 ) where {NV, TV <: AbstractElement{2, NV}}
     nels = size(el2n_v, 2)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
 
     for iel in 1:nels
         local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
         vxloc = _gather_local(vx, local_nodes, Val(NV))
         vyloc = _gather_local(vy, local_nodes, Val(NV))
-        geo_el = element_geometry(geo_v, iel)
+        geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
 
         for q in eachindex(geo_el)
             ∂N∂x, = geo_el[q]

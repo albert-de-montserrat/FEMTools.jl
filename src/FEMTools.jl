@@ -118,7 +118,8 @@ export AbstractLinearElement,
 export LinearElement, QuadraticElement, CubicElement
 export ReferenceElement, ShapeFunctions, IntegrationPoints
 export order
-export Mesh, MixedMesh, MixedMeshCache
+export Mesh, MixedMesh, MixedMeshCache, update_geometry!
+export QuadraturePointGeometry, ElementGeometry, element_geometry
 export DirichletBoundaryCondition, apply_bc!
 
 # Mesh construction and graph utilities.
@@ -138,12 +139,14 @@ export eval_shape_function,
     eval_shape_function_gradient,
     eval_shape_function_jacobian,
     shape_function_values,
+    shape_function_gradients,
+    quadrature_table,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
 export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
-export StokesMaterial, StokesDR, DruckerPrager,
+export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, DruckerPrager,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,
@@ -180,7 +183,6 @@ public assemble_diffusion_matrices_atomix!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
-public element_geometry
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public renumber_connectivity, orient_triangle_elements!, add_t7_bubbles!,

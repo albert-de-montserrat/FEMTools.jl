@@ -19,19 +19,27 @@ end
 # Helper: precompute physical-space geometry for a mesh element set
 # ---------------------------------------------------------------------------
 
-function _stokes_geo(coords, el2n, nels, element::ReferenceElement{E}) where {E <: AbstractElement{2, NV}} where NV
-    ip    = element.integration_points
-    NQ    = length(ip.ω)
-    FP    = eltype(ip.ω)
-    ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
+_stokes_geo(coords, el2n, nels, element) =
+    precompute_geometry(coords, el2n, element; backend = CPU(), workgroup = 1)
+
+# Secondary-field geometry: weighted volumes only, filled by the same kernel.
+function _stokes_geo_P(coords, el2n, nels, element::ReferenceElement{E}) where {NV, FP, E <: AbstractElement{2, NV, FP}}
+    ip = element.integration_points
+    geo = Vector{NTuple{length(ip.ω), FP}}(undef, nels)
     FEMTools.precompute_geometry_kernel!(CPU(), 1)(
-        geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV); ndrange = nels,
+        geo, coords, el2n, shape_function_gradients(element), ip.ω, Val(NV); ndrange = nels,
     )
     synchronize(CPU())
     return geo
 end
+
+# One-quadrature-point element geometry built directly from physical gradients.
+# The identity inverse Jacobian makes the stored point reproduce `∂N∂x` exactly,
+# which is what these element-level tests are stated in terms of.
+_stokes_geo_el(∂N∂x::SMatrix{N, D, T}, dΩ) where {N, D, T} =
+    ElementGeometry((∂N∂x,), (QuadraturePointGeometry(one(SMatrix{D, D, T}), T(dΩ)),))
+# Secondary-field geometry stores weighted volumes only.
+_stokes_geo_weights(dΩ) = (dΩ,)
 
 # ---------------------------------------------------------------------------
 # StokesDR constructor
@@ -100,12 +108,12 @@ end
     # the 2-D mixed-mesh solvers reject a 3-D state instead of dropping z
     @test !hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr3), MixedMesh, MixedMeshCache,
+        Tuple{typeof(dr3), MixedMesh,
               DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
     )
     @test hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr2), MixedMesh, MixedMeshCache,
+        Tuple{typeof(dr2), MixedMesh,
               DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
     )
 end
@@ -175,6 +183,11 @@ end
         @test size(dr.τ_old.xy) == (3, 4)
         @test all(iszero, Array(dr.τ.xx))
         @test all(iszero, Array(dr.τ_old.xx))
+        @test size(dr.τ.II) == size(dr.τ_old.II) == (0, 0)
+
+        dr3 = StokesDR(CPU(), 10, 12, η, ηb, α; g = (FP(0), FP(0), FP(0)), stress_size = (3, 4))
+        @test size(dr3.τ.xy) == (3, 4)
+        @test size(dr3.τ.II) == size(dr3.τ_old.II) == (0, 0)
     end
 end
 
@@ -205,7 +218,7 @@ end
     T = SA[0.0]
     g = (0.0, -2.0, 0.0)
     R = FEMTools.integrate_momentum_residual(
-        v, P, Pnum, T, ((dNdx, 2.0),), SA[1],
+        v, P, Pnum, T, _stokes_geo_el(dNdx, 2.0), SA[1],
         (4.0,), (Inf,), (0.0,), (3.0,), (Inf,), g, 0.0, 1.0,
         (Nv,), (Nv,),
     )
@@ -222,7 +235,7 @@ end
     v = (SA[1.0], SA[2.0], SA[3.0])
     residual = FEMTools.integrate_PH_pressure_residual(
         v, SA[0.0], SA[0.0], SA[0.0], SA[0.0],
-        ((dNdx, 2.0),), ((dNdx, 2.0),), SA[1],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
         (0.0,), (Inf,), 1.0, (SA[1.0],),
     )
     @test residual ≈ SA[-4.0]
@@ -334,7 +347,7 @@ let
     Nv_c    = SA[1/3, 1/3, 1/3]
     NqP_c   = SA[1/3, 1/3, 1/3]
     dNdx_0  = @SMatrix zeros(3, 2)
-    geo_el  = ((dNdx_0, 0.5),)          # dΩ = 0.5 (reference triangle area)
+    geo_el  = _stokes_geo_el(dNdx_0, 0.5)   # dΩ = 0.5 (reference triangle area)
     Nq      = (Nv_c,)
     NqP_v   = (NqP_c,)
 
@@ -351,8 +364,8 @@ let
             Δt, ηb, α, dΩ = FP(2), (FP(4),), (FP(0.25),), FP(0.5)
             residual = FEMTools.integrate_PH_pressure_residual(
                 (zero(P), zero(P)), P, P0, T, T0,
-                ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
-                ((@SMatrix(zeros(FP, 3, 2)), dΩ),),
+                _stokes_geo_el(@SMatrix(zeros(FP, 3, 2)), dΩ),
+                _stokes_geo_weights(dΩ),
                 SA[1, 1, 1], α, ηb, Δt, (Nv,),
             )
             rate = -sum(Nv .* (P - P0)) / (ηb[1] * Δt) +
@@ -433,7 +446,7 @@ let
     @testset "integrate_momentum_residual — Pnum correction shifts residual" begin
         # With nonzero ∂N∂x the pressure term is nonzero; Pnum adds to it.
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]   # reference-triangle gradients
-        geo_nz  = ((dNdx_nz, 1.0),)
+        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
         T_loc   = SA[0.0, 0.0, 0.0]
         P_loc   = SA[1.0, 1.0, 1.0]
         Pn_loc  = SA[0.5, 0.5, 0.5]
@@ -459,7 +472,7 @@ let
 
     @testset "integrate_momentum_x/y_residual — inline pressure correction matches explicit Pnum" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = ((dNdx_nz, 1.0),)
+        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
         vx_loc  = SA[0.2, -0.1, 0.4]
         vy_loc  = SA[-0.3, 0.5, 0.1]
         P_loc   = SA[0.7, 0.2, -0.1]
@@ -482,7 +495,7 @@ let
             γ_eff,
             FEMTools.integrate_PH_pressure_residual(
                 (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
-                geo_nz, geo_nz, phase_loc, α, ηb, Δt, NqP_v,
+                geo_nz, _stokes_geo_weights(1.0), phase_loc, α, ηb, Δt, NqP_v,
             ),
             MP_loc,
         )
@@ -497,7 +510,7 @@ let
 
         augmented_args = (
             (vx_loc, vy_loc), P_loc, P0loc, T_loc, T0loc,
-            geo_nz, geo_nz, phase_loc, phase_loc,
+            geo_nz, _stokes_geo_weights(1.0), phase_loc, phase_loc,
             η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, MP_loc, Nq, NqP_v,
         )
         @test FEMTools.integrate_momentum_x_residual(augmented_args...) ≈ explicit_x
@@ -520,7 +533,7 @@ let
 
     @testset "x/y component functions match combined finite-G stress" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = ((dNdx_nz, 1.0),)
+        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
         vx_loc  = SA[0.2, -0.1, 0.4]
         vy_loc  = SA[-0.3, 0.5, 0.1]
         P_loc   = SA[0.7, 0.2, -0.1]
@@ -536,7 +549,7 @@ let
 
     @testset "integrate_momentum_residual — finite-G old stress contributes" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = ((dNdx_nz, 1.0),)
+        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
         T_loc   = SA[0.0, 0.0, 0.0]
         τ_old   = (SA[0.3, 0.3, 0.3], SA[-0.1, -0.1, -0.1], SA[0.2, 0.2, 0.2])
         R0_x, R0_y = FEMTools.integrate_momentum_residual(
@@ -578,7 +591,7 @@ end
     element_P = ReferenceElement(LinearElement{2, 3, FP})
     mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
     mesh      = MixedMesh(mesh_v, element_P)
-    geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    geo_P     = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
     M_P      = zeros(FP, mesh.nnodesP)
     γP       = zeros(FP, mesh.nnodesP)
@@ -603,7 +616,7 @@ end
     element_P = ReferenceElement(LinearElement{2, 3, FP})
     mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
     mesh      = MixedMesh(mesh_v, element_P)
-    geo_P     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    geo_P     = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
     γP       = zeros(FP, mesh.nnodesP)
     dr       = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (6.0, 99.0), (1.0, 1.0), (0.0, 0.0))
@@ -708,6 +721,73 @@ end
     @test sum(Rv_y) ≈ -ρ0 * gy * 1.0   atol = 1e-10
 end
 
+@testset "backend-resident shape-function tables" begin
+    FP        = Float64
+    element_v = ReferenceElement(QuadraticElement{2, 6, FP})
+    element_P = ReferenceElement(LinearElement{2, 3, FP})
+    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (3, 3))
+    mesh      = MixedMesh(mesh_v, element_P; workgroup = 1)
+    (; geo_v, geo_P) = mesh.geometry
+    nq        = length(element_v.integration_points.ω)
+
+    Nq_tuple  = shape_function_values(element_v)
+    NqP_tuple = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_tuple = shape_function_gradients(element_v)
+    Nq  = quadrature_table(CPU(), Nq_tuple)
+    NqP = quadrature_table(CPU(), NqP_tuple)
+    ∂N∂ξ = quadrature_table(CPU(), ∂N∂ξ_tuple)
+
+    @test Nq isa AbstractVector
+    @test length(Nq) == nq
+    @test all(Nq[q] === Nq_tuple[q] for q in 1:nq)
+    @test all(∂N∂ξ[q] === ∂N∂ξ_tuple[q] for q in 1:nq)
+
+    vx = collect(range(FP(0), FP(1), mesh.nnodes))
+    vy = collect(range(FP(1), FP(2), mesh.nnodes))
+    P  = collect(range(FP(-1), FP(1), mesh.nnodesP))
+    T  = zeros(FP, mesh.nnodesP)
+    phases_v = ones(Int, mesh.nnodes)
+    phases_P = ones(Int, mesh.nnodesP)
+    # Integration-point stress history: the branch whose local `SVector` length
+    # comes from the quadrature-point count rather than from the table.
+    τ_old = (fill(FP(0.2), nq, mesh.nels), fill(FP(-0.1), nq, mesh.nels), fill(FP(0.15), nq, mesh.nels))
+    η, G = (1.0, 1.0), (4.0, 4.0)
+    α, ρ0, K = (0.0, 0.0), (1.0, 1.0), (Inf, Inf)
+
+    Rv_x = zeros(FP, mesh.nnodes); Rv_y = zeros(FP, mesh.nnodes)
+    RP   = zeros(FP, mesh.nnodesP)
+
+    momentum(nv, np, gv) = FEMTools.assemble_momentum_residual_kernel!(
+        Rv_x, Rv_y, vx, vy, P, T, nothing, mesh.el2n, mesh.DoFsP, geo_v, mesh.nels,
+        phases_v, τ_old, nothing, nothing, η, G, α, ρ0, K, (0.0, -1.0), FP(0), FP(1),
+        nv, np, gv, Val(6), Val(3), 1,
+    )
+    pressure(np, gv) = FEMTools.assemble_pressure_residual_kernel!(
+        RP, vx, vy, P, zero(P), T, T, mesh.el2n, mesh.DoFsP, geo_v, geo_P, mesh.nels,
+        phases_P, α, (Inf, Inf), FP(1), np, gv, Val(6), Val(3), 1,
+    )
+
+    # The momentum scatter is atomic, so the order contributions are summed in
+    # depends on thread scheduling and two runs of one table form need not agree
+    # bit for bit either. The tables change where the same numbers are read from,
+    # not what they are, so the two forms agree to round-off.
+    momentum(Nq_tuple, NqP_tuple, ∂N∂ξ_tuple)
+    from_tuples = (copy(Rv_x), copy(Rv_y))
+    momentum(Nq, NqP, ∂N∂ξ)
+    scale = maximum(maximum(abs, r) for r in from_tuples)
+    @test Rv_x ≈ from_tuples[1] atol = 8eps(scale)
+    @test Rv_y ≈ from_tuples[2] atol = 8eps(scale)
+    @test any(!iszero, Rv_x)
+
+    # Pressure DoFs are element-private, so this scatter is not atomic and the
+    # comparison can be exact.
+    pressure(NqP_tuple, ∂N∂ξ_tuple)
+    RP_from_tuples = copy(RP)
+    pressure(NqP, ∂N∂ξ)
+    @test RP == RP_from_tuples
+    @test any(!iszero, RP)
+end
+
 # ---------------------------------------------------------------------------
 # Non-augmented momentum Jacobian
 # ---------------------------------------------------------------------------
@@ -725,8 +805,7 @@ function _jacobian_fixture(; single_element = false)
         nodes = mesh_v.el2n[:, 1]
         mesh_v = Mesh(backend, mesh_v.coords[nodes], reshape(Int32.(1:7), 7, 1), element_v)
     end
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup = wg)
 
     # A non-trivial velocity keeps the shear blocks away from zero; the purely
     # viscous residual is linear in it, so central differences are exact.
@@ -736,7 +815,7 @@ function _jacobian_fixture(; single_element = false)
     T = zeros(mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
 
-    return (; backend, wg, element_v, element_P, mesh, cache, vx, vy, P, T, phases,
+    return (; backend, wg, element_v, element_P, mesh, vx, vy, P, T, phases,
         η = (2.0,), G = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (Inf,),
         g = (0.0, 0.0), Tref = 0.0, Δt = 1.0)
 end
@@ -746,7 +825,7 @@ function _momentum_residual(f, vx, vy)
     Rv_y = zeros(f.mesh.nnodes)
     assemble_momentum_residual_matrices_atomix!(
         Rv_x, Rv_y, vx, vy, f.P, f.T, nothing,
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.nels,
         f.element_v, f.element_P, f.phases, nothing, nothing, nothing,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
     )
@@ -757,7 +836,7 @@ function _plain_momentum_jacobian(f)
     blocks = ntuple(_ -> zeros(f.mesh.nnodes), 4)
     FEMTools.assemble_momentum_jacobian_matrices_atomix!(
         blocks..., f.vx, f.vy, f.P, f.T,
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.nels,
         f.element_v, f.element_P, f.phases,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref, f.Δt, f.backend, f.wg,
     )
@@ -818,7 +897,7 @@ end
     augmented = ntuple(_ -> zeros(f.mesh.nnodes), 4)
     FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
         augmented..., f.vx, f.vy, f.P, zero(f.P), f.T, zero(f.T),
-        f.mesh.el2n, f.mesh.DoFsP, f.cache.geo_v, f.cache.geo_P, f.mesh.nels,
+        f.mesh.el2n, f.mesh.DoFsP, f.mesh.geometry.geo_v, f.mesh.geometry.geo_P, f.mesh.nels,
         f.element_v, f.element_P, f.phases, f.phases,
         f.η, f.G, f.α, f.ρ0, f.K, f.g, f.Tref,
         (Inf,), f.Δt, 0.0, ones(f.mesh.nnodesP), f.backend, f.wg,

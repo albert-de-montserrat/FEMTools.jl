@@ -82,8 +82,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     NV    = length(element_v)
     NP    = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -183,7 +182,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
+        γP, dr, mesh_stokes, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -200,7 +199,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     mkpath(out_dir)
 
     solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,
@@ -212,7 +211,7 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     )
 
     update_stokes_current_stress!(
-        dr, mesh_stokes, cache, τ, Δt;
+        dr, mesh_stokes, τ, Δt;
         phases_v = phases_solve, τ_old, plastic, workgroup,
     )
 

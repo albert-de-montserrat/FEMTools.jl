@@ -21,7 +21,8 @@ Meshing spans `src/elements/` and `src/mesh/`:
   construction path derives discontinuous linear pressure connectivity and
   nodal normals from a velocity mesh.
 - `MixedMeshCache` stores velocity/pressure geometry and the corresponding
-  reference elements.
+  reference elements. A `MixedMesh` built from an element-aware velocity mesh
+  keeps one in `mesh.geometry`; `update_geometry!` refills it in place.
 - Sparsity, node-to-element adjacency, greedy coloring, color groups, and
   discontinuous linear mesh generation are available.
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:
@@ -67,8 +68,9 @@ example scripts that include it, not by the package test suite.
 - `mesh.nnodes == length(mesh.coords)` and `mesh.nels == size(mesh.el2n, 2)`.
 - Mixed velocity and pressure connectivities must describe the same number of
   elements.
-- Geometry is an `NQ × nels` matrix; `element_geometry(geo, iel)` views one
-  element column. Entries store physical gradients and integration weights.
+- Geometry stores one `QuadraturePointGeometry` (inverse Jacobian and weighted
+  volume) per element and quadrature point; `element_geometry(geo, iel, ∂N∂ξ)`
+  forms physical gradients from it on access.
   Reject singular or inverted mappings where the
   mathematical path cannot support them.
 - Kernel-consumed mesh arrays must be moved to the selected backend together.

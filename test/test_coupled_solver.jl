@@ -14,8 +14,7 @@ using KernelAbstractions: CPU
         backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (1, 1);
         workgroup,
     )
-    stokes_mesh = MixedMesh(thermal_mesh, element_P)
-    cache = MixedMeshCache(backend, workgroup, stokes_mesh, element_v, element_P)
+    stokes_mesh = MixedMesh(thermal_mesh, element_P; workgroup)
 
     thermal_material = ThermalMaterial(;
         k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,),
@@ -45,11 +44,11 @@ using KernelAbstractions: CPU
     bc_v = DirichletBoundaryCondition(nothing, Γnodes, zero_bc)
     γP = zeros(stokes_mesh.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, stokes, stokes_mesh, cache, 1.0, Δt; workgroup,
+        γP, stokes, stokes_mesh, 1.0, Δt; workgroup,
     )
 
     stats = solve_coupled_dyrel!(
-        thermal, stokes, thermal_mesh, stokes_mesh, cache,
+        thermal, stokes, thermal_mesh, stokes_mesh,
         bc_T, bc_v, bc_v, Δt, γP;
         workgroup, ncheck = 1, iterMax = 2000, total_iterMax = 2000,
         max_ph_iterations = 5, ϵ_tol = 1.0e-8, verbose = false,
@@ -62,7 +61,7 @@ using KernelAbstractions: CPU
     @test stokes.T[stokes_mesh.DoFsP] ≈ thermal.T[stokes_mesh.el2nP]
 
     coupled(thermal_state, mesh_T) = solve_coupled_dyrel!(
-        thermal_state, stokes, mesh_T, stokes_mesh, cache,
+        thermal_state, stokes, mesh_T, stokes_mesh,
         bc_T, bc_v, bc_v, Δt, γP; workgroup, verbose = false,
     )
     topology_only = Mesh(backend, Array(thermal_mesh.coords), Array(thermal_mesh.el2n); order = 2)

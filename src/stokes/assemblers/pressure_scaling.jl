@@ -1,20 +1,20 @@
 """
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache, γfact, Δt; workgroup=256, kwargs...)
+        γP, dr, mesh, γfact, Δt; workgroup=256, kwargs...)
 
 Assemble pressure mass and scaling using the geometry and elements stored in
-`cache`. The backend is inferred from `mesh.coords`.
+`mesh.geometry`. The backend is inferred from `mesh.coords`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
     γP,
     dr::StokesDR{<:Any, 2},
     mesh::MixedMesh{2},
-    cache::MixedMeshCache,
     γfact,
     Δt;
     workgroup = 256,
     kwargs...,
 )
+    cache = _mesh_geometry(mesh)
     return assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, cache.geo_P, cache.element_v, cache.element_P,
         γfact, Δt, KA.get_backend(mesh.coords), workgroup; kwargs...,
@@ -30,6 +30,9 @@ end
 
 Assemble the pressure mass and viscosity-weighted pressure scale using a
 `StokesDR` state and `MixedMesh`.
+
+`geo_P` supplies the weighted volume at each quadrature point; no gradients of
+the pressure field enter this quadrature.
 
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
@@ -159,10 +162,10 @@ when pressure DoFs are shared across elements (continuous pressure spaces).
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_dofs_P  = local_nodes_of(dofs_P,  iel, Val(NP))
     phase_loc = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
-    geo_P_el = element_geometry(geo_P, iel)
+    geo_P_el = geo_P[iel]
 
     for q in eachindex(geo_P_el)
-        _, dΩ = geo_P_el[q]
+        dΩ = geo_P_el[q]
         Nv = NqV[q]
         NPq = NqP[q]
         ηq = interp2ip_phase(Nv, η, phase_loc)

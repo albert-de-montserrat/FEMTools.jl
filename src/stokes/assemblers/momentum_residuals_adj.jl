@@ -27,6 +27,7 @@ function assemble_momentum_residual_matrices_atomix_adj!(
 ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq  = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     el2n_v = mesh_stokes.el2n
     el2nP  = mesh_stokes.DoFsP
     nels   = mesh_stokes.nels
@@ -60,6 +61,7 @@ function assemble_momentum_residual_matrices_atomix_adj!(
         Enzyme.Const(Δt),
         Enzyme.Const(Nq),
         Enzyme.Const(NqP),
+        Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)),
         Enzyme.Const(Val(NP)),
         Enzyme.Const(workgroup),

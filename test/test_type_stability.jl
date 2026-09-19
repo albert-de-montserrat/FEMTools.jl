@@ -8,9 +8,39 @@ using SparseArrays
 using StaticArrays
 
 const TRI_DNDX = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-const TRI_GEO = ((TRI_DNDX, 0.5),)
-const TRI_GEO_MESH = reshape(collect(TRI_GEO), :, 1)
+# Unit reference triangle: the isoparametric map is the identity, so the
+# reference gradients are already the physical ones.
+const TRI_DNDξ = (TRI_DNDX,)
+const TRI_POINTS = (QuadraturePointGeometry(SMatrix{2, 2}(1.0, 0.0, 0.0, 1.0), 0.5),)
+# Secondary-field geometry stores weighted volumes only.
+const TRI_WEIGHTS = (0.5,)
+const TRI_GEO = ElementGeometry(TRI_DNDξ, TRI_POINTS)
+
+# Reference triangle at the element's own three-point rule, for the fixtures that
+# call assemblers: those derive their shape-function tables from the element, so
+# the geometry has to carry the same number of quadrature points.
+const TRI_ELEMENT = ReferenceElement(LinearElement{2, 3, Float64})
+const TRI_MESH_GEO = precompute_geometry(
+    [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)],
+    reshape(Int32[1, 2, 3], 3, 1), TRI_ELEMENT,
+)
+const TRI_MESH_WEIGHTS = map(el -> map(p -> p.dΩ, el), TRI_MESH_GEO)
 const TRI_NQ = (SVector(1 / 3, 1 / 3, 1 / 3),)
+
+# The same geometry stored in single precision. Geometry may be narrower than the
+# state it is assembled against: the element accumulators are seeded from the
+# solution's type, so a Float32 J⁻¹ has to promote on first use. If it instead
+# infected the accumulators, the residual below would come back Float32.
+const TRI_MESH_GEO32 = precompute_geometry(
+    [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)],
+    reshape(Int32[1, 2, 3], 3, 1), TRI_ELEMENT; geometry_precision = Float32,
+)
+
+# Backend-resident forms of the same tables. Their lengths are not part of their
+# types, so a kernel that derives a static size from a table rather than from the
+# geometry loses inference here while staying inferrable with the tuples.
+const TRI_NQ_TABLE = quadrature_table(CPU(), shape_function_values(TRI_ELEMENT))
+const TRI_DNDξ_TABLE = quadrature_table(CPU(), shape_function_gradients(TRI_ELEMENT))
 
 function _element_eval_case(::Type{FP}) where FP
     element = ReferenceElement(LinearElement{2, 3, FP})
@@ -112,11 +142,11 @@ function _heat_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = [TRI_POINTS]
     return FEMTools.element_jacobian(
         T, T0, source, el2n, geo, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
-        P, 1.0, 0.0, TRI_NQ, 1, Val(3),
+        P, 1.0, 0.0, TRI_NQ, TRI_DNDξ, 1, Val(3),
     )
 end
 
@@ -125,10 +155,10 @@ function _lithostatic_element_jacobian_case()
     P = [0.0, 0.0, 0.0]
     phases = [1, 1, 1]
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = [TRI_POINTS]
     return FEMTools.lp_element_jacobian(
         T, P, el2n, geo, phases,
-        (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), TRI_NQ, 1, Val(3),
+        (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), TRI_NQ, TRI_DNDξ, 1, Val(3),
     )
 end
 
@@ -143,7 +173,7 @@ function _stokes_augmented_component_case()
     MP_loc = SVector(1.0, 1.0, 1.0)
     args = (
         (vxloc, vyloc), P_loc, P0loc, T_loc, T0loc,
-        TRI_GEO, TRI_GEO, phase_loc, phase_loc,
+        TRI_GEO, TRI_WEIGHTS, phase_loc, phase_loc,
         (1.0,), (Inf,), (0.0,), (1.0,), (Inf,),
         (0.0, -1.0), 0.0, (Inf,), 1.0, 0.5, MP_loc, TRI_NQ, TRI_NQ,
     )
@@ -162,10 +192,11 @@ function _pressure_element_residual_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = [TRI_POINTS]
+    TRI_WEIGHTS_ARRAY = [TRI_WEIGHTS]
     return FEMTools.pressure_element_residual(
-        vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, phases,
-        (0.0,), (Inf,), 1.0, TRI_NQ, 1, Val(3), Val(3),
+        vx, vy, P, P0, T, T0, el2n, el2n, geo, TRI_WEIGHTS_ARRAY, phases,
+        (0.0,), (Inf,), 1.0, TRI_NQ, TRI_DNDξ, 1, Val(3), Val(3),
     )
 end
 
@@ -212,7 +243,7 @@ function _heat_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = TRI_MESH_GEO
     return FEMTools.assemble_diffusion_matrices_atomix!(
         R, ∂R∂T, PC, T, T0, el2n, geo, 1, element, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
@@ -229,7 +260,7 @@ function _lithostatic_assembly_case()
     P = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = TRI_MESH_GEO
     return FEMTools.assemble_lithostatic_pressure_matrices_atomix!(
         R, ∂R∂P, PC, T, P, el2n, geo, 1, element, phases,
         (1.0,), (0.0,), (Inf,), 0.0, (0.0, -1.0), CPU(), 1;
@@ -248,12 +279,28 @@ function _stokes_assembly_case()
     Pnum = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = TRI_MESH_GEO
     return FEMTools.assemble_momentum_residual_matrices_atomix!(
         Rvx, Rvy, vx, vy, P, T, Pnum, el2n, el2n, geo, 1,
         element, element, phases, nothing, nothing, nothing,
         (1.0,), (Inf,), (0.0,), (1.0,), (Inf,),
         (0.0, -1.0), 0.0, 1.0, CPU(), 1,
+    )
+end
+
+# The element residual is where a table-derived static size would show: the
+# integration-point stress history sizes an `SVector` by the quadrature-point
+# count, which the geometry carries in its type and an array table does not.
+function _stokes_element_residual_case(Nq, ∂N∂ξ, geo = TRI_MESH_GEO)
+    vx = zeros(3); vy = zeros(3)
+    P = zeros(3); T = zeros(3); Pnum = zeros(3)
+    phases = ones(Int, 3)
+    el2n = reshape(Int32[1, 2, 3], 3, 1)
+    τ_old = (zeros(3, 1), zeros(3, 1), zeros(3, 1))
+    return FEMTools.momentum_element_residual(
+        vx, vy, P, T, Pnum, el2n, el2n, geo, phases,
+        (1.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, -1.0), 0.0, 1.0,
+        Nq, Nq, ∂N∂ξ, 1, Val(3), Val(3), τ_old, nothing, nothing,
     )
 end
 
@@ -268,9 +315,9 @@ function _pressure_assembly_case()
     T0 = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = TRI_MESH_GEO
     return FEMTools.assemble_pressure_residual_matrices_atomix!(
-        RP, vx, vy, P, P0, T, T0, el2n, el2n, geo, geo, 1,
+        RP, vx, vy, P, P0, T, T0, el2n, el2n, geo, TRI_MESH_WEIGHTS, 1,
         element, element, phases, (0.0,), (Inf,), 1.0, CPU(), 1,
     )
 end
@@ -281,7 +328,7 @@ function _pressure_scaling_assembly_case()
     γP = zeros(3)
     phases = ones(Int, 3)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
-    geo = TRI_GEO_MESH
+    geo = TRI_MESH_WEIGHTS
     return FEMTools.assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n, el2n, geo, 1, element, element, phases,
         (1.0,), 0.5, (Inf,), 1.0, CPU(), 1,
@@ -304,17 +351,28 @@ end
     @test (@inferred _lithostatic_element_jacobian_case()) isa Tuple{<:SVector{3, <:Integer}, SVector{3, Float64}, SVector{3, Float64}}
     @test (@inferred _stokes_augmented_component_case()) isa Tuple{SVector{3, Float64}, SVector{3, Float64}}
     @test (@inferred _pressure_element_residual_case()) isa Tuple{<:SVector{3, <:Integer}, SVector{3, Float64}}
-    @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int}, Float32}
-    @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
-    @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int}, Float64}
+    @test (@inferred _heat_dr_case(Float32)) isa ThermalDiffusionDR{1, <:Vector{Float32}, <:Vector{Int32}, Float32}
+    @test (@inferred _heat_dr_case(Float64)) isa ThermalDiffusionDR{1, <:Vector{Float64}, <:Vector{Int32}, Float64}
+    @test (@inferred _lithostatic_dr_case(Float64)) isa LithostaticPressureDR{1, <:Vector{Float64}, <:Vector{Int32}, Float64}
     @test (@inferred _stokes_dr_case(Float64)) isa StokesDR{1, 2, <:FEMTools.VectorField2D{<:Vector{Float64}},
-        <:FEMTools.SymmetricTensor2D{<:Matrix{Float64}}, <:Vector{Int},
-        <:Vector{Float64}, <:Vector{Int}, Float64}
+        <:FEMTools.SymmetricTensor2D{<:Matrix{Float64}}, <:Vector{Int32},
+        <:Vector{Float64}, <:Vector{Int32}, Float64}
     @test (@inferred _mixed_mesh_cache_case()) isa MixedMeshCache
     @test (@inferred _heat_assembly_case()) === nothing
     @test (@inferred _lithostatic_assembly_case()) === nothing
     @test (@inferred _stokes_assembly_case()) === nothing
     @test (@inferred _pressure_assembly_case()) === nothing
+    element_residual_type = Tuple{<:SVector{3, <:Integer}, SVector{3, Float64}, SVector{3, Float64}}
+    @test (@inferred _stokes_element_residual_case(
+        shape_function_values(TRI_ELEMENT), shape_function_gradients(TRI_ELEMENT),
+    )) isa element_residual_type
+    @test (@inferred _stokes_element_residual_case(
+        TRI_NQ_TABLE, TRI_DNDξ_TABLE,
+    )) isa element_residual_type
+    @test (@inferred _stokes_element_residual_case(
+        shape_function_values(TRI_ELEMENT), shape_function_gradients(TRI_ELEMENT),
+        TRI_MESH_GEO32,
+    )) isa element_residual_type
     @test (@inferred _pressure_scaling_assembly_case()) === nothing
 end
 
@@ -323,14 +381,14 @@ end
         @test_skip "JET is not available in this environment"
     else
         @eval using JET
-        @eval JET.@test_opt _element_eval_case(Float64)
-        @eval JET.@test_opt _structured_mesh_case(Float64)
-        @eval JET.@test_opt _heat_integrate_case()
-        @eval JET.@test_opt _lithostatic_integrate_case()
-        @eval JET.@test_opt _stokes_integrate_case()
-        @eval JET.@test_opt _heat_element_jacobian_case()
-        @eval JET.@test_opt _lithostatic_element_jacobian_case()
-        @eval JET.@test_opt _stokes_augmented_component_case()
-        @eval JET.@test_opt _pressure_element_residual_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _element_eval_case(Float64)
+        @eval JET.@test_opt target_modules = (FEMTools,) _structured_mesh_case(Float64)
+        @eval JET.@test_opt target_modules = (FEMTools,) _heat_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _lithostatic_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _stokes_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _heat_element_jacobian_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _lithostatic_element_jacobian_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _stokes_augmented_component_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _pressure_element_residual_case()
     end
 end

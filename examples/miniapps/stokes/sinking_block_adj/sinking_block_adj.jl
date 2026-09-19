@@ -38,8 +38,8 @@ velocity degree of freedom is the consistently assembled load vector
     ∂J/∂Vᵧᵢ = -∫_Ωₒᵇₛ Nᵢ dΩ.
 
 Each kernel invocation handles one element. Integration points outside the
-observation box contribute nothing. `geo[q, iel][2]` is the physical
-quadrature measure `|det(J)|ωq` computed by `precompute_geometry!`.
+observation box contribute nothing. `geo[iel][q].dΩ` is the physical
+quadrature measure `|det(J)|ωq` computed by `precompute_geometry`.
 
 Neighbouring elements share velocity nodes, so their element load vectors are
 scattered with atomic additions. This makes the assembly safe for both CPU and
@@ -80,7 +80,7 @@ accelerator backends.
         # For a discontinuous indicator, quadrature naturally approximates the
         # fraction of a cut element lying inside the observation box.
         if xmin < xq[1] < xmax && ymin < xq[2] < ymax
-            dΩ = geo[q, iel][2]
+            dΩ = geo[iel][q].dΩ
             element_load -= N_at_q * dΩ
         end
     end
@@ -121,7 +121,7 @@ end
     @Const(el2n), @Const(dofsP), @Const(geo), @Const(phases),
     @Const(τ_old), η_element, ρ_element,
     @Const(G), @Const(α), @Const(K), @Const(g), Tref, Δt,
-    @Const(Nq), @Const(NqP), ::Val{NV}, ::Val{NP},
+    @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
 ) where {NV, NP}
     iel = @index(Global)
     velocity_nodes = SVector{NV, Int}(ntuple(i -> el2n[i, iel], Val(NV)))
@@ -145,7 +145,7 @@ end
         SVector(ntuple(q -> τ_old[3][q, iel], length(Nq))),
     )
     Re_x, Re_y = FEMTools.integrate_momentum_residual(
-        (vx_e, vy_e), P_e, nothing, T_e, view(geo, :, iel), phase_e,
+        (vx_e, vy_e), P_e, nothing, T_e, element_geometry(geo, iel, ∂N∂ξ_v), phase_e,
         (η_element[iel],), (G[phase],), (α[phase],),
         (ρ_element[iel],), (K[phase],), g, Tref, Δt, Nq, NqP,
         τ_old_e,
@@ -155,13 +155,13 @@ end
 
 function launch_material_contraction!(out, vx, vy, P, T, λvx, λvy,
     el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-    G, α, K, g, Tref, Δt, Nq, NqP, ::Val{NV}, ::Val{NP}, workgroup,
+    G, α, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
 ) where {NV, NP}
     fill!(out, 0)
     backend = KernelAbstractions.get_backend(out)
     material_contraction_kernel!(backend, workgroup)(out, vx, vy, P, T, λvx, λvy,
         el2n, dofsP, geo, phases, τ_old, η_element, ρ_element,
-        G, α, K, g, Tref, Δt, Nq, NqP, Val(NV), Val(NP); ndrange = size(el2n, 2))
+        G, α, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP); ndrange = size(el2n, 2))
     KernelAbstractions.synchronize(backend)
     return nothing
 end
@@ -200,6 +200,7 @@ function material_sensitivities(
     density_sensitivity_backend = zero(ρ_element)
     Nq_v = shape_function_values(element_v)
     Nq_P = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
 
     Enzyme.autodiff_deferred(
         Enzyme.set_runtime_activity(Enzyme.Reverse),
@@ -213,6 +214,7 @@ function material_sensitivities(
         Enzyme.Duplicated(ρ_element, density_sensitivity_backend),
         Enzyme.Const(G), Enzyme.Const(α), Enzyme.Const(K), Enzyme.Const(g),
         Enzyme.Const(Tref), Enzyme.Const(Δt), Enzyme.Const(Nq_v), Enzyme.Const(Nq_P),
+        Enzyme.Const(∂N∂ξ_v),
         Enzyme.Const(Val(NV)), Enzyme.Const(Val(NP)), Enzyme.Const(workgroup),
     )
 
@@ -333,8 +335,8 @@ function main(;
     # uploads coordinates, connectivity, DoFs, and detected boundary nodes in
     # one place, so every array read by a subsequent assembly kernel lives on
     # the same device as the solver fields.
-    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu; order = 2)
-    mesh_stokes = MixedMesh(mesh_v, element_P)
+    mesh_v = Mesh(backend, coords_v_cpu, el2n_v_cpu, element_v; workgroup)
+    mesh_stokes = MixedMesh(mesh_v, element_P; workgroup)
 
     # Device array constructor for uploading host-built index/BC/phase arrays to
     # the compute backend (`TA(CPU()) === Array`, so this is a no-op on the CPU).
@@ -351,11 +353,10 @@ function main(;
     NV    = length(element_v)
     NP    = length(element_P)
 
-    # Allocate and fill both geometry caches on the selected backend. This also
-    # evaluates the discontinuous-pressure geometry at the velocity quadrature
+    # The mixed mesh holds both geometry arrays on the selected backend. The
+    # discontinuous-pressure geometry is evaluated at the velocity quadrature
     # points, matching the forward and adjoint assemblers.
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -463,7 +464,7 @@ function main(;
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt; workgroup,
+        γP, dr, mesh_stokes, γfact, Δt; workgroup,
         phases_v = phases_solve, η = ηγP,
     )
 
@@ -482,7 +483,7 @@ function main(;
     # ---------------------------------------------------------------------------
 
     t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, cache, bc_vx, bc_vy, Δt, γP;
+        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
         ncheck,
         ϵ_tol,

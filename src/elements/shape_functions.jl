@@ -544,6 +544,43 @@ end
 @inline shape_function_values(element::ReferenceElement) = shape_function_values(element, element.integration_points)
 
 """
+    shape_function_gradients(element)
+    shape_function_gradients(element, ip)
+
+Return reference-element shape-function gradients of `element` evaluated at every
+quadrature point.
+
+With one argument, the points are `element.integration_points`. Pass an
+`IntegrationPoints` object `ip` to evaluate at a different quadrature rule (e.g.
+a pressure element's gradients at the velocity element's points).
+
+The result is an `NTuple` of length `Nq` (number of quadrature points), each
+entry an `N × nDim` `SMatrix` holding `∂Nᵢ/∂ξⱼ` at that point. These gradients
+are the same for every element of the mesh; combined with the per-element inverse
+Jacobian stored by [`precompute_geometry`](@ref) they give the physical
+gradients.
+"""
+@inline function shape_function_gradients(element::ReferenceElement{T}, ip) where {nDim, T <: AbstractElement{nDim}}
+    NQ = length(ip.ω)
+    coords = ntuple(q -> _quadrature_point(ip, q, Val(nDim)), NQ)
+    return ntuple(q -> _reference_gradient(element, coords[q], Val(nDim)), NQ)
+end
+
+@inline shape_function_gradients(element::ReferenceElement) =
+    shape_function_gradients(element, element.integration_points)
+
+# The first `nDim` fields of an `IntegrationPoints` are its reference coordinates.
+@inline _quadrature_point(ip, q, ::Val{nDim}) where {nDim} =
+    SVector{nDim}(ntuple(d -> getfield(ip, d)[q], Val(nDim)))
+
+@inline _reference_gradient(element, point, ::Val{nDim}) where {nDim} =
+    eval_shape_function_jacobian(element, point)
+# In one dimension the shape-function gradient is a vector; the geometry treats
+# it as an N × 1 matrix so the same product forms the physical gradients.
+@inline _reference_gradient(element::ReferenceElement{T}, point, ::Val{1}) where {N, T <: AbstractElement{1, N}} =
+    SMatrix{N, 1}(eval_shape_function_jacobian(element, point))
+
+"""
     _eval_shape_function(N, coords)
 
 Evaluate every callable in the `NTuple` `N` at `coords` and return an
@@ -561,3 +598,23 @@ kernels without dynamic dispatch.
         Base.@ncall $M SVector x
     end
 end
+
+"""
+    quadrature_table(backend, table) -> AbstractVector
+
+Place a per-quadrature-point reference table on `backend` as an array.
+
+`table` is the `NTuple` returned by [`shape_function_values`](@ref) or
+[`shape_function_gradients`](@ref). The result is indexed by quadrature point
+exactly as the tuple is, so a kernel reads either form with the same code.
+
+Kernels must receive these tables as arrays. A tuple is part of the kernel
+argument pack, which is materialized on every launch: the host allocates an
+order of magnitude more than the table holds, once per launch, and on CUDA the
+pack draws on a fixed parameter budget that a `Hex27` gradient table alone
+nearly exhausts. An array is passed by reference and read from global memory.
+
+Build the table once, outside the loop that launches the kernel; it is the same
+for every element of the mesh.
+"""
+quadrature_table(backend, table::Tuple) = TA(backend)(collect(table))

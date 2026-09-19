@@ -132,8 +132,9 @@ function cell_strain_rate_invariants(
     backend = KA.get_backend(first(velocity))
     εII = similar(first(velocity), mesh.nels)
     τII = similar(εII)
+    ∂N∂ξ = quadrature_table(backend, shape_function_gradients(mesh.element))
     cell_invariants_kernel!(backend, workgroup)(
-        εII, τII, velocity, mesh.el2n, mesh.geometry, cell_phase, η;
+        εII, τII, velocity, mesh.el2n, mesh.geometry, ∂N∂ξ, cell_phase, η;
         ndrange = mesh.nels,
     )
     KA.synchronize(backend)
@@ -141,15 +142,16 @@ function cell_strain_rate_invariants(
 end
 
 @kernel function cell_invariants_kernel!(
-    εII, τII, @Const(v), @Const(el2n), @Const(geometry), @Const(cell_phase), @Const(η),
+    εII, τII, @Const(v), @Const(el2n), @Const(geometry), @Const(∂N∂ξ), @Const(cell_phase), @Const(η),
 )
     cell = @index(Global)
     nodes = ntuple(a -> el2n[a, cell], Val(27))
     vloc = ntuple(i -> SVector{27}(ntuple(a -> v[i][nodes[a]], Val(27))), Val(3))
     weighted = zero(eltype(εII))
     volume = zero(eltype(εII))
-    for q in axes(geometry, 1)
-        ∂N∂x, dΩ = geometry[q, cell]
+    geo_el = element_geometry(geometry, cell, ∂N∂ξ)
+    for q in eachindex(geo_el)
+        ∂N∂x, dΩ = geo_el[q]
         # Velocity gradient: `L[i][j]` is ∂vᵢ/∂xⱼ = Σₐ ∂Nₐ/∂xⱼ vᵢ[a], which is
         # the `27 × 3` gradient matrix contracted over the nodes of the cell.
         L = ntuple(i -> transpose(∂N∂x) * vloc[i], Val(3))

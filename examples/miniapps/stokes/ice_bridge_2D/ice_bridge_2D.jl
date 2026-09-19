@@ -163,7 +163,6 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     # -----------------------------------------------------------------------
     # 2. Geometry, material and visco-elastic solver state.
     # -----------------------------------------------------------------------
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
     η = (Float64(η0),)
     ηb = (Float64(bulk_modulus),)
     G = (Float64(G0),)
@@ -228,11 +227,11 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
         dt_step = min(dt_step, t_end - t)
         t += dt_step
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, cache, 20.0, dt_step;
+            γP, dr, mesh_stokes, 20.0, dt_step;
             workgroup, phases_v,
         )
         stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, cache, bc_vx, bc_vy, dt_step, γP;
+            dr, mesh_stokes, bc_vx, bc_vy, dt_step, γP;
             phases_v, phases_P, τ_old,
             iterMax = 5_000, total_iterMax = 100_000,
             max_ph_iterations = 20, ϵ_tol = 1.0e-6,
@@ -243,7 +242,7 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
         vx = Array(dr.v.x)
         vy = Array(dr.v.y)
         post = compute_strain_rate_stress_postprocess(
-            vx, vy, el2n_v, Array(cache.geo_v), phases_v, τ_old, η, G, dt_step, element_v,
+            vx, vy, el2n_v, Array(mesh_stokes.geometry.geo_v), phases_v, τ_old, η, G, dt_step, element_v,
         )
         update_old_stress_from_cells!(τ_old, post, el2n_v, mesh_stokes.nnodes)
 
@@ -277,7 +276,7 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
             straighten_t7_geometry!(coords, el2n_v)
             copyto!(mesh_v.coords, coords)
             copyto!(mesh_stokes.coords, coords)
-            cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
+            update_geometry!(mesh_stokes)
         end
     end
 
@@ -314,8 +313,7 @@ function foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element
     straighten_t7_geometry!(mesh_stokes.coords, mesh_stokes.el2n)
     copyto!(mesh_v.coords, mesh_stokes.coords)
     copyto!(mesh_stokes.coords, mesh_stokes.coords)
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    return cache
+    return update_geometry!(mesh_stokes)
 end
 
 function move_mesh!(mesh_stokes::MixedMesh{2}, dr, dt)
