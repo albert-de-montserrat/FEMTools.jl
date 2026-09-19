@@ -381,14 +381,14 @@ end
         @test_skip "JET is not available in this environment"
     else
         @eval using JET
-        @eval JET.@test_opt _element_eval_case(Float64)
-        @eval JET.@test_opt _structured_mesh_case(Float64)
-        @eval JET.@test_opt _heat_integrate_case()
-        @eval JET.@test_opt _lithostatic_integrate_case()
-        @eval JET.@test_opt _stokes_integrate_case()
-        @eval JET.@test_opt _heat_element_jacobian_case()
-        @eval JET.@test_opt _lithostatic_element_jacobian_case()
-        @eval JET.@test_opt _stokes_augmented_component_case()
-        @eval JET.@test_opt _pressure_element_residual_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _element_eval_case(Float64)
+        @eval JET.@test_opt target_modules = (FEMTools,) _structured_mesh_case(Float64)
+        @eval JET.@test_opt target_modules = (FEMTools,) _heat_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _lithostatic_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _stokes_integrate_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _heat_element_jacobian_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _lithostatic_element_jacobian_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _stokes_augmented_component_case()
+        @eval JET.@test_opt target_modules = (FEMTools,) _pressure_element_residual_case()
     end
 end
