@@ -4,13 +4,13 @@
 Gather element-local values and return the integrated thermal residual with its
 global node indices.
 """
-@inline function element_residual(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, iel, ::Val{N}) where N
+@inline function element_residual(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where N
     nodes = local_nodes_of(el2n, iel, Val(N))
     Tloc = _gather_local(T, nodes, Val(N))
     args = (
         Tloc,
         _gather_local(T0, nodes, Val(N)),
-        element_geometry(geo, iel),
+        element_geometry(geo, iel, ∂N∂ξ),
         _gather_local(source, nodes, Val(N)),
         _gather_phase(phases, nodes, iel, Val(N)),
         k, Cp, ρ0, α, K,
@@ -25,16 +25,17 @@ end
 
 Return element node indices, absolute Jacobian row sums, and absolute diagonal.
 """
-@inline function element_jacobian(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, iel, ::Val{N}) where N
+@inline function element_jacobian(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where N
     nodes = local_nodes_of(el2n, iel, Val(N))
     Tloc = _gather_local(T, nodes, Val(N))
     T0loc = _gather_local(T0, nodes, Val(N))
     sloc = _gather_local(source, nodes, Val(N))
     Ploc = _gather_local(P, nodes, Val(N))
     phase_loc = _gather_phase(phases, nodes, iel, Val(N))
+    geo_el = element_geometry(geo, iel, ∂N∂ξ)
     J = ForwardDiff.jacobian(Tloc) do u
         integrate_residual(
-            u, T0loc, element_geometry(geo, iel), sloc, phase_loc, k, Cp, ρ0, α, K, Ploc,
+            u, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc,
             Δt, Tref, Nq, Val(N),
         )
     end
@@ -77,4 +78,4 @@ end
 @inline diffusion_element_arguments(T, T0, source, el2n, geo, phases,
         k, Cp, ρ0, α, K, P, Δt, Tref, element) =
     (T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref,
-     shape_function_values(element))
+     shape_function_values(element), shape_function_gradients(element))

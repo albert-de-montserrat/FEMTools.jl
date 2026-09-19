@@ -49,11 +49,14 @@ _zero_vector_field(::Val{2}, new_array) = VectorField2D(new_array(), new_array()
 _zero_vector_field(::Val{3}, new_array) =
     VectorField3D(new_array(), new_array(), new_array())
 
-_zero_symmetric_tensor(::Val{2}, new_array) =
-    SymmetricTensor2D(new_array(), new_array(), new_array(), new_array())
-_zero_symmetric_tensor(::Val{3}, new_array) = SymmetricTensor3D(
+# The solver never reads the invariant slot, so it gets a zero-length array of
+# the component type: stress history is element-sized and a full slot would add
+# one unused array per tensor.
+_zero_symmetric_tensor(::Val{2}, new_array, new_empty) =
+    SymmetricTensor2D(new_array(), new_array(), new_array(), new_empty())
+_zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
     new_array(), new_array(), new_array(), new_array(),
-    new_array(), new_array(), new_array(),
+    new_array(), new_array(), new_empty(),
 )
 
 """
@@ -68,9 +71,9 @@ pressure node sets, e.g. T6/P1 Taylor-Hood-like pair).
 - `ndim`     — spatial dimension, `2` or `3`
 - `_TV`      — velocity container type ([`VectorField2D`](@ref FEMTools.VectorField2D) or [`VectorField3D`](@ref FEMTools.VectorField3D))
 - `_TT`      — stress container type ([`SymmetricTensor2D`](@ref FEMTools.SymmetricTensor2D) or [`SymmetricTensor3D`](@ref FEMTools.SymmetricTensor3D))
-- `_TIV`     — velocity-node integer array type (element type `Int`)
+- `_TIV`     — velocity-node integer array type (element type `Int32`)
 - `_TP`      — pressure float array type (e.g. `Vector{Float64}` on CPU, `CuArray` on GPU)
-- `_TIP`     — pressure integer array type (element type `Int`)
+- `_TIP`     — pressure integer array type (element type `Int32`)
 - `FP`       — floating-point precision (`Float32` or `Float64`)
 
 In two dimensions the stress carries the components `xx`, `yy`, `xy`; in three
@@ -132,17 +135,23 @@ Properties are supplied together through [`StokesMaterial`](@ref).
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Individual components are reached through the field containers, e.g. `dr.v.x`
-and `dr.τ.xy`; the invariant slots `dr.τ.II` and `dr.τ_old.II` are allocated but
-left to the caller.
+and `dr.τ.xy`; the invariant slots `dr.τ.II` and `dr.τ_old.II` are zero-length
+arrays, so they add no per-element storage and are not available as scratch.
 
 Stress components default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
-integration points. `nnodes_v` and `nnodes_P` likewise accept a dimension tuple
-instead of a node count, which is how a cell-local pressure layout such as
-`(4, nels)` is expressed. `T`, `T0`, and `Q` should be filled via `copyto!` before
-calling the solver. `Q` is the volumetric source (positive) or sink (negative)
-in the continuity equation. The time step `Δt` is passed directly to the assembler
+integration points, or `stress_size=:none` to allocate no stress history at all.
+`nnodes_v` and `nnodes_P` likewise accept a dimension tuple instead of a node
+count, which is how a cell-local pressure layout such as `(4, nels)` is
+expressed. `T`, `T0`, and `Q` should be filled via `copyto!` before calling the
+solver. `Q` is the volumetric source (positive) or sink (negative) in the
+continuity equation. The time step `Δt` is passed directly to the assembler
 rather than stored here.
+
+`:none` suits a purely viscous model, where the shear modulus is infinite and the
+stress history is never read. `τ` and `τ_old` are then `nothing`,
+[`stress`](@ref) returns `nothing`, and the assemblers must be called with
+`τ_old = nothing`.
 
 The spatial dimension follows the length of `g`, defaulting to two. Pass a
 three-component gravity vector — `g = (0.0, 0.0, -9.81)`, or `(0.0, 0.0, 0.0)`
@@ -211,17 +220,21 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
         _g   = g   === nothing ? (FP(0), FP(0))   : map(FP, Tuple(g))
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
+        stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
+            "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
         dim = _spatial_dimension(_g)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
-        stress_dims = stress_size === nothing ? v_dims : _storage_dims(stress_size)
+        stress_dims = stress_size === nothing ? v_dims :
+            stress_size === :none ? nothing : _storage_dims(stress_size)
         newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
         newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
         newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
-        newiv() = KernelAbstractions.ones(backend,  Int, v_dims...)
-        newip() = KernelAbstractions.ones(backend,  Int, P_dims...)
+        newτ0() = KernelAbstractions.zeros(backend, FP,  map(zero, stress_dims)...)
+        newiv() = KernelAbstractions.ones(backend,  Int32, v_dims...)
+        newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
-        newτfield() = _zero_symmetric_tensor(dim, newτ)
+        newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
         new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
             typeof(newiv()), typeof(newP()), typeof(newip()), FP,
@@ -253,11 +266,13 @@ velocity(dr::StokesDR) = Tuple(dr.v)
 
 Return the independent deviatoric-stress component arrays of a Stokes solver
 state, in assembler order and excluding the invariant slot. In three dimensions
-this differs from the tensor container's Voigt order.
+this differs from the tensor container's Voigt order; for states built with
+`stress_size = :none`, it returns `nothing`.
 """
 stress(dr::StokesDR{<:Any, 2}) = Tuple(dr.τ)
 stress(dr::StokesDR{<:Any, 3}) =
     (dr.τ.xx, dr.τ.yy, dr.τ.zz, dr.τ.xy, dr.τ.xz, dr.τ.yz)
+stress(::StokesDR{<:Any, <:Any, <:Any, Nothing}) = nothing
 
 """
     stress_old(dr::StokesDR) -> NTuple
@@ -349,4 +364,98 @@ function DruckerPrager(
     DruckerPrager{N + 1, FP}(
         map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
     )
+end
+
+"""
+    Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+
+Caller-owned scratch for the 3-D Hex27/Q2--P1 DYREL solver.
+
+Holds the momentum and pressure residuals, the Jacobi preconditioner, the lumped
+pressure mass, and the zero boundary values each velocity component is projected
+against. All of it scales with the mesh, so a solver that allocates it per call
+churns tens of megabytes of device memory on every call. Build one and pass it as
+the `workspace` keyword of [`solve_stokes_dyrel!`](@ref) to reuse it across a
+time-stepping or optimization loop.
+
+It also owns the reference tables the assembly kernels read, so a `Hex27`
+gradient table is built once per workspace instead of once per launch.
+
+The preconditioner and pressure mass depend on the material and are refilled at
+the start of every solve, so a workspace never carries stale material data. The
+lengths in `fixed_nodes` are baked into the zero boundary values, and the
+reference tables into `mesh.element`, so a workspace belongs to one
+boundary-condition layout and one element; the solver checks the first and
+raises if it is handed a mismatched one.
+"""
+struct Stokes3DWorkspace{TV, TP, TB, TT}
+    residual_v::TV
+    residual_p::TP
+    diagonal::TV
+    pressure_mass::TP
+    zero_bc::TB
+    tables::TT
+end
+
+function Stokes3DWorkspace(
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+)
+    residual_v = ntuple(i -> similar(velocity[i]), 3)
+    diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
+    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
+    tables = stokes_tables_3d(KA.get_backend(first(velocity)), mesh.element)
+    return Stokes3DWorkspace(
+        residual_v, similar(pressure), diagonal, similar(pressure), zero_bc, tables,
+    )
+end
+
+"""
+    StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme=false)
+
+Caller-owned scratch for the two-dimensional Stokes adjoint DYREL solver.
+
+The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
+boundary-value buffers that would otherwise be allocated on every adjoint
+solve. Pass it as the `workspace` keyword of
+[`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
+optimization loop. Set `enzyme=true` when the workspace will be used with
+`operator = :enzyme`; the block and matrix-free paths do not allocate those
+additional reverse-mode buffers.
+
+A workspace belongs to the velocity and pressure layouts and boundary-node
+counts from which it was constructed. The solver validates those dimensions
+before use and refills all scratch that carries values, so reuse never carries
+residual state from one solve into the next.
+"""
+struct StokesAdjointWorkspace{TC, TE}
+    common::TC
+    enzyme::TE
+end
+
+function StokesAdjointWorkspace(dr::StokesDR{<:Any, 2}, vx_nodes, vy_nodes; enzyme = false)
+    common = (;
+        ResλVx = zero(dr.Rv.x),
+        ResλVy = zero(dr.Rv.y),
+        ResλP = zero(dr.P),
+        ResλVx0 = zero(dr.Rv.x),
+        ResλVy0 = zero(dr.Rv.y),
+        λrate_vx = zero(dr.v.x),
+        λrate_vy = zero(dr.v.y),
+        dvx = zero(dr.v.x),
+        dvy = zero(dr.v.y),
+        zero_vx_bc = fill!(similar(dr.v.x, length(vx_nodes)), 0),
+        zero_vy_bc = fill!(similar(dr.v.y, length(vy_nodes)), 0),
+    )
+    enzyme_scratch = enzyme ? (;
+        Rv_x_buf = zero(dr.Rv.x),
+        Rv_y_buf = zero(dr.Rv.y),
+        seed_Rv_x = zero(dr.Rv.x),
+        seed_Rv_y = zero(dr.Rv.y),
+        seed_RP = zero(dr.RP),
+        dP = zero(dr.P),
+        dP_scratch = zero(dr.P),
+        Pnum = zero(dr.P),
+        dPnum = zero(dr.P),
+    ) : nothing
+    return StokesAdjointWorkspace(common, enzyme_scratch)
 end

@@ -44,13 +44,19 @@ operators and the same mixed spaces. It therefore computes gradients of the
 ```@docs
 StokesMaterial
 StokesDR
+Stokes3DWorkspace
+StokesAdjointWorkspace
 DruckerPrager
 pressure_mass
+FEMTools.velocity
+FEMTools.stress
+FEMTools.pressure
+FEMTools.temperature
 ```
 
 The velocity and pressure fields live on separate node sets described by a
-[`MixedMesh`](mesh.md); precompute per-field geometry once with a
-[`MixedMeshCache`](mesh.md). Fill `dr.T` (and `dr.T0`) before solving. The lumped
+[`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
+`mesh.geometry`. Fill `dr.T` (and `dr.T0`) before solving. The lumped
 pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
@@ -98,17 +104,16 @@ material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
 dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
               stress_size=(nq, mesh.nels))
 
-cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
 bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
 bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, vy_vals)
 
 assemble_viscosity_weighted_pressure_scaling!(
-    γP, dr, mesh, cache, γfact, Δt; workgroup,
+    γP, dr, mesh, γfact, Δt; workgroup,
 )
-solve_stokes_dyrel!(dr, mesh, cache, bc_vx, bc_vy, Δt, γP; workgroup)
+solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 ```
 
-`MixedMeshCache` retains the reference elements alongside both geometry arrays,
+`mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
 The pressure kernel interpolates nodal pressure and temperature increments
@@ -123,8 +128,8 @@ gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 
 ```julia
 stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh, cache,
-    bc_T, (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T,
+    (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
 )
 stats.converged || error("coupled solve did not converge")
 ```
@@ -163,8 +168,24 @@ The matching `solve_stokes_adjoint_dyrel!` method accepts the same
 storage plus a three-component objective load. `solve_stokes_3d!` and
 `solve_stokes_adjoint_3d!` remain compatibility wrappers.
 
-`mesh.geometry` is shared by every kernel above and indexed
-`geometry[q, cell]`; see [Geometry Precomputation](mesh.md#Geometry-Precomputation).
+Each call otherwise allocates its own residuals, preconditioner and pressure
+mass, which at Hex27 resolutions is over a hundred megabytes per solve. A loop
+that solves repeatedly should own that storage:
+
+```julia
+workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+
+for step in 1:nsteps
+    stats = solve_stokes_dyrel!(
+        velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
+        ϵ_tol = 1e-6, workspace,
+    )
+end
+```
+
+The preconditioner is refilled from the current material at the start of every
+solve, so a reused workspace never carries stale values, and the same workspace
+can be handed to `solve_stokes_adjoint_dyrel!`.
 
 ### Two-dimensional spectral estimate and frozen Jacobian
 
@@ -227,67 +248,18 @@ julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 4 km-radius semicircular opening cut into its bottom, then applies gravity and
 linear visco-elastic ice rheology. Mesh advection is enabled by default and
-rebuilds the geometric cache after each Lagrangian update.
+recomputes the mesh geometry in place after each Lagrangian update.
 
-The previously documented `stokes_2D_dike_triangle_adv.jl` driver is absent
-from the current example tree. Its workflow models a 40 km wide by 20 km deep crustal
-section with a free surface, free-slip lateral and bottom boundaries, and a
-prescribed dike influx. Its 100 m wide, 2 km tall dike is centred at one-third
-of the model depth (6.67 km), is represented by a conforming lower-viscosity
-visco-elastic phase, and
-is surrounded by a graded T7 mesh refinement. The surrounding crust is
-visco-elasto-plastic, and the Stokes body force includes Earth gravity with the
-characteristic scaling used by the example. The initial pressure is obtained
-from the lithostatic
-pressure solver on a continuous corner mesh and transferred to the
-discontinuous Stokes pressure field. `Q_dike` is the total two-dimensional
-influx, normalized over the resolved dike-cell area. Use
-`show_plot=false`, `write_output=false`, or `advect_mesh=false` for headless
-and fixed-geometry runs. The optional figure also compares the initially flat
-surface with the final deformed profile.
-
-Pass `adjoint=true` to solve a frozen one-step discrete adjoint after every
-converged forward step. The objective is the normalized mean vertical velocity
-over a rectangular region immediately below the free surface, spanning
-`observation_xmin` and `observation_xmax`, so it does not include the whole
-domain. `observation_depth` controls its default vertical extent below the
-current surface. The returned `adjoint` result includes raw element contractions and
-log sensitivities for `G`, `K`, `η`, `ρ0`, and the scalar `Q_dike`.
-Each VTK file contains the sensitivities for its corresponding step. Each
-step remains a frozen one-step sensitivity with incoming stress/pressure and
-geometry held fixed; these are not a full trajectory gradient through stress
-history and mesh advection. Use a nonzero positive `Q_dike` when requesting
-its logarithmic sensitivity.
-
-When `write_output=true` and adjoint mode is enabled, every step also writes
-`stokes_2D_dike_adjoint_XXXX.vtk`. Its cell fields
-`dJ_dlog_eta`, `dJ_dlog_G`, `dJ_dlog_rho0`, `dJ_dlog_K`, and
-`dJ_dlog_Q_dike` are area-normalized sensitivity densities; the regular
-forward VTK file remains unchanged. The same adjoint file also stores the
-point fields `adjoint_vx`, `adjoint_vy`, and `adjoint_V`, plus the cell field
-`adjoint_pressure`.
-
-Each VTK output also contains the nodal velocity vector `V` (along with the
-`Vx` and `Vy` component scalars), so visualization tools can use their vector
-glyph or arrow filters directly. The dike output additionally stores the
-source rate as the cell field `Q`. Dike VTK files are written in SI units:
-metres, m/s, Pa, s⁻¹, and the volumetric source rate in s⁻¹.
-
-The 3-D volcano driver uses a locally refined unstructured T11 mesh. Its Gmsh
-geometry is fragmented by the chamber ellipsoid, so the crust and chamber share
-the curved interface instead of assigning phases across cut cells.
-
-The driver uses CPU by default, but accepts any KernelAbstractions backend and
-moves solver connectivity, phases, boundary data, and state arrays accordingly.
-After loading CUDA, run `main(backend = CUDABackend(); write_output = false)`
-or launch it with `FEMTOOLS_BACKEND=cuda`.
-
-See the [Sinking block](sinking_block.md) page for the 2-D and 3-D
-discretisations, physical setup, output, figure, and material-gradient checks.
+The current Stokes example tree includes the 2-D sinking-block, pure-shear, and
+volcano drivers. See [Sinking block](sinking_block.md) and
+[Sinking block (3-D)](sinking_block_3d.md) for the discretisations, physical
+setup, output, figure, and material-gradient checks of each. The broader
+legacy dike/adjoint notes remain in the example-specific documentation and are
+not a current default driver in this tree.
 
 The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
 Gmsh mesh on the host, then uploads mesh arrays, mixed connectivity,
-geometry caches, phase indices, and boundary data before launching kernels:
+geometry, phase indices, and boundary data before launching kernels:
 
 ```julia
 using CUDA
@@ -311,6 +283,7 @@ solve_stokes_3d!
 solve_stokes_adjoint_3d!
 stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
+FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
 ```
 
@@ -363,11 +336,11 @@ validate that contract with a central finite difference as demonstrated in
 ### Two-dimensional frozen operator and solver controls
 
 The forward state must be converged before the adjoint solve. At that fixed
-state the transpose Jacobian is constant, so the default
-`frozen_operator = true` path assembles three dense blocks per element once and
-reuses them throughout the Powell–Hestenes / DYREL solve. Each subsequent
-operator application is only an element gather, dense products, and scatter;
-it does not reevaluate the rheology or invoke automatic differentiation.
+state the transpose Jacobian is constant, and `operator` chooses how it is
+applied throughout the Powell–Hestenes / DYREL solve. The default
+`operator = :blocks` assembles the element blocks once; each subsequent
+application is an element gather, dense products, and scatter, reevaluating no
+rheology and invoking no automatic differentiation.
 
 The inner velocity iteration stops after reducing its residual by `rel_drop`;
 the outer pressure iteration continues until `adjoint_tol` or
@@ -376,12 +349,20 @@ the complete adjoint. With `measure_λmax = true`, power iteration measures the
 largest eigenvalue of the Jacobi-preconditioned velocity block instead of using
 its looser Gershgorin bound. The returned statistics report both values and the
 number of power iterations. Set `measure_λmax = false` to use the Gershgorin
-estimate directly; the Enzyme fallback also uses that estimate because it has no
-cheap frozen operator application for power iteration.
+estimate directly; `operator = :enzyme` always uses that estimate, because
+power iteration needs an operator application and the reverse-mode path has
+none to offer cheaply.
 
 `λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint
 in place to warm-start the next solve.
+
+An optimization loop can also construct
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` once and pass it as
+`workspace` on every adjoint solve. This reuses the residual, rate, pullback,
+and boundary buffers instead of allocating them for every design. Construct it
+with `enzyme=true` only when using `operator = :enzyme`; the default block and
+matrix-free workspaces omit the nine reverse-mode-only arrays.
 
 If the velocity residual stalls, inspect the measured-to-Gershgorin ratio and
 increase the iteration budgets before changing tolerances. If the velocity
@@ -389,11 +370,22 @@ residual drops but the pressure residual does not, the outer PH iteration is
 the bottleneck; lowering `rel_drop` only spends more work on the already-solved
 subproblem.
 
-The cached T7/P1-disc operator stores 280 floating-point values per element,
-about 2.2 kB per element in `Float64`. Set `frozen_operator = false` when that
-memory footprint is unsuitable, notably for larger three-dimensional elements.
-The fallback reconstructs the same transpose products with Enzyme on every
-iteration and is therefore slower but avoids the block storage.
+For T7/P1-disc the cached blocks hold 147 floating-point values per element,
+about 1.2 kB per element in `Float64`, once the symmetry of a viscous tangent is
+exploited; a plastic model raises that to 280 values, about 2.2 kB. Two
+alternatives store nothing per element when that footprint is unsuitable,
+notably for larger three-dimensional elements.
+
+`operator = :matrix_free` rebuilds the transpose products by forward-mode
+directional differentiation of the element residuals, at about three residual
+evaluations per element per application. It needs `plastic === nothing`: for a
+symmetric element tangent a directional derivative *is* the transposed product,
+which is what removes the need to store anything. The symmetry is verified once
+at construction rather than assumed.
+
+`operator = :enzyme` rebuilds the same products by reverse-mode differentiation,
+three sweeps per application. It is the slowest of the three and the only one
+that avoids block storage for a plastic tangent.
 
 See `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` for a complete solve
 and `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` for a headless mesh/contrast sweep.

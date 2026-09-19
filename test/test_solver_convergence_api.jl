@@ -5,20 +5,8 @@ using FEMTools
 using KernelAbstractions: CPU, synchronize
 using StaticArrays
 
-function _convergence_geometry(coords, el2n, nels, element::ReferenceElement{E}) where {E <: AbstractElement{2, NV}} where {NV}
-    ip = element.integration_points
-    NQ = length(ip.ω)
-    FP = eltype(ip.ω)
-    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
-    FEMTools.precompute_geometry_kernel!(CPU(), 1)(
-        geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV);
-        ndrange = nels,
-    )
-    synchronize(CPU())
-    return geo
-end
+_convergence_geometry(coords, el2n, nels, element) =
+    precompute_geometry(coords, el2n, element; backend = CPU(), workgroup = 1)
 
 function _tiny_triangle_mesh()
     element = ReferenceElement(LinearElement{2, 3, Float64})
@@ -56,9 +44,8 @@ function _orphan_stokes_case()
         SVector(2.0, 2.0),
     ]
     el2n = reshape(Int32[1, 2, 3, 4, 5, 6], 6, 1)
-    mesh_v = Mesh(backend, coords, el2n; order = 2)
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    mesh_v = Mesh(backend, coords, el2n, element_v; workgroup)
+    mesh = MixedMesh(mesh_v, element_P; workgroup)
     nq = length(element_v.integration_points.ω)
     material = StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,), α = (0.0,))
     dr = StokesDR(
@@ -67,10 +54,10 @@ function _orphan_stokes_case()
     )
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache, 1.0, 1.0; workgroup,
+        γP, dr, mesh, 1.0, 1.0; workgroup,
     )
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
-    return (; dr, mesh, cache, element_v, element_P, τ_old, γP, backend, workgroup)
+    return (; dr, mesh, element_v, element_P, τ_old, γP, backend, workgroup)
 end
 
 function _caught_error(f)
@@ -162,10 +149,10 @@ end
     @test litho_err isa ErrorException
     @test occursin("lithostatic pressure preconditioner produced invalid λmax", sprint(showerror, litho_err))
 
-    (; dr, mesh, cache, element_v, element_P, τ_old, γP, backend, workgroup) = _orphan_stokes_case()
+    (; dr, mesh, element_v, element_P, τ_old, γP, backend, workgroup) = _orphan_stokes_case()
     stokes_err = _caught_error() do
         solve_stokes_dyrel!(
-            dr, mesh, cache, element_v, element_P,
+            dr, mesh, mesh.geometry, element_v, element_P,
             dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
             empty_i, empty_v, empty_v, backend, workgroup;
             verbose = false,
@@ -184,8 +171,7 @@ function _buoyancy_stokes_case()
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
     element_P = ReferenceElement(LinearElement{2, 3, Float64})
     mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (3, 3))
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup)
 
     coords = mesh.coords
     centroid(i) = sum(coords[mesh.el2nP[a, i]] for a in 1:3) / 3
@@ -195,12 +181,12 @@ function _buoyancy_stokes_case()
     tol = 1.0e-9
     vx_nodes = Int32[n for n in Γ if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - 1.0) ≤ tol]
     vy_nodes = Int32[n for n in Γ if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - 1.0) ≤ tol]
-    return (; backend, workgroup, element_v, element_P, mesh, cache, phases,
+    return (; backend, workgroup, element_v, element_P, mesh, phases,
         Γ, vx_nodes, vy_nodes)
 end
 
 @testset "solve_stokes_dyrel! measures λmax by power iteration" begin
-    (; backend, workgroup, element_v, element_P, mesh, cache, phases,
+    (; backend, workgroup, element_v, element_P, mesh, phases,
         Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
 
     η = (1.0, 1.0)
@@ -214,11 +200,11 @@ end
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh, cache.geo_P, element_v, element_P, 20.0, Δt, backend, workgroup;
+            γP, dr, mesh, mesh.geometry.geo_P, element_v, element_P, 20.0, Δt, backend, workgroup;
             phases_v = phases, η)
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         stats = solve_stokes_dyrel!(
-            dr, mesh, cache, element_v, element_P,
+            dr, mesh, mesh.geometry, element_v, element_P,
             phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
             Γ, bc, bc, backend, workgroup;
             ncheck = 100, ϵ_tol = 1.0e-9, rel_drop0 = 0.1,

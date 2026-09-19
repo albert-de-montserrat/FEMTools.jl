@@ -89,6 +89,8 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 | `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear |
+| `examples/miniapps/stokes/solvi2D/Solvi2D_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
+| `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 
 ## 2-D building-block miniapps
 

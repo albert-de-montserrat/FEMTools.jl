@@ -16,20 +16,8 @@ function _capture_stdout(f)
     end
 end
 
-function _thermal_geometry(coords, el2n, nels, element::ReferenceElement{E}) where {E <: AbstractElement{2, NV}} where {NV}
-    ip = element.integration_points
-    NQ = length(ip.ω)
-    FP = eltype(ip.ω)
-    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
-    FEMTools.precompute_geometry_kernel!(CPU(), 1)(
-        geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV);
-        ndrange = nels,
-    )
-    synchronize(CPU())
-    return geo
-end
+_thermal_geometry(coords, el2n, nels, element) =
+    precompute_geometry(coords, el2n, element; backend = CPU(), workgroup = 1)
 
 function _thermal_case()
     backend = CPU()
@@ -67,25 +55,24 @@ function _stokes_case()
     element_P = ReferenceElement(LinearElement{2, 3, Float64})
     mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (1, 1))
     Γnodes = mesh_v.Γnodes
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup)
     material = StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,))
     dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material; ϵ = 2.0)
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache, 1.0, 1.0; workgroup,
+        γP, dr, mesh, 1.0, 1.0; workgroup,
     )
     nq = length(element_v.integration_points.ω)
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     bc = DirichletBoundaryCondition(nothing, Γnodes, zeros(Float64, length(Γnodes)))
-    return (; dr, mesh, cache, τ_old, γP, Γnodes, bc, workgroup)
+    return (; dr, mesh, τ_old, γP, Γnodes, bc, workgroup)
 end
 
 function _stokes_output(; kwargs...)
-    (; dr, mesh, cache, τ_old, γP, bc, workgroup) = _stokes_case()
+    (; dr, mesh, τ_old, γP, bc, workgroup) = _stokes_case()
     return _capture_stdout() do
         solve_stokes_dyrel!(
-            dr, mesh, cache, bc, bc, 1.0, γP; τ_old, workgroup,
+            dr, mesh, bc, bc, 1.0, γP; τ_old, workgroup,
             ncheck = 1,
             ϵ_tol = 2.0,
             iterMax = 0,
@@ -97,7 +84,7 @@ function _stokes_output(; kwargs...)
 end
 
 function _stokes_split_bc_output()
-    (; dr, mesh, cache, τ_old, γP, Γnodes, workgroup) = _stokes_case()
+    (; dr, mesh, τ_old, γP, Γnodes, workgroup) = _stokes_case()
     coords = Array(mesh.coords)
     vx_nodes = Int32[n for n in Γnodes if coords[n][1] ≈ 0.0 || coords[n][1] ≈ 1.0]
     vy_nodes = Int32[n for n in Γnodes if coords[n][2] ≈ 0.0 || coords[n][2] ≈ 1.0]
@@ -105,7 +92,7 @@ function _stokes_split_bc_output()
     bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(Float64, length(vy_nodes)))
     return _capture_stdout() do
         solve_stokes_dyrel!(
-            dr, mesh, cache, bc_vx, bc_vy, 1.0, γP; τ_old, workgroup,
+            dr, mesh, bc_vx, bc_vy, 1.0, γP; τ_old, workgroup,
             ncheck = 1,
             ϵ_tol = 2.0,
             iterMax = 0,

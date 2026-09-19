@@ -11,6 +11,7 @@ FEMTools.AbstractMesh
 Mesh
 MixedMesh
 MixedMeshCache
+update_geometry!
 generate_discontinuous_linear_mesh
 ```
 
@@ -19,8 +20,7 @@ device:
 
 ```julia
 mesh_v = Mesh(backend, coords_cpu, el2n_cpu, velocity_element)
-mesh   = MixedMesh(mesh_v, pressure_element)
-cache  = MixedMeshCache(backend, workgroup, mesh, velocity_element, pressure_element)
+mesh   = MixedMesh(mesh_v, pressure_element; workgroup)
 ```
 
 An element-aware `Mesh` stores its reference element and precomputed geometry;
@@ -30,10 +30,12 @@ available when geometry is not needed.
 
 `MixedMesh(mesh_v, pressure_element)` constructs discontinuous pressure
 connectivity and nodal normals on the CPU, then returns them on the same array
-backend as `mesh_v`. `MixedMeshCache` allocates both geometry arrays on
-`backend` and retains both reference elements, allowing high-level Stokes calls
-to infer geometry, elements, and backend. Avoid mixing host connectivity with
-device solution arrays.
+backend as `mesh_v`. Because `mesh_v` stores its reference element, the mixed
+mesh also computes both fields' geometry on that backend and keeps it, with both
+reference elements, as a [`MixedMeshCache`](@ref) in `mesh.geometry`. High-level
+Stokes calls take geometry, elements, and backend from the mesh alone. After
+moving `mesh.coords`, call `update_geometry!(mesh)` to recompute the geometry in
+place. Avoid mixing host connectivity with device solution arrays.
 
 In three dimensions, T10/T11 tetrahedra attach the four discontinuous linear
 pressure DoFs to their vertices. Hex27 instead attaches them to the cell center
@@ -102,16 +104,18 @@ generate_element_groups
 
 ## Geometry Precomputation
 
-Element geometry is an `NQ × nels` matrix, quadrature point first:
-`geo[q, iel]` holds the physical shape-function gradients and the weighted
-measure `|det J| ωq` of quadrature point `q` in element `iel`. Kernels that
-work one element at a time take `FEMTools.element_geometry(geo, iel)`, a view
-of that element's column, rather than copying the column into the thread.
+Element geometry holds one [`QuadraturePointGeometry`](@ref) per element and
+quadrature point: the inverse isoparametric Jacobian and the weighted measure
+`|det J| ωq`. `element_geometry(geo, iel, ∂N∂ξ)` pairs an element's entries with
+the reference-element gradients `∂N∂ξ = shape_function_gradients(element)` and
+forms the physical shape-function gradients on access.
 
 ```@docs
 precompute_geometry
+QuadraturePointGeometry
+ElementGeometry
+element_geometry
 FEMTools.precompute_geometry_kernel!
-FEMTools.element_geometry
 ```
 
 ## VTK Output

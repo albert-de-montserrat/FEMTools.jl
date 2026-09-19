@@ -16,8 +16,8 @@ using DomainSets: ×
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
     element_P = ReferenceElement(LinearElement{2, 3, Float64})
     mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (3, 3))
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup = wg)
+    (; geo_v, geo_P) = mesh.geometry
 
     coords = mesh.coords
     el2nP = mesh.el2nP
@@ -50,11 +50,11 @@ using DomainSets: ×
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache.geo_P, element_v, element_P, 20.0, Δt, backend, wg;
+        γP, dr, mesh, geo_P, element_v, element_P, 20.0, Δt, backend, wg;
         phases_v = phases, η)
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     fwd = solve_stokes_dyrel!(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP,
         Γ, bcx, bcy, backend, wg;
         ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
@@ -87,7 +87,7 @@ using DomainSets: ×
     FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
         Rv_x_buf, copy(λvx), Rv_y_buf, copy(λvy),
         dr.v.x, dvx, dr.v.y, dvy, dr.P, dP, dr.T, Pnum, dPnum,
-        mesh, cache.geo_v, element_v, element_P,
+        mesh, geo_v, element_v, element_P,
         phases, τ_old, nothing,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt, wg)
     ResλP_enzyme = copy(dP)
@@ -95,19 +95,36 @@ using DomainSets: ×
     dP_scratch = zeros(mesh.nnodesP)
     FEMTools.assemble_pressure_residual_matrices_atomix_adj!(
         dr, seed_RP, dvx, dvy, dP_scratch,
-        mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        mesh, geo_v, geo_P, element_v, element_P,
         phases, Δt, wg)
     ResλVx_enzyme = copy(dvx)
     ResλVy_enzyme = copy(dvy)
 
     # Path 2: the frozen element blocks.
     op = FEMTools.assemble_adjoint_operator(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    # A viscous tangent is symmetric, so the velocity block keeps only its upper
+    # triangle and the pressure-coupling block is Bᵀ and is not stored. The
+    # residual comparison below is what proves the apply still reproduces the full
+    # operator; these pin the storage layout the saving depends on.
+    NV2 = 2 * length(element_v)
+    @test op.C === nothing
+    @test size(op.B[1]) == (NV2, length(element_P))
+    @test op.A[1] isa SVector{NV2 * (NV2 + 1) ÷ 2}
+    # Unpacking must give back a symmetric matrix that applies as the dense one did.
+    A_full = FEMTools._unpack_symmetric(op.A[1], Val(NV2))
+    @test A_full ≈ transpose(A_full)
+    xtest = SVector{NV2}(sin.(1:NV2))
+    @test FEMTools._symmetric_matvec(op.A[1], xtest) ≈ A_full * xtest
+
     velocity_op = FEMTools.assemble_velocity_operator(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
-    @test velocity_op.A ≈ op.A
+    # The forward velocity operator keeps dense blocks; they must match what the
+    # adjoint packed away.
+    @test all(FEMTools._unpack_symmetric(op.A[i], Val(NV2)) ≈ velocity_op.A[i]
+              for i in 1:mesh.nels)
     λcold, ncold, power_x, power_y = FEMTools.estimate_velocity_λmax(
         velocity_op, mesh, element_v, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg)
@@ -139,7 +156,7 @@ using DomainSets: ×
     FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!(
         dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
         dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
-        mesh.el2n, mesh.DoFsP, cache.geo_v, cache.geo_P, mesh.nels,
+        mesh.el2n, mesh.DoFsP, geo_v, geo_P, mesh.nels,
         element_v, element_P, phases, phases,
         dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
         dr.ηb, Δt, γP, dr.M_P, backend, wg; τ_old)
@@ -147,6 +164,17 @@ using DomainSets: ×
     @test rowsum_vy_op ≈ dr.∂Rv∂v.y
     @test PC_vx_op ≈ dr.PC_v.x
     @test PC_vy_op ≈ dr.PC_v.y
+    # A plastic model gives a non-normal tangent, so the block must be kept even
+    # though this particular state may not be at yield.
+    plastic = DruckerPrager(
+        ntuple(_ -> deg2rad(30.0), 2), ntuple(_ -> deg2rad(3.0), 2),
+        (1.6, 1.6), (1.0e-2, 1.0e-2), (1.0e2, 1.0e2))
+    op_plastic = FEMTools.assemble_adjoint_operator(
+        dr, mesh, geo_v, geo_P, element_v, element_P,
+        phases, phases, τ_old, plastic, G, Δt, γP, backend, wg)
+    @test op_plastic.C !== nothing
+    @test size(op_plastic.C[1]) == (length(element_P), 2 * length(element_v))
+
     λmax, λmax_iterations = FEMTools.estimate_adjoint_λmax(
         op, mesh, element_v, element_P, dr.PC_v.x, dr.PC_v.y,
         vx_nodes, vy_nodes, backend, wg)
@@ -172,4 +200,41 @@ using DomainSets: ×
     λmax_exact = maximum(abs, eigvals(Symmetric(A)))
     @test λmax ≈ λmax_exact rtol = 5.0e-3
     @test λmax_iterations < 100
+
+    # The matrix-free operator applies the same thing without storing any of it:
+    # a directional derivative of the element residual stands in for each
+    # transposed product, which is exact because the viscous tangent is symmetric.
+    mf = FEMTools.matrix_free_adjoint_operator(
+        dr, mesh, geo_v, geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP, backend, wg)
+    ResλVx_mf = zeros(mesh.nnodes)
+    ResλVy_mf = zeros(mesh.nnodes)
+    ResλP_mf = zeros(mesh.nnodesP)
+    FEMTools.apply_adjoint_operator!(
+        ResλVx_mf, ResλVy_mf, ResλP_mf, mf, λvx, λvy, λP,
+        mesh, element_v, element_P, backend, wg)
+    @test maximum(abs, ResλVx_mf .- ResλVx_enzyme) / scale_v < 1.0e-12
+    @test maximum(abs, ResλVy_mf .- ResλVy_enzyme) / scale_v < 1.0e-12
+    @test maximum(abs, ResλP_mf .- ResλP_enzyme) / scale_P < 1.0e-12
+
+    # It carries the forward state itself plus the reference tables, and nothing
+    # sized by the element count. The tables must be backend arrays: this kernel
+    # launches once per adjoint iteration, and a tuple would be rebuilt into the
+    # launch argument pack every time.
+    @test mf.state.vx === dr.v.x
+    @test mf.state.geo_v === geo_v
+    @test all(t isa AbstractVector && length(t) == nq
+        for t in (mf.state.Nq, mf.state.NqP, mf.state.∂N∂ξ_v))
+
+    # Power iteration needs only an apply, so it measures the same eigenvalue.
+    λmax_mf, _ = FEMTools.estimate_adjoint_λmax(
+        mf, mesh, element_v, element_P, dr.PC_v.x, dr.PC_v.y,
+        vx_nodes, vy_nodes, backend, wg)
+    @test λmax_mf ≈ λmax rtol = 1.0e-6
+
+    # A plastic tangent has no symmetry for the forward-mode products to exploit.
+    @test_throws "a plastic model gives a non-normal one" (
+        FEMTools.matrix_free_adjoint_operator(
+            dr, mesh, geo_v, geo_P, element_v, element_P,
+            phases, phases, τ_old, plastic, G, Δt, γP, backend, wg))
 end

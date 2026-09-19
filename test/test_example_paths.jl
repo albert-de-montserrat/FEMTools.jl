@@ -44,7 +44,7 @@ _example_has_parse_error(x) = x isa Expr &&
         "examples/stokes/volcano/volcano_thermal_stokes_topo_3D.jl",
         "examples/miniapps/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
         "examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
-        "examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl",
+        "examples/miniapps/stokes/solvi2D/Solvi2D_triangle.jl",
         "examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl",
         "examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl",
         "examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl",

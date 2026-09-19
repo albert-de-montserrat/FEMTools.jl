@@ -17,8 +17,8 @@ function _adjoint_gradient_case()
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
     element_P = ReferenceElement(LinearElement{2, 3, Float64})
     mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (3, 3))
-    mesh = MixedMesh(mesh_v, element_P)
-    cache = MixedMeshCache(backend, wg, mesh, element_v, element_P)
+    mesh = MixedMesh(mesh_v, element_P; workgroup = wg)
+    (; geo_v, geo_P) = mesh.geometry
 
     coords = mesh.coords
     el2nP = mesh.el2nP
@@ -40,13 +40,13 @@ function _adjoint_gradient_case()
     # nonzero derivative is ∂J/∂vᵧ = -1 on the observation nodes.
     obs = Int32[n for n in 1:mesh.nnodes if coords[n][2] > 0.6]
 
-    return (; backend, wg, element_v, element_P, mesh, cache, phases,
+    return (; backend, wg, element_v, element_P, mesh, geo_v, geo_P, phases,
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs)
 end
 
 @testset "solve_stokes_adjoint_dyrel! — gradient matches finite differences" begin
     case = _adjoint_gradient_case()
-    (; backend, wg, element_v, element_P, mesh, cache, phases,
+    (; backend, wg, element_v, element_P, mesh, geo_v, geo_P, phases,
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs) = case
 
     η = (1.0, 1.0)
@@ -68,11 +68,11 @@ end
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh, cache.geo_P, element_v, element_P, 20.0, Δt, backend, wg;
+            γP, dr, mesh, geo_P, element_v, element_P, 20.0, Δt, backend, wg;
             phases_v = phases, η)
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         stats = solve_stokes_dyrel!(
-            dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+            dr, mesh, geo_v, geo_P, element_v, element_P,
             phases, phases, τ_old, nothing, G, Δt, γP,
             Γ, bcx, bcy, backend, wg;
             ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
@@ -92,7 +92,7 @@ end
     λvy = zeros(mesh.nnodes)
     λP = zeros(mesh.nnodesP)
     adj = solve_stokes_adjoint_dyrel!(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
         vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
@@ -106,7 +106,7 @@ end
     # Nonzero input fields are a warm start, not reset by the solver.
     λ_before = (copy(λvx), copy(λvy), copy(λP))
     warm = solve_stokes_adjoint_dyrel!(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
         vx_nodes, vy_nodes, adjoint_tol = 1.0e-9,
@@ -116,6 +116,57 @@ end
     @test warm.λmax_iterations == 0
     @test (λvx, λvy, λP) == λ_before
 
+    # A reused workspace carries no state between solves: two cold solves through
+    # the same scratch follow identical iterations. The multipliers agree to
+    # roundoff only, since threaded assembly sums contributions in scheduling
+    # order. It rejects a different boundary layout.
+    workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)
+    cold_solve() = begin
+        λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+        stats = solve_stokes_adjoint_dyrel!(
+            dr, mesh, geo_v, geo_P, element_v, element_P,
+            phases, phases, τ_old, nothing, G, Δt, γP,
+            objective_vx, objective_vy, λ..., backend, wg;
+            vx_nodes, vy_nodes, adjoint_tol = 1.0e-9, measure_λmax = false,
+            verbose = false, verbose_inner = false, workspace)
+        return stats, λ
+    end
+    first_stats, first_λ = cold_solve()
+    second_stats, second_λ = cold_solve()
+    @test first_stats.converged
+    @test first_stats.iter > 0
+    @test second_stats.iter == first_stats.iter
+    @test all(map((a, b) -> isapprox(a, b; rtol = 1.0e-12), second_λ, first_λ))
+    short_workspace = StokesAdjointWorkspace(dr, vx_nodes[2:end], vy_nodes)
+    @test_throws "vx boundary values" solve_stokes_adjoint_dyrel!(
+        dr, mesh, geo_v, geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
+        vx_nodes, vy_nodes, verbose = false, workspace = short_workspace)
+
+    # The matrix-free operator drives the same solve while storing no element
+    # blocks, so it must land on the same adjoint field.
+    λvx_mf = zeros(mesh.nnodes)
+    λvy_mf = zeros(mesh.nnodes)
+    λP_mf = zeros(mesh.nnodesP)
+    mf = solve_stokes_adjoint_dyrel!(
+        dr, mesh, geo_v, geo_P, element_v, element_P,
+        phases, phases, τ_old, nothing, G, Δt, γP,
+        objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
+        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
+        verbose = false, verbose_inner = false, operator = :matrix_free)
+    @test mf.converged
+    @test mf.λmax ≈ adj.λmax rtol = 1.0e-6
+    @test maximum(abs, λvy_mf .- λvy) / maximum(abs, λvy) < 1.0e-6
+
+    @test_throws "operator must be :blocks, :matrix_free, or :enzyme" (
+        solve_stokes_adjoint_dyrel!(
+            dr, mesh, geo_v, geo_P, element_v, element_P,
+            phases, phases, τ_old, nothing, G, Δt, γP,
+            objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
+            vx_nodes, vy_nodes, verbose = false, operator = :frozen))
+
     # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
     # in the density, so R(ρ₂=1) - R(ρ₂=0) at the frozen forward state is the
     # derivative with respect to the phase-2 density.
@@ -124,7 +175,7 @@ end
         Ry = zeros(mesh.nnodes)
         FEMTools.assemble_momentum_residual_matrices_atomix!(
             Rx, Ry, dr.v.x, dr.v.y, dr.P, dr.T, nothing,
-            mesh.el2n, mesh.DoFsP, cache.geo_v, mesh.nels, element_v, element_P,
+            mesh.el2n, mesh.DoFsP, geo_v, mesh.nels, element_v, element_P,
             phases, τ_old, nothing, nothing, η, G, α, ρ0_vec, K, g, Tref, Δt, backend, wg)
         return Rx, Ry
     end
@@ -152,12 +203,13 @@ end
     fill!(λvy, 0)
     fill!(λP, 0)
     adj_rev = solve_stokes_adjoint_dyrel!(
-        dr, mesh, cache.geo_v, cache.geo_P, element_v, element_P,
+        dr, mesh, geo_v, geo_P, element_v, element_P,
         phases, phases, τ_old, nothing, G, Δt, γP,
         objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
         vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
-        frozen_operator = false, measure_λmax = false,
+        operator = :enzyme, measure_λmax = false,
+        workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme = true),
         verbose = false, verbose_inner = false)
     @test adj_rev.converged
     @test adj_rev.λmax_iterations == 0        # power iteration needs the frozen operator

@@ -1,6 +1,6 @@
 """
     MixedMesh{nDim, O1, O2, ...}
-    MixedMesh(element, elementP, coords, DoFs, el2n, DoFsP, el2nP)
+    MixedMesh(element, elementP, coords, DoFs, el2n, DoFsP, el2nP; workgroup=256)
 
 Mixed finite-element mesh storing separate connectivities for two fields.
 
@@ -19,8 +19,14 @@ Fields:
 - `DoFsP`   : secondary-field degree-of-freedom indices.
 - `el2nP`   : secondary element-to-node connectivity (`N2 × nels`).
 - `nnodesP` : number of secondary-field nodes.
+- `geometry`: [`MixedMeshCache`](@ref) holding both fields' precomputed geometry
+  and reference elements, or `nothing` when the mesh was built without a
+  primary-field reference element. After moving `coords`, refresh it with
+  [`update_geometry!`](@ref).
+
+The geometry is computed on the backend of `coords`.
 """
-struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
+struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G} <: AbstractMesh
     coords::T1  # vertex coordinates
     normals::T6 # outward nodal normals
     nels::Int   # number of elements
@@ -32,8 +38,9 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
     DoFsP::T4    # degrees of freedom
     el2nP::T5    # element-to-node connectivity
     nnodesP::Int # number of nodes
+    geometry::G  # MixedMeshCache or nothing
 
-    function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6}(
+    function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}(
         coords::T1,
         normals::T6,
         DoFs::T2,
@@ -43,14 +50,16 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6} <: AbstractMesh
         DoFsP::T4,
         el2nP::T5,
         nnodesP::Int,
-    ) where {nDim, O1, O2, T1, T2, T3, T4, T5, T6}
+        geometry,
+    ) where {nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}
         length(normals) == nnodes || throw(ArgumentError("normal vector has the wrong number of nodes"))
         size(el2n, 2) == nels || throw(ArgumentError("velocity connectivity has the wrong number of elements"))
         size(el2nP, 2) == nels || throw(ArgumentError("pressure connectivity has the wrong number of elements"))
-        return new{nDim, O1, O2, T1, T2, T3, T4, T5, T6}(
+        return new{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}(
             coords, normals, nels,
             DoFs, el2n, nnodes,
             DoFsP, el2nP, nnodesP,
+            geometry,
         )
     end
 end
@@ -108,13 +117,15 @@ function MixedMesh(
     DoFs,
     el2n,
     DoFsP,
-    el2nP,
+    el2nP;
+    workgroup = 256,
+    geometry_precision = eltype(eltype(coords)),
 ) where {nDim}
     coords_cpu = Array(coords)
     el2n_cpu = Array(el2n)
     normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
     normals = typeof(coords)(normals_cpu)
-    return MixedMesh{
+    mesh = MixedMesh{
         nDim,
         order(element),
         order(elementP),
@@ -124,6 +135,7 @@ function MixedMesh(
         typeof(DoFsP),
         typeof(el2nP),
         typeof(normals),
+        Nothing,
     }(
         coords,
         normals,
@@ -134,11 +146,13 @@ function MixedMesh(
         DoFsP,
         el2nP,
         Int(maximum(DoFsP)),
+        nothing,
     )
+    return _with_geometry(mesh, element, elementP, workgroup, geometry_precision)
 end
 
 """
-    MixedMesh(mesh_v, element_P) -> MixedMesh
+    MixedMesh(mesh_v, element_P; workgroup=256) -> MixedMesh
 
 Construct a mixed velocity–pressure mesh from a pre-built velocity mesh and a
 pressure reference element.
@@ -150,9 +164,16 @@ DoF indices, and velocity connectivity; `element_P` supplies the pressure
 polynomial order stored in the `MixedMesh` type parameter.
 
 The pressure topology is built from CPU copies, then moved back to the same
-array backend as `mesh_v`.
+array backend as `mesh_v`. When `mesh_v` stores its reference element, the
+geometry of both fields is precomputed into `geometry`; otherwise `geometry`
+is `nothing` and the high-level Stokes solvers reject the mesh.
 """
-function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {nDim, O1}
+function MixedMesh(
+    mesh_v::Mesh{nDim, O1},
+    element_P::ReferenceElement;
+    workgroup = 256,
+    geometry_precision = eltype(eltype(mesh_v.coords)),
+) where {nDim, O1}
     coords_cpu = Array(mesh_v.coords)
     el2n_cpu   = Array(mesh_v.el2n)
     el2nP_cpu, DoFsP_cpu, _ = generate_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
@@ -160,7 +181,7 @@ function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {n
     normals = typeof(mesh_v.coords)(normals_cpu)
     DoFsP = typeof(mesh_v.el2n)(DoFsP_cpu)
     el2nP = typeof(mesh_v.el2n)(el2nP_cpu)
-    return MixedMesh{
+    mesh = MixedMesh{
         nDim,
         O1,
         order(element_P),
@@ -170,6 +191,7 @@ function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {n
         typeof(DoFsP),
         typeof(el2nP),
         typeof(normals),
+        Nothing,
     }(
         mesh_v.coords,
         normals,
@@ -180,14 +202,41 @@ function MixedMesh(mesh_v::Mesh{nDim, O1}, element_P::ReferenceElement) where {n
         DoFsP,
         el2nP,
         Int(maximum(DoFsP_cpu)),
+        nothing,
+    )
+    return _with_geometry(mesh, mesh_v.element, element_P, workgroup, geometry_precision)
+end
+
+_with_geometry(mesh::MixedMesh, ::Nothing, element_P, workgroup, geometry_precision) = mesh
+
+function _with_geometry(mesh::MixedMesh{nDim, O1, O2}, element_v::ReferenceElement, element_P, workgroup, geometry_precision) where {nDim, O1, O2}
+    geometry = MixedMeshCache(
+        KA.get_backend(mesh.coords), workgroup, mesh, element_v, element_P; geometry_precision,
+    )
+    return MixedMesh{nDim, O1, O2,
+                     typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n),
+                     typeof(mesh.DoFsP), typeof(mesh.el2nP), typeof(mesh.normals),
+                     typeof(geometry)}(
+        mesh.coords, mesh.normals, mesh.DoFs, mesh.el2n, mesh.nnodes, mesh.nels,
+        mesh.DoFsP, mesh.el2nP, mesh.nnodesP, geometry,
     )
 end
 
+function _mesh_geometry(mesh::MixedMesh)
+    geometry = mesh.geometry
+    isnothing(geometry) && throw(ArgumentError(
+        "mixed mesh has no geometry; build it from a velocity mesh that stores its reference element, e.g. MixedMesh(Mesh(backend, coords, el2n, element_v), element_P)"))
+    isnothing(geometry.element_v) && throw(ArgumentError(
+        "mixed mesh geometry has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"))
+    return geometry
+end
+
 """
-    MixedMeshCache(backend, workgroup, mesh, element_v, element_P)
+    MixedMeshCache(backend, workgroup, mesh, element_v, element_P; geometry_precision=FP)
 
 Precompute geometry for both fields of a 2D mixed mesh at the velocity
-integration points.
+integration points. A `MixedMesh` built with its reference elements already
+stores one as `mesh.geometry`.
 
 Both geometry arrays are allocated on `backend`. Coordinates and connectivity
 are converted with [`TA`](@ref) before the kernels are launched, so a cache
@@ -196,11 +245,18 @@ same backend for the mesh, cache, solver state, phase arrays, and boundary
 arrays; mixing host and device inputs in an assembly kernel is unsupported.
 
 Fields:
-- `geo_v`: primary-field shape-function gradients and weighted volumes, as an
-  `NQ × nels` matrix indexed quadrature point first.
-- `geo_P`: secondary-field shape-function gradients and weighted volumes, in
-  the same layout.
+- `geo_v`: primary-field inverse Jacobians and weighted volumes, as
+  [`QuadraturePointGeometry`](@ref). Combine with
+  [`shape_function_gradients`](@ref) of `element_v` to obtain physical gradients.
+- `geo_P`: weighted volumes of the secondary field at the primary field's
+  quadrature points. Only the volumes are stored: the pressure residual and the
+  pressure scaling are the only consumers and neither uses secondary-field
+  gradients.
 - `element_v`, `element_P`: reference elements used to build the cache.
+
+`geometry_precision` sets the element type of both arrays and defaults to the
+reference elements'. `Float32` halves them under a `Float64` solve; see
+[`precompute_geometry`](@ref) for what that trades.
 """
 struct MixedMeshCache{GV, GP, EV, EP}
     geo_v::GV
@@ -216,19 +272,25 @@ function MixedMeshCache(
     workgroup,
     mesh::MixedMesh{2},
     element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
+    element_P::ReferenceElement{TP};
+    geometry_precision = FP,
 ) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+    _check_geometry_precision(geometry_precision)
+    NQ_v = length(element_v.integration_points.ω)
+    FPg  = geometry_precision
+    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{2, FPg, 4}}, mesh.nels)
+    geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
+    _fill_mixed_geometry!(geo_v, geo_P, backend, workgroup, mesh, element_v, element_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+end
+
+function _fill_mixed_geometry!(
+    geo_v, geo_P, backend, workgroup, mesh::MixedMesh{2},
+    element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
+) where {NV, NP, TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}}
     ip_v = element_v.integration_points
-    NQ_v = length(ip_v.ω)
-
-    ξq_v    = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-    ∂N∂ξq_P = ntuple(q -> eval_shape_function_jacobian(element_P, ξq_v[q]), NQ_v)
-
-    GeoV = Tuple{SMatrix{NV, 2, FP, 2NV}, FP}
-    GeoP = Tuple{SMatrix{NP, 2, FP, 2NP}, FP}
-    geo_v = KA.allocate(backend, GeoV, NQ_v, mesh.nels)
-    geo_P = KA.allocate(backend, GeoP, NQ_v, mesh.nels)
+    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
+    ∂N∂ξq_P = shape_function_gradients(element_P, ip_v)
 
     TDev   = TA(backend)
     coords = TDev(mesh.coords)
@@ -244,8 +306,24 @@ function MixedMeshCache(
         ndrange = mesh.nels,
     )
     KA.synchronize(backend)
+    return nothing
+end
 
-    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+"""
+    update_geometry!(mesh::MixedMesh; workgroup=256) -> mesh
+
+Recompute `mesh.geometry` in place from the current `mesh.coords`. Call it
+after moving the mesh nodes; the geometry arrays keep their identity, so
+references to `mesh.geometry.geo_v` and `mesh.geometry.geo_P` stay valid.
+"""
+function update_geometry!(mesh::MixedMesh{2}; workgroup = 256)
+    geometry = _mesh_geometry(mesh)
+    backend = KA.get_backend(geometry.geo_v)
+    _fill_mixed_geometry!(
+        geometry.geo_v, geometry.geo_P, backend, workgroup, mesh,
+        geometry.element_v, geometry.element_P,
+    )
+    return mesh
 end
 
 """

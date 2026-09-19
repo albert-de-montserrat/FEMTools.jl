@@ -250,6 +250,14 @@ Base.length(::ReferenceElement{T}) where {T<:AbstractElement} = length(T())
 Base.length(::AbstractElement{nDim, nVert}) where {nDim, nVert} = nVert
 
 """
+    local_nodes_val(element) -> Val
+
+Number of local nodes of `element`, wrapped in a `Val` so that it selects
+`SVector` and `SMatrix` lengths inside assembly kernels.
+"""
+@inline local_nodes_val(::ReferenceElement{T}) where {nDim, N, T <: AbstractElement{nDim, N}} = Val(N)
+
+"""
     order(element)
     order(ElementType)
 

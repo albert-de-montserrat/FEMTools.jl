@@ -5,20 +5,8 @@ using FEMTools
 using KernelAbstractions: CPU, synchronize
 using StaticArrays
 
-function _postprocess_geometry(coords, el2n, nels, element::ReferenceElement{E}) where {E <: AbstractElement{2, NV}} where {NV}
-    ip = element.integration_points
-    NQ = length(ip.ω)
-    FP = eltype(ip.ω)
-    ξq = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo = Matrix{Tuple{SMatrix{NV, 2, FP, 2NV}, FP}}(undef, NQ, nels)
-    FEMTools.precompute_geometry_kernel!(CPU(), 1)(
-        geo, coords, el2n, ∂N∂ξq, ip.ω, Val(NV);
-        ndrange = nels,
-    )
-    synchronize(CPU())
-    return geo
-end
+_postprocess_geometry(coords, el2n, nels, element) =
+    precompute_geometry(coords, el2n, element; backend = CPU(), workgroup = 1)
 
 function _postprocess_fixture()
     element = ReferenceElement(LinearElement{2, 3, Float64})
@@ -80,7 +68,7 @@ end
     update_old_stress_from_cells!(τ_old, post_ve, mesh.el2n, mesh.nnodes)
     @test eltype(τ_old[1]) === Float32
 
-    λmin = FEMTools._stokes_λmin(1.0f0, zeros(Float32, 2), zeros(Float32, 2), ones(Float32, 2))
+    λmin = FEMTools._stokes_λmin(1.0f0, zeros(Float32, 2), zeros(Float32, 2), zeros(Float32, 2), ones(Float32, 2))
     α, β = FEMTools._stokes_cheb(1.0f0, λmin, 0.9f0)
     @test typeof(λmin) === Float32
     @test typeof(α) === Float32

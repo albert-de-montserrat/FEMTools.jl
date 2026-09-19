@@ -26,18 +26,29 @@ The input values of `λvx`, `λvy`, and `λP` are preserved as the initial itera
 Pass zero-filled arrays for a cold solve, or fields from the previous design
 iteration to warm-start an optimization loop.
 
-Because the forward state is frozen, the adjoint residual is affine in `λ` with a
-constant operator. With `frozen_operator` (the default) that operator is
-assembled once as per-element blocks and then applied as a dense element product,
-so no rheology is evaluated and no primal residual is recomputed during the
-solve; see [`FrozenAdjointOperator`](@ref) for the blocks and their memory cost.
-Setting `frozen_operator = false` selects the reverse-mode path instead, which
-rebuilds the same products by automatic differentiation on every iteration: far
-slower, but it stores nothing per element and so remains the option when the
-block storage is too large.
+Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
+keyword to reuse mesh-sized scratch across solves. The default constructs a
+fresh workspace for compatibility. A workspace used with `operator = :enzyme`
+must have been constructed with `enzyme=true`.
 
-With `measure_λmax` (the default, and only available alongside `frozen_operator`)
-the largest eigenvalue of the preconditioned velocity block is measured by power
+Because the forward state is frozen, the adjoint residual is affine in `λ` with a
+constant operator, and `operator` chooses how that operator is applied:
+
+- `:blocks` (the default) assembles it once as per-element blocks and applies
+  them as dense element products, so no rheology is evaluated and no primal
+  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
+  for the blocks and their memory cost.
+- `:matrix_free` stores nothing per element and rebuilds the same products by
+  forward-mode directional differentiation on every apply, at roughly three
+  element residual evaluations apiece. It requires `plastic === nothing`, whose
+  symmetric tangent is what lets a directional derivative stand in for a
+  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
+- `:enzyme` also stores nothing per element and rebuilds the products by
+  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
+  three and the only one that handles a plastic tangent without stored blocks.
+
+With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
+largest eigenvalue of the preconditioned velocity block is measured by power
 iteration rather than bounded by Gershgorin row sums. The bound is correct but
 loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
 
@@ -50,8 +61,8 @@ inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
 All arrays read or written by kernels—including `mesh_stokes` connectivity,
 `geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
 arrays—must reside on `backend`. Construct unstructured meshes with
-`Mesh(backend, coords, el2n)` and geometry with `MixedMeshCache` to maintain
-that invariant. The Enzyme transpose assemblers execute on the backend inferred
+`Mesh(backend, coords, el2n, element_v)`; a `MixedMesh` built from it computes
+`mesh.geometry` on the same backend. The Enzyme transpose assemblers execute on the backend inferred
 from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
@@ -86,48 +97,62 @@ function solve_stokes_adjoint_dyrel!(
     verbose = true,
     verbose_inner = false,
     collect_history = false,
-    frozen_operator = true,
+    operator = :blocks,
     measure_λmax = true,
+    workspace = StokesAdjointWorkspace(
+        dr, vx_nodes, vy_nodes; enzyme = operator === :enzyme),
 )
     M_P = dr.M_P
 
-    # Scratch: adjoint residuals, DYREL rates, and the reverse-pass seeds/pullbacks.
-    ResλVx = zero(dr.Rv.x)
-    ResλVy = zero(dr.Rv.y)
-    ResλP  = zero(dr.P)
-    ResλVx0 = zero(dr.Rv.x)
-    ResλVy0 = zero(dr.Rv.y)
-    λrate_vx = zero(dr.v.x)
-    λrate_vy = zero(dr.v.y)
+    (; ResλVx, ResλVy, ResλP, ResλVx0, ResλVy0, λrate_vx, λrate_vy,
+       dvx, dvy, zero_vx_bc, zero_vy_bc) = workspace.common
+    for (buffer, reference, label) in (
+            (ResλVx, dr.Rv.x, "vx residual"),
+            (ResλVy, dr.Rv.y, "vy residual"),
+            (ResλVx0, dr.Rv.x, "previous vx residual"),
+            (ResλVy0, dr.Rv.y, "previous vy residual"),
+            (λrate_vx, dr.v.x, "vx rate"),
+            (λrate_vy, dr.v.y, "vy rate"),
+            (dvx, dr.v.x, "vx pullback"),
+            (dvy, dr.v.y, "vy pullback"),
+            (ResλP, dr.P, "pressure residual"),
+        )
+        axes(buffer) == axes(reference) || throw(DimensionMismatch(
+            "adjoint workspace $label axes $(axes(buffer)) do not match $(axes(reference))"))
+    end
+    length(zero_vx_bc) == length(vx_nodes) || throw(DimensionMismatch(
+        "adjoint workspace has $(length(zero_vx_bc)) vx boundary values, " *
+        "but vx_nodes has $(length(vx_nodes)) entries"))
+    length(zero_vy_bc) == length(vy_nodes) || throw(DimensionMismatch(
+        "adjoint workspace has $(length(zero_vy_bc)) vy boundary values, " *
+        "but vy_nodes has $(length(vy_nodes)) entries"))
+    # The DYREL rates carry momentum between iterations, so a reused workspace
+    # must start every solve from rest.
+    fill!(λrate_vx, 0)
+    fill!(λrate_vy, 0)
 
-    Rv_x_buf = zero(dr.Rv.x)
-    Rv_y_buf = zero(dr.Rv.y)
-    seed_Rv_x = zero(dr.Rv.x)
-    seed_Rv_y = zero(dr.Rv.y)
-    seed_RP   = zero(dr.RP)
-    dvx = zero(dr.v.x)
-    dvy = zero(dr.v.y)
-    dP  = zero(dr.P)
-    dP_scratch = zero(dr.P)
-    # Real augmented-pressure array so its adjoint (∂Rv/∂Pnum)ᵀλv is obtained
-    # directly rather than via the P == Pnum shortcut. Its value is irrelevant to
-    # the transpose (Rv is linear in Pnum), so it stays zero.
-    Pnum  = zero(dr.P)
-    dPnum = zero(dr.P)
-
-    zero_vx_bc = fill!(similar(λvx, length(vx_nodes)), 0)
-    zero_vy_bc = fill!(similar(λvy, length(vy_nodes)), 0)
-
-    # The operator is constant at the frozen forward state, so assembling it once
-    # replaces the three reverse-mode sweeps every iteration would otherwise run.
-    # Its assembly also fills the Jacobi diagonal and Gershgorin row sums from the
-    # velocity blocks already in hand.
-    op = frozen_operator ?
+    # The operator is constant at the frozen forward state, so every path applies
+    # the same thing; they differ in what they store to do it. Assembling the
+    # blocks also fills the Jacobi diagonal and Gershgorin row sums from the
+    # velocity blocks already in hand, which the other two must assemble for
+    # themselves.
+    op = if operator === :blocks
         assemble_adjoint_operator(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
-    ) : nothing
-    if op === nothing
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        )
+    elseif operator === :matrix_free
+        matrix_free_adjoint_operator(
+            dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        )
+    elseif operator === :enzyme
+        nothing
+    else
+        throw(ArgumentError(
+            "operator must be :blocks, :matrix_free, or :enzyme, got $(repr(operator))"))
+    end
+    if operator !== :blocks
         assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
             dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
@@ -164,7 +189,16 @@ function solve_stokes_adjoint_dyrel!(
     verbose && measure_λmax && op !== nothing &&
         @info "Adjoint λmax" λmax_measured=λmax_vx λmax_gershgorin ratio=λmax_gershgorin / λmax_vx λmax_iterations
 
-    function assemble_adjoint_residual_enzyme!()
+    # Buffers, seeds and pullbacks that only the Enzyme reverse passes touch. The
+    # other two paths replace those passes outright, so these nine mesh-sized
+    # arrays are never allocated for them.
+    enzyme_scratch = workspace.enzyme
+    op === nothing && enzyme_scratch === nothing && throw(ArgumentError(
+        "operator = :enzyme requires a StokesAdjointWorkspace constructed with enzyme=true"))
+
+    function assemble_adjoint_residual_enzyme!(scratch)
+        (; Rv_x_buf, Rv_y_buf, seed_Rv_x, seed_Rv_y, seed_RP, dP, dP_scratch,
+           Pnum, dPnum) = scratch
         # Only the Enzyme shadows need zeroing: they are accumulated into by the
         # reverse passes. ResλVx, ResλVy, and ResλP are each fully overwritten below.
         fill!(dvx, 0)
@@ -209,7 +243,7 @@ function solve_stokes_adjoint_dyrel!(
 
     function assemble_adjoint_residual!()
         if op === nothing
-            assemble_adjoint_residual_enzyme!()
+            assemble_adjoint_residual_enzyme!(enzyme_scratch)
         else
             apply_adjoint_operator!(
                 dvx, dvy, ResλP, op, λvx, λvy, λP,
@@ -284,12 +318,8 @@ function solve_stokes_adjoint_dyrel!(
 
                 # Re-estimate λmin and refresh the Chebyshev step. Δτ and λmax stay
                 # fixed (the Jacobian depends only on the frozen forward state).
-                # The differences overwrite ResλVx0/ResλVy0, which the next
-                # iteration refills from ResλVx/ResλVy before reading them again.
-                @. ResλVx0 = ResλVx - ResλVx0
-                @. ResλVy0 = ResλVy - ResλVy0
-                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx0, dr.PC_v.x)
-                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy0, dr.PC_v.y)
+                λmin_vx = _stokes_λmin(α_vx, λrate_vx, ResλVx, ResλVx0, dr.PC_v.x)
+                λmin_vy = _stokes_λmin(α_vy, λrate_vy, ResλVy, ResλVy0, dr.PC_v.y)
                 α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
                 α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
 
@@ -339,8 +369,10 @@ is symmetric, so the 3-D method reuses the dimension-matched forward residual
 and preconditioner with the objective derivative as its momentum load.
 Velocity and pressure are updated in place from their supplied initial guesses.
 `adjoint_tol` sets the combined residual tolerance; `iterMax` and
-`total_iterMax` set the iteration budget. The returned convergence statistics
-match the 3-D forward method.
+`total_iterMax` set the iteration budget. `workspace` is passed straight through
+to the forward solver, so a gradient loop can hand the same
+[`Stokes3DWorkspace`](@ref) to both the forward and the adjoint solve. The
+returned convergence statistics match the 3-D forward method.
 """
 function solve_stokes_adjoint_dyrel!(
     velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
@@ -348,47 +380,55 @@ function solve_stokes_adjoint_dyrel!(
     ncheck = 100, adjoint_tol = 1e-5, iterMax = 3000,
     total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
     workgroup = 256, verbose = true,
+    workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
 )
     zero_phase = map(zero, η)
     zero_g = ntuple(_ -> zero(first(η)), 3)
     return solve_stokes_dyrel!(
         velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
         ncheck, ϵ_tol = adjoint_tol, iterMax, total_iterMax, velocity_step, γP,
-        load = objective_load, workgroup, verbose,
+        load = objective_load, workgroup, verbose, workspace,
     )
 end
 
 """
     stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
-                                cell_phase, η, ρ, g; phase=2)
+                                cell_phase, η, ρ, g; workgroup=256)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
-viscous operator derivative for one material phase. `phase` selects the
-one-based material phase, and the returned named tuple contains
-`density_gradient` and `viscosity_gradient`.
+viscous operator derivative for every material phase at once. The returned
+named tuple contains `density_gradient` and `viscosity_gradient`, each an
+`NTuple` with one entry per phase of `η`/`ρ`.
 """
 function stokes_material_gradient_3d(
     forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
-    cell_phase, η, ρ, g::NTuple{3}; phase = 2, workgroup = 256,
+    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
 )
-    1 ≤ phase ≤ length(η) == length(ρ) || throw(ArgumentError("invalid material phase"))
+    length(η) == length(ρ) || throw(ArgumentError("η and ρ must have the same length"))
+    nphases = length(η)
     pressure = similar(first(forward_velocity), 4, mesh.nels)
     fill!(pressure, 0)
     residual = ntuple(i -> similar(forward_velocity[i]), 3)
     zero_velocity = ntuple(i -> fill!(similar(forward_velocity[i]), 0), 3)
+    zero_g = ntuple(_ -> zero(first(g)), 3)
     zero_phase = map(zero, η)
+    tables = stokes_tables_3d(KA.get_backend(first(forward_velocity)), mesh.element)
 
-    density = ntuple(i -> i == phase ? one(ρ[i]) : zero(ρ[i]), length(ρ))
-    assemble_stokes_momentum_residual_3d!(
-        residual, zero_velocity, pressure, mesh, cell_phase, η, density, g; workgroup,
-    )
-    density_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    density_gradient = ntuple(nphases) do phase
+        density = ntuple(i -> i == phase ? one(ρ[i]) : zero(ρ[i]), nphases)
+        assemble_stokes_momentum_residual_3d!(
+            residual, zero_velocity, pressure, mesh, cell_phase, η, density, g; workgroup, tables,
+        )
+        -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    end
 
-    viscosity = ntuple(i -> i == phase ? one(η[i]) : zero(η[i]), length(η))
-    assemble_stokes_momentum_residual_3d!(
-        residual, forward_velocity, pressure, mesh, cell_phase, viscosity,
-        zero_phase, ntuple(_ -> zero(first(g)), 3); workgroup,
-    )
-    viscosity_gradient = -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    viscosity_gradient = ntuple(nphases) do phase
+        viscosity = ntuple(i -> i == phase ? one(η[i]) : zero(η[i]), nphases)
+        assemble_stokes_momentum_residual_3d!(
+            residual, forward_velocity, pressure, mesh, cell_phase, viscosity, zero_phase, zero_g; workgroup, tables,
+        )
+        -sum(dot(adjoint_velocity[i], residual[i]) for i in 1:3)
+    end
+
     return (; density_gradient, viscosity_gradient)
 end

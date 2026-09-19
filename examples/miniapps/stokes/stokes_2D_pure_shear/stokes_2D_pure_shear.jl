@@ -84,7 +84,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     @info "Mixed mesh (T7/P1-disc)" nnodes_v=mesh_stokes.nnodes nnodes_P=mesh_stokes.nnodesP nels=mesh_stokes.nels
 
     # ---------------------------------------------------------------------------
-    # Geometry cache (both fields evaluated at velocity integration points)
+    # Geometry (both fields evaluated at velocity integration points)
     # ---------------------------------------------------------------------------
 
     ip_v  = element_v.integration_points
@@ -92,8 +92,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     NV    = length(element_v)
     NP    = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -176,7 +175,7 @@ function main(; nsteps = 15, mesh_cells = (32, 32) .* 2, Δt = 1/6, show_plot = 
     Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt;
+        γP, dr, mesh_stokes, γfact, Δt;
         workgroup, phases_v = phases_v_cpu,
     )
     time_history = zeros(Float64, nsteps)

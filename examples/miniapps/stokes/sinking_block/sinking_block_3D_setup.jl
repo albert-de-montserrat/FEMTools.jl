@@ -119,8 +119,9 @@ VTK output. Both stages are matrix-free: `solve_stokes_adjoint_dyrel!` for the
 transpose solve, then `stokes_material_gradient_3d` for the sensitivities.
 
 Returns the forward result, the objective load, component-wise adjoint velocity
-and pressure, adjoint convergence statistics, the objective value, and the
-phase-2 `density_gradient` and `viscosity_gradient`.
+and pressure, adjoint convergence statistics, the objective value, and
+`density_gradient`/`viscosity_gradient`, each an `NTuple` giving the
+sensitivity to every material phase from the one transpose solve.
 """
 function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false))
     (; mesh, cell_phase) = forward
@@ -150,9 +151,9 @@ function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_o
         total_iterMax = 50_000, verbose = false,
     )
     adjoint_stats.converged || error("3D adjoint DYREL solve did not converge: $(adjoint_stats.err)")
-    # Contracts `λ` against `∂b/∂ρ` and `(∂A/∂η) u` for one phase — phase 2 by
-    # default. Both derivatives are applied as residual evaluations with unit
-    # material properties, so neither derivative matrix is ever assembled.
+    # Contracts `λ` against `∂b/∂ρ` and `(∂A/∂η) u` for every phase at once.
+    # Both derivatives are applied as residual evaluations with unit material
+    # properties, so neither derivative matrix is ever assembled.
     gradients = stokes_material_gradient_3d(
         Tuple(forward.velocity), Tuple(adjoint_velocity), mesh, cell_phase,
         forward.η, forward.ρ, forward.g,

@@ -134,16 +134,41 @@ for FP in (FP32, FP64)
         cache = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
 
         @test cache isa MixedMeshCache
-        @test size(cache.geo_v, 2) == mesh.nels
-        @test size(cache.geo_P, 2) == mesh.nels
-        @test size(cache.geo_v, 1) == length(velocity_element.integration_points.ω)
-        @test size(cache.geo_P, 1) == length(velocity_element.integration_points.ω)
-        @test cache.geo_v[1, 1][2] isa FP
-        @test cache.geo_P[1, 1][2] isa FP
+        @test length(cache.geo_v) == mesh.nels
+        @test length(cache.geo_P) == mesh.nels
+        @test length(cache.geo_v[1]) == length(velocity_element.integration_points.ω)
+        @test length(cache.geo_P[1]) == length(velocity_element.integration_points.ω)
+        @test cache.geo_v[1][1].dΩ isa FP
+        @test cache.geo_P[1][1] isa FP
         @test cache.element_v === velocity_element
         @test cache.element_P === pressure_element
         @test length(mesh.normals) == mesh.nnodes
         @test eltype(mesh.normals) == SVector{2, FP}
+
+        # The mixed mesh stores the same geometry the standalone cache computes.
+        @test mesh.geometry isa MixedMeshCache
+        @test mesh.geometry.geo_v == cache.geo_v
+        @test mesh.geometry.geo_P == cache.geo_P
+        @test mesh.geometry.element_v === velocity_element
+        @test mesh.geometry.element_P === pressure_element
+
+        # Moving the nodes and refreshing reproduces a freshly built geometry
+        # while keeping the stored arrays.
+        geo_v = mesh.geometry.geo_v
+        mesh.coords .= [2 * c for c in mesh.coords]
+        @test update_geometry!(mesh) === mesh
+        @test mesh.geometry.geo_v === geo_v
+        moved = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
+        @test mesh.geometry.geo_v == moved.geo_v
+        @test mesh.geometry.geo_P == moved.geo_P
+        @test mesh.geometry.geo_P[1][1] ≈ 4 * cache.geo_P[1][1]
+
+        topology_only = MixedMesh(
+            Mesh(CPU(), Array(mesh_v.coords), Array(mesh_v.el2n); order = 2),
+            pressure_element,
+        )
+        @test isnothing(topology_only.geometry)
+        @test_throws "mixed mesh has no geometry" update_geometry!(topology_only)
     end
 end
 

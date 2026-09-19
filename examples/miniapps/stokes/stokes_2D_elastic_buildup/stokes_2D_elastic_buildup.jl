@@ -84,8 +84,7 @@ function main(;
     NV = length(element_v)
     NP = length(element_P)
 
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v, geo_P = cache.geo_v, cache.geo_P
+    (; geo_v, geo_P) = mesh_stokes.geometry
 
     material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = Tuple(g), Tref)
     dr = StokesDR(
@@ -132,7 +131,7 @@ function main(;
 
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δt;
+        γP, dr, mesh_stokes, γfact, Δt;
         workgroup, phases_v = phases_v_cpu,
     )
 
