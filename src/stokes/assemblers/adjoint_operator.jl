@@ -88,8 +88,10 @@ The same `N²` multiply-adds a dense product would perform, reading each stored
 entry twice instead of storing it twice.
 """
 @generated function _symmetric_matvec(packed::SVector{L}, x::SVector{N}) where {L, N}
-    rows = [Expr(:call, :+, [:(packed[$(_triangle_index(i, j))] * x[$j]) for j in 1:N]...)
-            for i in 1:N]
+    rows = [
+        Expr(:call, :+, [:(packed[$(_triangle_index(i, j))] * x[$j]) for j in 1:N]...)
+            for i in 1:N
+    ]
     return :(SVector{$N}($(rows...)))
 end
 
@@ -117,10 +119,11 @@ function _assert_frozen_symmetry(worst, quantity, what, nels, ::Type{T}) where {
     worst ≤ sqrt(eps(T)) && return nothing
     return error(
         "the frozen adjoint operator $what, which assumes the element tangent is " *
-        "symmetric, but the assembled blocks disagree: max $quantity = $worst over " *
-        "$nels elements. Without a plastic model the tangent is symmetric and this " *
-        "cannot happen, so the element operator no longer has the symmetry the " *
-        "storage layout depends on.")
+            "symmetric, but the assembled blocks disagree: max $quantity = $worst over " *
+            "$nels elements. Without a plastic model the tangent is symmetric and this " *
+            "cannot happen, so the element operator no longer has the symmetry the " *
+            "storage layout depends on."
+    )
 end
 
 # A symmetric operator keeps no pressure-coupling block: Cᵀ is B.
@@ -184,7 +187,8 @@ end
     iel = @index(Global)
     nodes = local_nodes_of(el2n_v, iel, Val(NV))
     out = Ablocks[iel] * vcat(
-        _gather_local(x, nodes, Val(NV)), _gather_local(y, nodes, Val(NV)))
+        _gather_local(x, nodes, Val(NV)), _gather_local(y, nodes, Val(NV))
+    )
     for (i, inod) in enumerate(nodes)
         Atomix.@atomic :monotonic yx[inod] += out[i]
         Atomix.@atomic :monotonic yy[inod] += out[NV + i]
@@ -397,10 +401,14 @@ function assemble_adjoint_operator(
     )
     KA.synchronize(backend)
     if symmetric
-        _assert_frozen_symmetry(maximum(defect_A), "‖A - Aᵀ‖/‖A‖",
-            "packed only the upper triangle of its velocity block", nels, Tv)
-        _assert_frozen_symmetry(maximum(defect_C), "‖C - Bᵀ‖/‖C‖",
-            "dropped its pressure-coupling block", nels, Tv)
+        _assert_frozen_symmetry(
+            maximum(defect_A), "‖A - Aᵀ‖/‖A‖",
+            "packed only the upper triangle of its velocity block", nels, Tv
+        )
+        _assert_frozen_symmetry(
+            maximum(defect_C), "‖C - Bᵀ‖/‖C‖",
+            "dropped its pressure-coupling block", nels, Tv
+        )
     end
     return FrozenAdjointOperator(Ablocks, Bblocks, Cblocks)
 end
@@ -759,26 +767,32 @@ function _assert_matrix_free_symmetry(
     w_vy ./= nw
     w_P ./= nw
 
-    apply_adjoint_operator!(y_vx, y_vy, y_P, op, w_vx, w_vy, w_P,
-        mesh_stokes, element_v, element_P, backend, workgroup)
+    apply_adjoint_operator!(
+        y_vx, y_vy, y_P, op, w_vx, w_vy, w_P,
+        mesh_stokes, element_v, element_P, backend, workgroup
+    )
     uMw = dot(u_vx, y_vx) + dot(u_vy, y_vy) + dot(u_P, y_P)
     scale = _probe_norm(y_vx, y_vy, y_P)
-    apply_adjoint_operator!(y_vx, y_vy, y_P, op, u_vx, u_vy, u_P,
-        mesh_stokes, element_v, element_P, backend, workgroup)
+    apply_adjoint_operator!(
+        y_vx, y_vy, y_P, op, u_vx, u_vy, u_P,
+        mesh_stokes, element_v, element_P, backend, workgroup
+    )
     Muw = dot(y_vx, w_vx) + dot(y_vy, w_vy) + dot(y_P, w_P)
     scale = max(scale, _probe_norm(y_vx, y_vy, y_P))
 
     iszero(scale) && error(
         "the matrix-free adjoint operator sends both symmetry probes to zero, so " *
-        "the symmetry its apply depends on cannot be established")
+            "the symmetry its apply depends on cannot be established"
+    )
     defect = abs(uMw - Muw) / scale
     defect ≤ sqrt(eps(Tv)) && return nothing
     return error(
         "the matrix-free adjoint operator applies forward-mode products in place " *
-        "of transposed ones, which assumes the element operator [A B; C 0] is " *
-        "symmetric, but ⟨u, Mw⟩ and ⟨Mu, w⟩ differ by a relative $defect. Without " *
-        "a plastic model the tangent is symmetric and this cannot happen, so the " *
-        "element operator no longer has the symmetry the apply depends on.")
+            "of transposed ones, which assumes the element operator [A B; C 0] is " *
+            "symmetric, but ⟨u, Mw⟩ and ⟨Mu, w⟩ differ by a relative $defect. Without " *
+            "a plastic model the tangent is symmetric and this cannot happen, so the " *
+            "element operator no longer has the symmetry the apply depends on."
+    )
 end
 
 """
@@ -806,11 +820,14 @@ function matrix_free_adjoint_operator(
         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
         backend, workgroup,
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
-    plastic === nothing || throw(ArgumentError(
-        "the matrix-free adjoint operator applies the element tangent through " *
-        "forward-mode products, which reproduce the transpose only for a " *
-        "symmetric tangent; a plastic model gives a non-normal one. Assemble the " *
-        "element blocks instead."))
+    plastic === nothing || throw(
+        ArgumentError(
+            "the matrix-free adjoint operator applies the element tangent through " *
+                "forward-mode products, which reproduce the transpose only for a " *
+                "symmetric tangent; a plastic model gives a non-normal one. Assemble the " *
+                "element blocks instead."
+        )
+    )
     state = (;
         vx = dr.v.x, vy = dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         geo_v, geo_P, phases_v, phases_P, τ_old,
@@ -818,7 +835,8 @@ function matrix_free_adjoint_operator(
         γ_eff = γP, MP = dr.M_P,
         Nq = quadrature_table(backend, shape_function_values(element_v)),
         NqP = quadrature_table(
-            backend, shape_function_values(element_P, element_v.integration_points)),
+            backend, shape_function_values(element_P, element_v.integration_points)
+        ),
         ∂N∂ξ_v = quadrature_table(backend, shape_function_gradients(element_v)),
     )
     op = MatrixFreeAdjointOperator(state)

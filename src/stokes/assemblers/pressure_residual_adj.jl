@@ -13,15 +13,15 @@ products into the input adjoints `dvx`, `dvy`, `dP`. The primal residual
 `dr.RP` is recomputed (overwritten) in the process.
 """
 function assemble_pressure_residual_matrices_atomix_adj!(
-    dr::StokesDR{<:Any, 2},
-    dRP, dvx, dvy, dP,
-    mesh_stokes::MixedMesh{2},
-    geo_v, geo_P,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases,
-    Δt, workgroup,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+        dr::StokesDR{<:Any, 2},
+        dRP, dvx, dvy, dP,
+        mesh_stokes::MixedMesh{2},
+        geo_v, geo_P,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases,
+        Δt, workgroup,
+    ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
     RP, vx, vy, P = dr.RP, dr.v.x, dr.v.y, dr.P

@@ -10,8 +10,8 @@ line mesh with three elements gives columns `[1, 2, 3]`, `[3, 4, 5]`, and
 """
 function generate_element2node(::ReferenceElement{LinearElement{1, N, T}}, nel) where {N, T}
     el2n = zeros(Int32, N, nel)
-    for iel = axes(el2n, 2)
-        for offset in 0:N-1
+    for iel in axes(el2n, 2)
+        for offset in 0:(N - 1)
             el2n[offset + 1, iel] = (N - 1) * (iel - 1) + offset + 1
         end
     end
@@ -20,8 +20,8 @@ end
 
 function generate_element2node(::ReferenceElement{QuadraticElement{1, N, T}}, nel) where {N, T}
     el2n = zeros(Int32, N, nel)
-    for iel = axes(el2n, 2)
-        for offset in 0:N-1
+    for iel in axes(el2n, 2)
+        for offset in 0:(N - 1)
             el2n[offset + 1, iel] = (N - 1) * (iel - 1) + offset + 1
         end
     end
@@ -47,7 +47,7 @@ symmetry of the mesh:
 Nodes are on the `(nx+1) × (ny+1)` grid with the x-index varying fastest,
 consistent with `generate_coordinates(::ReferenceElement{LinearElement{2, 3}})`.
 """
-function generate_element2node(::ReferenceElement{LinearElement{2, 3, T}}, nels::NTuple{2, <:Integer}) where T
+function generate_element2node(::ReferenceElement{LinearElement{2, 3, T}}, nels::NTuple{2, <:Integer}) where {T}
     nx, ny = nels
     stride = nx + 1
     el2n = zeros(Int32, 3, 2 * nx * ny)
@@ -59,10 +59,10 @@ function generate_element2node(::ReferenceElement{LinearElement{2, 3, T}}, nels:
         n4 = n1 + stride               # top-left
         n3 = n4 + 1                    # top-right
         if iseven(ex + ey)
-            el2n[:, iel]     .= Int32[n1, n2, n3]   # BL→TR diagonal: lower-right
+            el2n[:, iel] .= Int32[n1, n2, n3]   # BL→TR diagonal: lower-right
             el2n[:, iel + 1] .= Int32[n1, n3, n4]   #                  upper-left
         else
-            el2n[:, iel]     .= Int32[n1, n2, n4]   # BR→TL diagonal: lower-left
+            el2n[:, iel] .= Int32[n1, n2, n4]   # BR→TL diagonal: lower-left
             el2n[:, iel + 1] .= Int32[n2, n3, n4]   #                  upper-right
         end
         iel += 2
@@ -79,7 +79,7 @@ Build element-to-node connectivity for a structured linear quadrilateral mesh.
 Nodes are numbered with the x-index varying fastest. Local nodes follow the
 reference element order: bottom-left, bottom-right, top-right, top-left.
 """
-function generate_element2node(::ReferenceElement{LinearElement{2, 4, T}}, nels::NTuple{2, <:Integer}) where T
+function generate_element2node(::ReferenceElement{LinearElement{2, 4, T}}, nels::NTuple{2, <:Integer}) where {T}
     nx, ny = nels
     stride = nx + 1
     el2n = zeros(Int32, 4, nx * ny)
@@ -108,29 +108,29 @@ Identical split pattern to `QuadraticElement{2, 6}` (alternating diagonal).
 Nodes 1–6 are the T6 nodes on the `(2nx+1)×(2ny+1)` tensor grid; node 7 is
 the element centroid, stored after all T6 nodes with index `n_T6 + iel`.
 """
-function generate_element2node(::ReferenceElement{QuadraticElement{2, 7, T}}, nels::NTuple{2, <:Integer}) where T
-    nx, ny  = nels
-    stride  = 2nx + 1
-    n_T6    = stride * (2ny + 1)
-    el2n    = zeros(Int32, 7, 2 * nx * ny)
+function generate_element2node(::ReferenceElement{QuadraticElement{2, 7, T}}, nels::NTuple{2, <:Integer}) where {T}
+    nx, ny = nels
+    stride = 2nx + 1
+    n_T6 = stride * (2ny + 1)
+    el2n = zeros(Int32, 7, 2 * nx * ny)
 
     node(ix, iy) = Int32(iy * stride + ix + 1)
 
     iel = 1
     for ey in 0:(ny - 1), ex in 0:(nx - 1)
         ix, iy = 2ex, 2ey
-        BL  = node(ix,   iy);   BR  = node(ix+2, iy)
-        TR  = node(ix+2, iy+2); TL  = node(ix,   iy+2)
-        bot = node(ix+1, iy);   rgt = node(ix+2, iy+1)
-        top = node(ix+1, iy+2); lft = node(ix,   iy+1)
-        ctr = node(ix+1, iy+1)
-        cA  = Int32(n_T6 + iel)
-        cB  = Int32(n_T6 + iel + 1)
+        BL = node(ix, iy);   BR = node(ix + 2, iy)
+        TR = node(ix + 2, iy + 2); TL = node(ix, iy + 2)
+        bot = node(ix + 1, iy);   rgt = node(ix + 2, iy + 1)
+        top = node(ix + 1, iy + 2); lft = node(ix, iy + 1)
+        ctr = node(ix + 1, iy + 1)
+        cA = Int32(n_T6 + iel)
+        cB = Int32(n_T6 + iel + 1)
         if iseven(ex + ey)
-            el2n[:, iel]     .= (BL, BR, TR, bot, rgt, ctr, cA)
+            el2n[:, iel] .= (BL, BR, TR, bot, rgt, ctr, cA)
             el2n[:, iel + 1] .= (BL, TR, TL, ctr, top, lft, cB)
         else
-            el2n[:, iel]     .= (BL, BR, TL, bot, ctr, lft, cA)
+            el2n[:, iel] .= (BL, BR, TL, bot, ctr, lft, cA)
             el2n[:, iel + 1] .= (BR, TR, TL, rgt, top, ctr, cB)
         end
         iel += 2
@@ -157,29 +157,29 @@ corners 1–3 then edge-midpoints 4 = mid(1,2), 5 = mid(2,3), 6 = mid(1,3).
   - Triangle C (lower-left):  BL, BR, TL + midpoints
   - Triangle D (upper-right): BR, TR, TL + midpoints
 """
-function generate_element2node(::ReferenceElement{QuadraticElement{2, 6, T}}, nels::NTuple{2, <:Integer}) where T
-    nx, ny  = nels
-    stride  = 2nx + 1
-    el2n    = zeros(Int32, 6, 2 * nx * ny)
+function generate_element2node(::ReferenceElement{QuadraticElement{2, 6, T}}, nels::NTuple{2, <:Integer}) where {T}
+    nx, ny = nels
+    stride = 2nx + 1
+    el2n = zeros(Int32, 6, 2 * nx * ny)
 
     node(ix, iy) = Int32(iy * stride + ix + 1)
 
     iel = 1
     for ey in 0:(ny - 1), ex in 0:(nx - 1)
         ix, iy = 2ex, 2ey
-        BL  = node(ix,   iy);   BR  = node(ix+2, iy)
-        TR  = node(ix+2, iy+2); TL  = node(ix,   iy+2)
-        bot = node(ix+1, iy);   rgt = node(ix+2, iy+1)
-        top = node(ix+1, iy+2); lft = node(ix,   iy+1)
-        ctr = node(ix+1, iy+1)
+        BL = node(ix, iy);   BR = node(ix + 2, iy)
+        TR = node(ix + 2, iy + 2); TL = node(ix, iy + 2)
+        bot = node(ix + 1, iy);   rgt = node(ix + 2, iy + 1)
+        top = node(ix + 1, iy + 2); lft = node(ix, iy + 1)
+        ctr = node(ix + 1, iy + 1)
         if iseven(ex + ey)
             # Triangle A: corners BL,BR,TR; midpoints bot,rgt,ctr=mid(BL,TR)
-            el2n[:, iel]     .= (BL, BR, TR, bot, rgt, ctr)
+            el2n[:, iel] .= (BL, BR, TR, bot, rgt, ctr)
             # Triangle B: corners BL,TR,TL; midpoints ctr=mid(BL,TR),top,lft
             el2n[:, iel + 1] .= (BL, TR, TL, ctr, top, lft)
         else
             # Triangle C: corners BL,BR,TL; midpoints bot,ctr=mid(BR,TL),lft
-            el2n[:, iel]     .= (BL, BR, TL, bot, ctr, lft)
+            el2n[:, iel] .= (BL, BR, TL, bot, ctr, lft)
             # Triangle D: corners BR,TR,TL; midpoints rgt,top,ctr=mid(BR,TL)
             el2n[:, iel + 1] .= (BR, TR, TL, rgt, top, ctr)
         end
@@ -198,7 +198,7 @@ mesh.
 Nodes are numbered on the refined `(2nx + 1) × (2ny + 1)` grid with the x-index
 varying fastest. Local nodes follow the `QuadraticElement{2, 9}` order.
 """
-function generate_element2node(::ReferenceElement{QuadraticElement{2, 9, T}}, nels::NTuple{2, <:Integer}) where T
+function generate_element2node(::ReferenceElement{QuadraticElement{2, 9, T}}, nels::NTuple{2, <:Integer}) where {T}
     nx, ny = nels
     stride = 2nx + 1
     el2n = zeros(Int32, 9, nx * ny)
@@ -236,7 +236,7 @@ Build element-to-node connectivity for a structured linear hexahedral mesh.
 Nodes are numbered on the tensor grid with x varying fastest, then y, then z.
 Local nodes follow the `LinearElement{3, 8}` hexahedron ordering.
 """
-function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels::NTuple{3, <:Integer}) where T
+function generate_element2node(::ReferenceElement{LinearElement{3, 8, T}}, nels::NTuple{3, <:Integer}) where {T}
     nx, ny, nz = nels
     stride_y = nx + 1
     stride_z = (nx + 1) * (ny + 1)
@@ -270,7 +270,7 @@ Build element-to-node connectivity for a structured quadratic hexahedral mesh.
 Nodes are numbered on the refined tensor grid with x varying fastest, then y,
 then z. Local nodes follow the `QuadraticElement{3, 27}` ordering.
 """
-function generate_element2node(::ReferenceElement{QuadraticElement{3, 27, T}}, nels::NTuple{3, <:Integer}) where T
+function generate_element2node(::ReferenceElement{QuadraticElement{3, 27, T}}, nels::NTuple{3, <:Integer}) where {T}
     nx, ny, nz = nels
     stride_y = 2nx + 1
     stride_z = (2nx + 1) * (2ny + 1)
@@ -338,7 +338,7 @@ julia> generate_node2element([1 2; 2 3])
  [2]
 ```
 """
-function generate_node2element(el2n, n_nodes=maximum(el2n))
+function generate_node2element(el2n, n_nodes = maximum(el2n))
     n2el = [Int32[] for _ in 1:n_nodes]
     for iel in axes(el2n, 2)
         for node in @view el2n[:, iel]
@@ -388,5 +388,5 @@ Extract the `N` global node indices for element `iel` from `el2n` into a
 statically-sized `SVector`. Used inside assembly kernels to avoid heap
 allocation when gathering element-local field values.
 """
-@inline local_nodes_of(el2n, iel, ::Val{N}) where N =
+@inline local_nodes_of(el2n, iel, ::Val{N}) where {N} =
     SVector{N, Int}(ntuple(i -> Int(el2n[i, iel]), Val(N)))

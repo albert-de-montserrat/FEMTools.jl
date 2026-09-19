@@ -49,39 +49,39 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
     geometry::G # precomputed element geometry
 
     function Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G}(
-        Ω,
-        Γ,
-        coords,
-        DoFs,
-        el2n,
-        Γnodes,
-        nnodes,
-        nels,
-        element,
-        geometry,
-    ) where {nDim, O, D, B, T1, T2, T3, T4, E, G}
+            Ω,
+            Γ,
+            coords,
+            DoFs,
+            el2n,
+            Γnodes,
+            nnodes,
+            nels,
+            element,
+            geometry,
+        ) where {nDim, O, D, B, T1, T2, T3, T4, E, G}
         return new{nDim, O, D, B, T1, T2, T3, T4, E, G}(
             Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels, element, geometry,
         )
     end
 
     function Mesh(
-        backend, Ω, element::ReferenceElement{T}, nels;
-        workgroup = 256, geometry_precision = FP,
-    ) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
+            backend, Ω, element::ReferenceElement{T}, nels;
+            workgroup = 256, geometry_precision = FP,
+        ) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
 
-        TDev       = TA(backend)
-        Γ          = boundary(Ω)
+        TDev = TA(backend)
+        Γ = boundary(Ω)
         coords_cpu = generate_coordinates(element, Ω, nels)
-        nnodes     = length(coords_cpu)
-        DoFs_cpu   = generate_dofs(element, nnodes)
-        el2n_cpu   = generate_element2node(element, nels)
-        Γmask       = Bool[p ∈ Γ for p in coords_cpu]
-        Γnodes_cpu  = Vector{Int32}(DoFs_cpu[Γmask])
+        nnodes = length(coords_cpu)
+        DoFs_cpu = generate_dofs(element, nnodes)
+        el2n_cpu = generate_element2node(element, nels)
+        Γmask = Bool[p ∈ Γ for p in coords_cpu]
+        Γnodes_cpu = Vector{Int32}(DoFs_cpu[Γmask])
 
         coords = TDev(coords_cpu)
-        DoFs   = TDev(DoFs_cpu)
-        el2n   = TDev(el2n_cpu)
+        DoFs = TDev(DoFs_cpu)
+        el2n = TDev(el2n_cpu)
         Γnodes = TDev(Γnodes_cpu)
         geometry = precompute_geometry(coords, el2n, element; backend, workgroup, geometry_precision)
 
@@ -100,11 +100,11 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
     end
 
     Base.@constprop :aggressive function Mesh(
-        backend,
-        coords_cpu::AbstractVector{<:SVector{nDim}},
-        el2n_cpu::AbstractMatrix{<:Integer};
-        order::Int = 1,
-    ) where {nDim}
+            backend,
+            coords_cpu::AbstractVector{<:SVector{nDim}},
+            el2n_cpu::AbstractMatrix{<:Integer};
+            order::Int = 1,
+        ) where {nDim}
         if order == 1
             return _unstructured_mesh(backend, coords_cpu, el2n_cpu, Val(1))
         elseif order == 2
@@ -116,54 +116,56 @@ struct Mesh{nDim, O, D, B, T1, T2, T3, T4, E, G} <: AbstractMesh
 end
 
 function Mesh{nDim, O, D, B, T1, T2, T3, T4}(
-    Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels,
-) where {nDim, O, D, B, T1, T2, T3, T4}
+        Ω, Γ, coords, DoFs, el2n, Γnodes, nnodes, nels,
+    ) where {nDim, O, D, B, T1, T2, T3, T4}
     return Mesh{nDim, O, D, B, T1, T2, T3, T4, Nothing, Nothing}(
         Ω, Γ, coords, DoFs, el2n, Γnodes, Int(nnodes), Int(nels), nothing, nothing,
     )
 end
 
 function _unstructured_mesh(
-    backend,
-    coords_cpu::AbstractVector{<:SVector{nDim}},
-    el2n_cpu::AbstractMatrix{<:Integer},
-    ::Val{O},
-) where {nDim, O}
-        TDev       = TA(backend)
-        nnodes     = length(coords_cpu)
-        DoFs_cpu   = Int32.(1:nnodes)
-        Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu, Val(nDim))
+        backend,
+        coords_cpu::AbstractVector{<:SVector{nDim}},
+        el2n_cpu::AbstractMatrix{<:Integer},
+        ::Val{O},
+    ) where {nDim, O}
+    TDev = TA(backend)
+    nnodes = length(coords_cpu)
+    DoFs_cpu = Int32.(1:nnodes)
+    Γnodes_cpu = _unstructured_boundary_nodes(el2n_cpu, Val(nDim))
 
-        coords = TDev(coords_cpu)
-        DoFs   = TDev(DoFs_cpu)
-        el2n   = TDev(el2n_cpu)
-        Γnodes = TDev(Γnodes_cpu)
+    coords = TDev(coords_cpu)
+    DoFs = TDev(DoFs_cpu)
+    el2n = TDev(el2n_cpu)
+    Γnodes = TDev(Γnodes_cpu)
 
-        return Mesh{nDim, O, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes), Nothing, Nothing}(
-            nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2), nothing, nothing,
-        )
+    return Mesh{nDim, O, Nothing, Nothing, typeof(coords), typeof(DoFs), typeof(el2n), typeof(Γnodes), Nothing, Nothing}(
+        nothing, nothing, coords, DoFs, el2n, Γnodes, nnodes, size(el2n_cpu, 2), nothing, nothing,
+    )
 end
 
 function Mesh(
-    backend,
-    coords_cpu::AbstractVector{<:SVector{nDim}},
-    el2n_cpu::AbstractMatrix{<:Integer},
-    element::ReferenceElement{T};
-    workgroup = 256,
-    geometry_precision = FP,
-) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
+        backend,
+        coords_cpu::AbstractVector{<:SVector{nDim}},
+        el2n_cpu::AbstractMatrix{<:Integer},
+        element::ReferenceElement{T};
+        workgroup = 256,
+        geometry_precision = FP,
+    ) where {nDim, FP, T <: AbstractElement{nDim, <:Any, FP}}
     mesh = Mesh(backend, coords_cpu, el2n_cpu; order = order(element))
     geometry = precompute_geometry(mesh.coords, mesh.el2n, element; backend, workgroup, geometry_precision)
-    return Mesh{nDim, order(element), Nothing, Nothing,
-                typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n), typeof(mesh.Γnodes),
-                typeof(element), typeof(geometry)}(
+    return Mesh{
+        nDim, order(element), Nothing, Nothing,
+        typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n), typeof(mesh.Γnodes),
+        typeof(element), typeof(geometry),
+    }(
         nothing, nothing, mesh.coords, mesh.DoFs, mesh.el2n, mesh.Γnodes,
         mesh.nnodes, mesh.nels, element, geometry,
     )
 end
 
 function Base.show(io::IO, mesh::Mesh{nDim, O}) where {nDim, O}
-    print(io, "Mesh{", nDim, ", ", O, "}(nnodes=", mesh.nnodes, ", nels=", mesh.nels, ")")
+    return print(io, "Mesh{", nDim, ", ", O, "}(nnodes=", mesh.nnodes, ", nels=", mesh.nels, ")")
 end
 
 Mesh(Ω, element, nels; kwargs...) = Mesh(CPU(), Ω, element, nels; kwargs...)
@@ -184,15 +186,15 @@ parameter `O`. The remaining arguments are stored verbatim: no generation, no
 boundary detection.
 """
 function Mesh(
-    element::ReferenceElement{T},
-    Ω::D,        # model domain
-    Γ::B,        # model boundary
-    coords::Vector{SVector{nDim, FP}},  # vertex coordinates
-    DoFs::T2,    # degrees of freedom
-    el2n::T3,    # element-to-node connectivity
-    Γnodes::T4;  # boundary nodes
-    geometry_precision = FP,
-) where {D, B, nDim, FP, T2, T3, T4, T<:AbstractElement{nDim}}
+        element::ReferenceElement{T},
+        Ω::D,        # model domain
+        Γ::B,        # model boundary
+        coords::Vector{SVector{nDim, FP}},  # vertex coordinates
+        DoFs::T2,    # degrees of freedom
+        el2n::T3,    # element-to-node connectivity
+        Γnodes::T4;  # boundary nodes
+        geometry_precision = FP,
+    ) where {D, B, nDim, FP, T2, T3, T4, T <: AbstractElement{nDim}}
 
     geometry = precompute_geometry(coords, el2n, element; geometry_precision)
 
@@ -229,20 +231,26 @@ _boundary_face_paths_3d(nlocal::Int) = _boundary_face_paths_3d(Val(nlocal))
 _boundary_face_paths_3d(::Val{4}) =
     ((1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4))
 _boundary_face_paths_3d(::Val{10}) =
-    ((1, 2, 3, 5, 6, 7), (1, 2, 4, 5, 9, 8),
-     (2, 3, 4, 6, 10, 9), (1, 3, 4, 7, 10, 8))
+    (
+    (1, 2, 3, 5, 6, 7), (1, 2, 4, 5, 9, 8),
+    (2, 3, 4, 6, 10, 9), (1, 3, 4, 7, 10, 8),
+)
 _boundary_face_paths_3d(::Val{11}) = _boundary_face_paths_3d(Val(10))
 _boundary_face_paths_3d(::Val{8}) =
-    ((1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
-     (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6))
+    (
+    (1, 2, 4, 3), (5, 6, 8, 7), (1, 2, 6, 5),
+    (3, 4, 8, 7), (1, 3, 7, 5), (2, 4, 8, 6),
+)
 _boundary_face_paths_3d(::Val{27}) =
-    ((1, 2, 3, 4, 9, 10, 11, 12, 21),
-     (5, 6, 7, 8, 13, 14, 15, 16, 26),
-     (1, 2, 6, 5, 9, 18, 13, 17, 22),
-     (4, 3, 7, 8, 11, 19, 15, 20, 24),
-     (1, 4, 8, 5, 12, 20, 16, 17, 25),
-     (2, 3, 7, 6, 10, 19, 14, 18, 23))
-_boundary_face_paths_3d(::Val{N}) where N =
+    (
+    (1, 2, 3, 4, 9, 10, 11, 12, 21),
+    (5, 6, 7, 8, 13, 14, 15, 16, 26),
+    (1, 2, 6, 5, 9, 18, 13, 17, 22),
+    (4, 3, 7, 8, 11, 19, 15, 20, 24),
+    (1, 4, 8, 5, 12, 20, 16, 17, 25),
+    (2, 3, 7, 6, 10, 19, 14, 18, 23),
+)
+_boundary_face_paths_3d(::Val{N}) where {N} =
     throw(ArgumentError("cannot infer 3D boundary face paths for elements with $N local nodes"))
 
 """
@@ -402,15 +410,15 @@ element in the same loop order used by
 first triangle then second triangle of each quad cell.
 """
 function generate_coordinates(
-    ::ReferenceElement{QuadraticElement{2, 7, T}},
-    Ω,
-    nels::NTuple{2, <:Integer},
-) where {T}
+        ::ReferenceElement{QuadraticElement{2, 7, T}},
+        Ω,
+        nels::NTuple{2, <:Integer},
+    ) where {T}
     nx, ny = nels
     coords = _tensor_grid_coordinates(T, Ω, nels, 2)
 
-    left   = leftendpoint(Ω)
-    right  = rightendpoint(Ω)
+    left = leftendpoint(Ω)
+    right = rightendpoint(Ω)
     x0, y0 = left[1], left[2]
     dx = (right[1] - x0) / nx
     dy = (right[2] - y0) / ny
@@ -551,8 +559,11 @@ every call site. The check restores the diagnostic that annotation would have
 given.
 """
 @inline function _check_geometry_precision(FPg)
-    (FPg isa Type && FPg <: AbstractFloat && isconcretetype(FPg)) || throw(ArgumentError(
-        "geometry_precision must be a concrete floating-point type, e.g. Float32 or Float64; got $FPg"))
+    (FPg isa Type && FPg <: AbstractFloat && isconcretetype(FPg)) || throw(
+        ArgumentError(
+            "geometry_precision must be a concrete floating-point type, e.g. Float32 or Float64; got $FPg"
+        )
+    )
     return nothing
 end
 
@@ -575,13 +586,13 @@ store, and the assemblers seed their accumulators from the solution's element
 type, so the narrower value promotes on first use rather than propagating.
 """
 function precompute_geometry(
-    coords,
-    el2n,
-    element::ReferenceElement{T};
-    backend = KA.get_backend(coords),
-    workgroup = 256,
-    geometry_precision = FP,
-) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
+        coords,
+        el2n,
+        element::ReferenceElement{T};
+        backend = KA.get_backend(coords),
+        workgroup = 256,
+        geometry_precision = FP,
+    ) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
     _check_geometry_precision(geometry_precision)
     ip = element.integration_points
     NQ = length(ip.ω)
@@ -625,7 +636,7 @@ Because this kernel depends only on mesh geometry, it only needs to be called
 once per mesh and the result can be reused across nonlinear or pseudo-transient
 iterations.
 """
-@kernel function precompute_geometry_kernel!(geo, @Const(coords), @Const(el2n), ∂N∂ξq, ω, ::Val{N}) where N
+@kernel function precompute_geometry_kernel!(geo, @Const(coords), @Const(el2n), ∂N∂ξq, ω, ::Val{N}) where {N}
     iel = @index(Global)
     local_nodes = local_nodes_of(el2n, iel, Val(N))
     c = element_coordinate_matrix(coords, local_nodes)

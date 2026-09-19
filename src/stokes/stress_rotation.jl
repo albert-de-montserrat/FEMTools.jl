@@ -29,14 +29,14 @@ function rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
 end
 
 function _rotate_stress!(
-    τ_old,
-    τ,
-    vx, vy,
-    el2n_v,
-    geo_v,
-    dt,
-    element_v::ReferenceElement{TV},
-) where {NV, TV <: AbstractElement{2, NV}}
+        τ_old,
+        τ,
+        vx, vy,
+        el2n_v,
+        geo_v,
+        dt,
+        element_v::ReferenceElement{TV},
+    ) where {NV, TV <: AbstractElement{2, NV}}
     nels = size(el2n_v, 2)
     ∂N∂ξ_v = shape_function_gradients(element_v)
 

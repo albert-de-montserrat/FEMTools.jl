@@ -66,46 +66,49 @@ arrays—must reside on `backend`. Construct unstructured meshes with
 from their output buffers.
 """
 function solve_stokes_adjoint_dyrel!(
-    dr::StokesDR{<:Any, 2},
-    mesh_stokes,
-    geo_v,
-    geo_P,
-    element_v,
-    element_P,
-    phases_v,
-    phases_P,
-    τ_old,
-    plastic,
-    G,
-    Δt,
-    γP,
-    objective_vx,
-    objective_vy,
-    λvx,
-    λvy,
-    λP,
-    backend,
-    workgroup;
-    vx_nodes,
-    vy_nodes,
-    ncheck = 50,
-    adjoint_tol = 1.0e-6,
-    rel_drop = 0.1,
-    iterMax = 50_000,
-    total_iterMax = 50_000,
-    max_ph_iterations = 100,
-    verbose = true,
-    verbose_inner = false,
-    collect_history = false,
-    operator = :blocks,
-    measure_λmax = true,
-    workspace = StokesAdjointWorkspace(
-        dr, vx_nodes, vy_nodes; enzyme = operator === :enzyme),
-)
+        dr::StokesDR{<:Any, 2},
+        mesh_stokes,
+        geo_v,
+        geo_P,
+        element_v,
+        element_P,
+        phases_v,
+        phases_P,
+        τ_old,
+        plastic,
+        G,
+        Δt,
+        γP,
+        objective_vx,
+        objective_vy,
+        λvx,
+        λvy,
+        λP,
+        backend,
+        workgroup;
+        vx_nodes,
+        vy_nodes,
+        ncheck = 50,
+        adjoint_tol = 1.0e-6,
+        rel_drop = 0.1,
+        iterMax = 50_000,
+        total_iterMax = 50_000,
+        max_ph_iterations = 100,
+        verbose = true,
+        verbose_inner = false,
+        collect_history = false,
+        operator = :blocks,
+        measure_λmax = true,
+        workspace = StokesAdjointWorkspace(
+            dr, vx_nodes, vy_nodes; enzyme = operator === :enzyme
+        ),
+    )
     M_P = dr.M_P
 
-    (; ResλVx, ResλVy, ResλP, ResλVx0, ResλVy0, λrate_vx, λrate_vy,
-       dvx, dvy, zero_vx_bc, zero_vy_bc) = workspace.common
+    (;
+        ResλVx, ResλVy, ResλP, ResλVx0, ResλVy0, λrate_vx, λrate_vy,
+        dvx, dvy, zero_vx_bc, zero_vy_bc,
+    ) = workspace.common
     for (buffer, reference, label) in (
             (ResλVx, dr.Rv.x, "vx residual"),
             (ResλVy, dr.Rv.y, "vy residual"),
@@ -117,15 +120,24 @@ function solve_stokes_adjoint_dyrel!(
             (dvy, dr.v.y, "vy pullback"),
             (ResλP, dr.P, "pressure residual"),
         )
-        axes(buffer) == axes(reference) || throw(DimensionMismatch(
-            "adjoint workspace $label axes $(axes(buffer)) do not match $(axes(reference))"))
+        axes(buffer) == axes(reference) || throw(
+            DimensionMismatch(
+                "adjoint workspace $label axes $(axes(buffer)) do not match $(axes(reference))"
+            )
+        )
     end
-    length(zero_vx_bc) == length(vx_nodes) || throw(DimensionMismatch(
-        "adjoint workspace has $(length(zero_vx_bc)) vx boundary values, " *
-        "but vx_nodes has $(length(vx_nodes)) entries"))
-    length(zero_vy_bc) == length(vy_nodes) || throw(DimensionMismatch(
-        "adjoint workspace has $(length(zero_vy_bc)) vy boundary values, " *
-        "but vy_nodes has $(length(vy_nodes)) entries"))
+    length(zero_vx_bc) == length(vx_nodes) || throw(
+        DimensionMismatch(
+            "adjoint workspace has $(length(zero_vx_bc)) vx boundary values, " *
+                "but vx_nodes has $(length(vx_nodes)) entries"
+        )
+    )
+    length(zero_vy_bc) == length(vy_nodes) || throw(
+        DimensionMismatch(
+            "adjoint workspace has $(length(zero_vy_bc)) vy boundary values, " *
+                "but vy_nodes has $(length(vy_nodes)) entries"
+        )
+    )
     # The DYREL rates carry momentum between iterations, so a reused workspace
     # must start every solve from rest.
     fill!(λrate_vx, 0)
@@ -149,8 +161,11 @@ function solve_stokes_adjoint_dyrel!(
     elseif operator === :enzyme
         nothing
     else
-        throw(ArgumentError(
-            "operator must be :blocks, :matrix_free, or :enzyme, got $(repr(operator))"))
+        throw(
+            ArgumentError(
+                "operator must be :blocks, :matrix_free, or :enzyme, got $(repr(operator))"
+            )
+        )
     end
     if operator !== :blocks
         assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -187,18 +202,23 @@ function solve_stokes_adjoint_dyrel!(
     α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
 
     verbose && measure_λmax && op !== nothing &&
-        @info "Adjoint λmax" λmax_measured=λmax_vx λmax_gershgorin ratio=λmax_gershgorin / λmax_vx λmax_iterations
+        @info "Adjoint λmax" λmax_measured = λmax_vx λmax_gershgorin ratio = λmax_gershgorin / λmax_vx λmax_iterations
 
     # Buffers, seeds and pullbacks that only the Enzyme reverse passes touch. The
     # other two paths replace those passes outright, so these nine mesh-sized
     # arrays are never allocated for them.
     enzyme_scratch = workspace.enzyme
-    op === nothing && enzyme_scratch === nothing && throw(ArgumentError(
-        "operator = :enzyme requires a StokesAdjointWorkspace constructed with enzyme=true"))
+    op === nothing && enzyme_scratch === nothing && throw(
+        ArgumentError(
+            "operator = :enzyme requires a StokesAdjointWorkspace constructed with enzyme=true"
+        )
+    )
 
     function assemble_adjoint_residual_enzyme!(scratch)
-        (; Rv_x_buf, Rv_y_buf, seed_Rv_x, seed_Rv_y, seed_RP, dP, dP_scratch,
-           Pnum, dPnum) = scratch
+        (;
+            Rv_x_buf, Rv_y_buf, seed_Rv_x, seed_Rv_y, seed_RP, dP, dP_scratch,
+            Pnum, dPnum,
+        ) = scratch
         # Only the Enzyme shadows need zeroing: they are accumulated into by the
         # reverse passes. ResλVx, ResλVy, and ResλP are each fully overwritten below.
         fill!(dvx, 0)
@@ -281,8 +301,10 @@ function solve_stokes_adjoint_dyrel!(
         end
         err = max(min(err_v, err_v / err_v0), min(err_P, err_P / err_P0))
         collect_history && push!(history, (; iter, itPH, err, err_v, err_P))
-        verbose && @printf("adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
-            itPH, iter, err, err_v, err_P)
+        verbose && @printf(
+            "adj PH=%03d iter=%06d err=%.3e Rv=%.3e RP=%.3e\n",
+            itPH, iter, err, err_v, err_P
+        )
 
         if err < adjoint_tol
             converged = true
@@ -297,14 +319,22 @@ function solve_stokes_adjoint_dyrel!(
             copyto!(ResλVx0, ResλVx)
             copyto!(ResλVy0, ResλVy)
 
-            stokes_update_rate!(λrate_vx, ResλVx, dr.PC_v.x, β_vx,
-                mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_variable!(λvx, λrate_vx, -α_vx,
-                mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_rate!(λrate_vy, ResλVy, dr.PC_v.y, β_vy,
-                mesh_stokes.nnodes, backend, workgroup)
-            stokes_update_variable!(λvy, λrate_vy, -α_vy,
-                mesh_stokes.nnodes, backend, workgroup)
+            stokes_update_rate!(
+                λrate_vx, ResλVx, dr.PC_v.x, β_vx,
+                mesh_stokes.nnodes, backend, workgroup
+            )
+            stokes_update_variable!(
+                λvx, λrate_vx, -α_vx,
+                mesh_stokes.nnodes, backend, workgroup
+            )
+            stokes_update_rate!(
+                λrate_vy, ResλVy, dr.PC_v.y, β_vy,
+                mesh_stokes.nnodes, backend, workgroup
+            )
+            stokes_update_variable!(
+                λvy, λrate_vy, -α_vy,
+                mesh_stokes.nnodes, backend, workgroup
+            )
 
             apply_dirichlet!(λvx, vx_nodes, zero_vx_bc, backend, workgroup)
             apply_dirichlet!(λvy, vy_nodes, zero_vy_bc, backend, workgroup)
@@ -325,7 +355,8 @@ function solve_stokes_adjoint_dyrel!(
 
                 verbose_inner && @printf(
                     "  adj inner it=%05d iter=%06d err_v=%.3e α=[%.2e %.2e] β=[%.2e %.2e]\n",
-                    inner, iter, err_v, α_vx, α_vy, β_vx, β_vy)
+                    inner, iter, err_v, α_vx, α_vy, β_vx, β_vy
+                )
             end
         end
 
@@ -375,13 +406,13 @@ to the forward solver, so a gradient loop can hand the same
 returned convergence statistics match the 3-D forward method.
 """
 function solve_stokes_adjoint_dyrel!(
-    velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
-    ncheck = 100, adjoint_tol = 1e-5, iterMax = 3000,
-    total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
-    workgroup = 256, verbose = true,
-    workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
-)
+        velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
+        mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
+        ncheck = 100, adjoint_tol = 1.0e-5, iterMax = 3000,
+        total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
+        workgroup = 256, verbose = true,
+        workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
+    )
     zero_phase = map(zero, η)
     zero_g = ntuple(_ -> zero(first(η)), 3)
     return solve_stokes_dyrel!(
@@ -401,9 +432,9 @@ named tuple contains `density_gradient` and `viscosity_gradient`, each an
 `NTuple` with one entry per phase of `η`/`ρ`.
 """
 function stokes_material_gradient_3d(
-    forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
-    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
-)
+        forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
+        cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
+    )
     length(η) == length(ρ) || throw(ArgumentError("η and ρ must have the same length"))
     nphases = length(η)
     pressure = similar(first(forward_velocity), 4, mesh.nels)

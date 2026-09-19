@@ -24,9 +24,9 @@ corner triangles are rejected.
 function orient_triangle_elements!(coords::AbstractVector{<:StaticVector{2}}, el2n::AbstractMatrix{<:Integer})
     nlocal = size(el2n, 1)
     permutation = nlocal == 3 ? (1, 3, 2) :
-                  nlocal == 6 ? (1, 3, 2, 6, 5, 4) :
-                  nlocal == 7 ? (1, 3, 2, 6, 5, 4, 7) :
-                  throw(ArgumentError("triangle connectivity must have 3, 6, or 7 local nodes"))
+        nlocal == 6 ? (1, 3, 2, 6, 5, 4) :
+        nlocal == 7 ? (1, 3, 2, 6, 5, 4, 7) :
+        throw(ArgumentError("triangle connectivity must have 3, 6, or 7 local nodes"))
     for iel in axes(el2n, 2)
         p1, p2, p3 = coords[el2n[1, iel]], coords[el2n[2, iel]], coords[el2n[3, iel]]
         signed_area = det(hcat(p2 - p1, p3 - p1))
@@ -78,17 +78,25 @@ end
 function rectangle_boundary_nodes(coords, x0, x1, y0, y1; atol = nothing)
     x0 <= x1 && y0 <= y1 || throw(ArgumentError("rectangle bounds must be ordered"))
     tol = _boundary_atol(atol, x0, x1, y0, y1)
-    return Int32[i for i in eachindex(coords) if
-        ((abs(coords[i][1] - x0) <= tol || abs(coords[i][1] - x1) <= tol) &&
-         y0 - tol <= coords[i][2] <= y1 + tol) ||
-        ((abs(coords[i][2] - y0) <= tol || abs(coords[i][2] - y1) <= tol) &&
-         x0 - tol <= coords[i][1] <= x1 + tol)]
+    return Int32[
+        i for i in eachindex(coords) if
+            (
+                (abs(coords[i][1] - x0) <= tol || abs(coords[i][1] - x1) <= tol) &&
+                y0 - tol <= coords[i][2] <= y1 + tol
+            ) ||
+            (
+                (abs(coords[i][2] - y0) <= tol || abs(coords[i][2] - y1) <= tol) &&
+                x0 - tol <= coords[i][1] <= x1 + tol
+            )
+    ]
 end
 
 """Return node indices on a circle with center `(cx, cy)` and radius `r`."""
 function circle_boundary_nodes(coords, cx, cy, r; atol = nothing)
     r > 0 || throw(ArgumentError("circle radius must be positive"))
     tol = _boundary_atol(atol, cx, cy, r)
-    return Int32[i for i in eachindex(coords) if
-        abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) <= tol]
+    return Int32[
+        i for i in eachindex(coords) if
+            abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) <= tol
+    ]
 end

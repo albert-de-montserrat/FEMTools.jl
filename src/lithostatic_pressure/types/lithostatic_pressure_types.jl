@@ -67,14 +67,14 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     ϵ::FP
 
     function LithostaticPressureDR(
-        backend, nnodes,
-        ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
-        K::Tuple{FP, Vararg{FP, N}};
-        CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
-    ) where {N, FP}
-        newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
-        newivec() = KernelAbstractions.ones(backend,  Int32, nnodes)
-        new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
+            backend, nnodes,
+            ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
+            K::Tuple{FP, Vararg{FP, N}};
+            CFL = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
+        ) where {N, FP}
+        newvec() = KernelAbstractions.zeros(backend, FP, nnodes)
+        newivec() = KernelAbstractions.ones(backend, Int32, nnodes)
+        return new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂P, PC
             newvec(), newvec(),                      # P, ∂P∂τ
             newvec(),                                # T

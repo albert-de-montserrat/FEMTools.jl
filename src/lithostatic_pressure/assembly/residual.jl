@@ -4,7 +4,7 @@
 Gather element-local values and return the integrated lithostatic-pressure
 residual with its global node indices.
 """
-@inline function lp_element_residual(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, ∂N∂ξ, iel, ::Val{N}) where N
+@inline function lp_element_residual(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, ∂N∂ξ, iel, ::Val{N}) where {N}
     nodes = local_nodes_of(el2n, iel, Val(N))
     args = (
         _gather_local(P, nodes, Val(N)),
@@ -21,7 +21,7 @@ end
 
 Return element node indices, absolute Jacobian row sums, and absolute diagonal.
 """
-@inline function lp_element_jacobian(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, ∂N∂ξ, iel, ::Val{N}) where N
+@inline function lp_element_jacobian(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, Nq, ∂N∂ξ, iel, ::Val{N}) where {N}
     nodes = local_nodes_of(el2n, iel, Val(N))
     Tloc = _gather_local(T, nodes, Val(N))
     Ploc = _gather_local(P, nodes, Val(N))
@@ -40,7 +40,7 @@ end
 Integrate one element of `∫ (ρ(T, P) ∇Nᵢ⋅g - ∇Nᵢ⋅∇P) dΩ`, where
 `ρ = ρ0 (1 - α(T - Tref) + P/K)`.
 """
-@inline function lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, ::Val{N}) where N
+@inline function lp_integrate_residual(Ploc, Tloc, geo_el, phase_loc, ρ0, α, K, Tref, g, Nq, ::Val{N}) where {N}
     Re = zero(Ploc)
     # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
     # interp2ip_phase when quadratic shape functions are negative.
@@ -62,5 +62,7 @@ end
 # assemblers, in the order `lp_element_residual` and `lp_element_jacobian`
 # consume it.
 @inline lithostatic_element_arguments(T, P, el2n, geo, phases, ρ0, α, K, Tref, g, element) =
-    (T, P, el2n, geo, phases, ρ0, α, K, Tref, g,
-     shape_function_values(element), shape_function_gradients(element))
+    (
+    T, P, el2n, geo, phases, ρ0, α, K, Tref, g,
+    shape_function_values(element), shape_function_gradients(element),
+)

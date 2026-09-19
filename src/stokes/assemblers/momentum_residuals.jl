@@ -10,8 +10,10 @@ from the element's nodal phase assignment. `β` is the compressibility `1/K`.
 """
 @inline eos_density(Nv, phase_loc, α, ρ0, β, Tq, Pq, Tref) =
     interp2ip_phase(Nv, ρ0, phase_loc) *
-    (1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
-     interp2ip_phase(Nv, β, phase_loc) * Pq)
+    (
+    1 - interp2ip_phase(Nv, α, phase_loc) * (Tq - Tref) +
+        interp2ip_phase(Nv, β, phase_loc) * Pq
+)
 
 """
     accumulate_momentum(R, ∂N∂x, Nv, τ, Ptotal, ρq, g, dΩ)
@@ -31,7 +33,7 @@ the point and `Ptotal` the pressure including any numerical correction.
 end
 @inline pressure_scale(γ_eff::Number, RP, MP) = γ_eff * RP ./ MP
 @inline pressure_scale(γ_eff::SVector, RP, MP) = γ_eff .* RP ./ MP
-@inline function _max_phase_value(var, phase_loc::SVector{N}) where N
+@inline function _max_phase_value(var, phase_loc::SVector{N}) where {N}
     out = var[phase_loc[1]]
     for i in 2:N
         out = max(out, var[phase_loc[i]])
@@ -40,8 +42,8 @@ end
 end
 @inline _element_max_phase_property(var, phase_loc) = map(_ -> _max_phase_value(var, phase_loc), var)
 @inline function _local_pressure_correction(
-    v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
-)
+        v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
+    )
     RP_loc = integrate_PH_pressure_residual(
         v, P_loc, P0loc, T_loc, T0loc,
         geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
@@ -71,23 +73,23 @@ Weak form per node `i`:
     Rᵢʸ = ∫ (∂Nᵢ/∂y·(τyy − P) + ∂Nᵢ/∂x·τxy) dΩ
 """
 @inline function integrate_momentum_residual(
-    v::NTuple{2, SVector{N, T}},
-    P_loc::SVector{NP},
-    geo_v_el,
-    phase_loc, η, G, Δt,
-    Nq,
-    NqP,
-    τ_old = nothing,
-    plastic = nothing,
-    τ_store = nothing,
-) where {N, T, NP}
+        v::NTuple{2, SVector{N, T}},
+        P_loc::SVector{NP},
+        geo_v_el,
+        phase_loc, η, G, Δt,
+        Nq,
+        NqP,
+        τ_old = nothing,
+        plastic = nothing,
+        τ_store = nothing,
+    ) where {N, T, NP}
     Rv_x = zero(SVector{N, T})
     Rv_y = zero(SVector{N, T})
     for q in eachindex(geo_v_el)
         ∂N∂x, dΩ = geo_v_el[q]
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(3))
-        Pq  = dot(NqP[q], P_loc)
+        Pq = dot(NqP[q], P_loc)
         τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
         # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy) dΩ
@@ -116,21 +118,21 @@ quadrature point via `NqP` to evaluate the linearised EOS
 quadrature-point stress output, as for the body-force-free method.
 """
 @inline function integrate_momentum_residual(
-    v::Tuple{<:SVector{N}, <:SVector{N}},
-    P_loc::SVector{NP},
-    Pnum_loc::Union{SVector{NP}, Nothing},
-    T_loc::SVector{NP},
-    geo_v_el,
-    phase_loc, η, G, α, ρ0, K,
-    g,
-    Tref::Real,
-    Δt,
-    Nq,
-    NqP,
-    τ_old = nothing,
-    plastic = nothing,
-    τ_store = nothing,
-) where {N, NP}
+        v::Tuple{<:SVector{N}, <:SVector{N}},
+        P_loc::SVector{NP},
+        Pnum_loc::Union{SVector{NP}, Nothing},
+        T_loc::SVector{NP},
+        geo_v_el,
+        phase_loc, η, G, α, ρ0, K,
+        g,
+        Tref::Real,
+        Δt,
+        Nq,
+        NqP,
+        τ_old = nothing,
+        plastic = nothing,
+        τ_store = nothing,
+    ) where {N, NP}
     T = promote_type(map(eltype, v)...)
     R = ntuple(_ -> zero(SVector{N, T}), Val(2))
     # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
@@ -169,21 +171,21 @@ selects the purely viscous response for either. `τ_store`, when given, receives
 the deviatoric stress at each quadrature point in the same component order.
 """
 @inline function integrate_momentum_residual(
-    v::Tuple{<:SVector{N}, <:SVector{N}, <:SVector{N}},
-    P_loc::SVector{NP},
-    Pnum_loc::Union{SVector{NP}, Nothing},
-    T_loc::SVector{NP},
-    geo_v_el,
-    phase_loc, η, G, α, ρ0, K,
-    g::NTuple{3},
-    Tref::Real,
-    Δt,
-    Nq,
-    NqP,
-    τ_old = nothing,
-    plastic = nothing,
-    τ_store = nothing,
-) where {N, NP}
+        v::Tuple{<:SVector{N}, <:SVector{N}, <:SVector{N}},
+        P_loc::SVector{NP},
+        Pnum_loc::Union{SVector{NP}, Nothing},
+        T_loc::SVector{NP},
+        geo_v_el,
+        phase_loc, η, G, α, ρ0, K,
+        g::NTuple{3},
+        Tref::Real,
+        Δt,
+        Nq,
+        NqP,
+        τ_old = nothing,
+        plastic = nothing,
+        τ_store = nothing,
+    ) where {N, NP}
     T = promote_type(map(eltype, v)...)
     R = ntuple(_ -> zero(SVector{N, T}), 3)
     β = map(inv, K)
@@ -222,25 +224,25 @@ One element velocity vector is supplied per spatial direction, and the result
 has one residual per direction.
 """
 @inline function integrate_momentum_residual(
-    v::Tuple{<:SVector{N}, Vararg{<:SVector{N}}},
-    P_loc::SVector{NP},
-    P0loc::SVector{NP},
-    T_loc::SVector{NP},
-    T0loc::SVector{NP},
-    geo_v_el,
-    geo_P_el,
-    phase_v,
-    phase_P,
-    η, G, α, ρ0, K,
-    g,
-    Tref::Real,
-    ηb, Δt, γ_eff,
-    MP_loc::SVector{NP},
-    Nq,
-    NqP,
-    τ_old = nothing,
-    plastic = nothing,
-) where {N, NP}
+        v::Tuple{<:SVector{N}, Vararg{<:SVector{N}}},
+        P_loc::SVector{NP},
+        P0loc::SVector{NP},
+        T_loc::SVector{NP},
+        T0loc::SVector{NP},
+        geo_v_el,
+        geo_P_el,
+        phase_v,
+        phase_P,
+        η, G, α, ρ0, K,
+        g,
+        Tref::Real,
+        ηb, Δt, γ_eff,
+        MP_loc::SVector{NP},
+        Nq,
+        NqP,
+        τ_old = nothing,
+        plastic = nothing,
+    ) where {N, NP}
     Pnum_loc = _local_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc,
         geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
@@ -293,24 +295,24 @@ build them once with [`quadrature_table`](@ref) and call
 `assemble_momentum_residual_kernel!` directly.
 """
 function assemble_momentum_residual_matrices_atomix!(
-    Rv::NTuple{D, <:AbstractVector},
-    v::NTuple{D, <:AbstractVector},
-    P, T,
-    Pnum,
-    el2n_v, el2nP,
-    geo_v,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases,
-    τ_old,
-    plastic,
-    τ_store,
-    η, G, α, ρ0, K,
-    g, Tref, Δt,
-    backend, workgroup,
-) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
-    Nq  = shape_function_values(element_v)
+        Rv::NTuple{D, <:AbstractVector},
+        v::NTuple{D, <:AbstractVector},
+        P, T,
+        Pnum,
+        el2n_v, el2nP,
+        geo_v,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases,
+        τ_old,
+        plastic,
+        τ_store,
+        η, G, α, ρ0, K,
+        g, Tref, Δt,
+        backend, workgroup,
+    ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+    Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
 
@@ -323,8 +325,9 @@ function assemble_momentum_residual_matrices_atomix!(
 end
 
 assemble_momentum_residual_matrices_atomix!(
-        Rv_x::AbstractVector, Rv_y::AbstractVector,
-        vx::AbstractVector, vy::AbstractVector, args...) =
+    Rv_x::AbstractVector, Rv_y::AbstractVector,
+    vx::AbstractVector, vy::AbstractVector, args...
+) =
     assemble_momentum_residual_matrices_atomix!((Rv_x, Rv_y), (vx, vy), args...)
 
 """
@@ -351,13 +354,13 @@ launches this repeatedly wants the arrays: a tuple is copied into the kernel
 argument pack on every launch.
 """
 function assemble_momentum_residual_kernel!(
-    Rv::NTuple{D, <:AbstractVector},
-    v::NTuple{D, <:AbstractVector}, P, T, Pnum,
-    el2n_v, el2nP, geo_v, nels, phases,
-    τ_old, plastic, τ_store,
-    η, G, α, ρ0, K, g, Tref, Δt,
-    Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
-) where {D, NV, NP}
+        Rv::NTuple{D, <:AbstractVector},
+        v::NTuple{D, <:AbstractVector}, P, T, Pnum,
+        el2n_v, el2nP, geo_v, nels, phases,
+        τ_old, plastic, τ_store,
+        η, G, α, ρ0, K, g, Tref, Δt,
+        Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
+    ) where {D, NV, NP}
     foreach(R -> fill!(R, 0), Rv)
     backend = KA.get_backend(first(Rv))
     momentum_residual_atomic_kernel!(backend, workgroup)(
@@ -370,25 +373,26 @@ function assemble_momentum_residual_kernel!(
 end
 
 assemble_momentum_residual_kernel!(
-        Rv_x::AbstractVector, Rv_y::AbstractVector,
-        vx::AbstractVector, vy::AbstractVector, args...) =
+    Rv_x::AbstractVector, Rv_y::AbstractVector,
+    vx::AbstractVector, vy::AbstractVector, args...
+) =
     assemble_momentum_residual_kernel!((Rv_x, Rv_y), (vx, vy), args...)
 
 @kernel function momentum_residual_atomic_kernel!(
-    Rv,
-    @Const(v),
-    @Const(P), @Const(T),
-    @Const(Pnum),
-    @Const(el2n_v), @Const(el2nP),
-    @Const(geo_v),
-    @Const(phases),
-    @Const(τ_old),
-    @Const(plastic),
-    τ_store,
-    @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K),
-    @Const(g), @Const(Tref), @Const(Δt),
-    @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+        Rv,
+        @Const(v),
+        @Const(P), @Const(T),
+        @Const(Pnum),
+        @Const(el2n_v), @Const(el2nP),
+        @Const(geo_v),
+        @Const(phases),
+        @Const(τ_old),
+        @Const(plastic),
+        τ_store,
+        @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K),
+        @Const(g), @Const(Tref), @Const(Δt),
+        @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
+    ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Re = momentum_element_residual(
         v, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
@@ -424,20 +428,20 @@ for element `iel`.
 scatter.
 """
 @inline function momentum_element_residual(
-    v::NTuple{D}, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
-    η, G, α, ρ0, K, g, Tref, Δt,
-    Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
-    τ_old = nothing,
-    plastic = nothing,
-    τ_store = nothing,
-) where {D, NV, NP}
+        v::NTuple{D}, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
+        η, G, α, ρ0, K, g, Tref, Δt,
+        Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
+        τ_old = nothing,
+        plastic = nothing,
+        τ_store = nothing,
+    ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = element_geometry(geo_v, iel, ∂N∂ξ_v)
-    vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
-    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
-    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
-    Pnum_loc  = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_v_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+    vloc = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
+    P_loc = _gather_local(P, local_nodes_P, Val(NP))
+    T_loc = _gather_local(T, local_nodes_P, Val(NP))
+    Pnum_loc = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_v_el))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
     Re = integrate_momentum_residual(
@@ -449,18 +453,18 @@ scatter.
 end
 
 _gather_or_nothing(::Nothing, _, ::Val) = nothing
-@inline function _gather_or_nothing(arr, nodes, ::Val{N}) where N
-    _gather_local(arr, nodes, Val(N))
+@inline function _gather_or_nothing(arr, nodes, ::Val{N}) where {N}
+    return _gather_local(arr, nodes, Val(N))
 end
 
 _gather_old_stress(::Nothing, _, _, ::Val, ::Val) = nothing
 @inline _gather_old_stress(
-        τ_old::Tuple{AbstractMatrix, Vararg{AbstractMatrix}}, _, iel, ::Val, ::Val{NQ},
-    ) where {NQ} =
+    τ_old::Tuple{AbstractMatrix, Vararg{AbstractMatrix}}, _, iel, ::Val, ::Val{NQ},
+) where {NQ} =
     IntegrationPointStress(map(τ -> SVector{NQ}(ntuple(q -> τ[q, iel], Val(NQ))), τ_old))
 @inline _gather_old_stress(
-        τ_old::Tuple{AbstractVector, Vararg{AbstractVector}}, nodes, _, ::Val{N}, ::Val,
-    ) where {N} =
+    τ_old::Tuple{AbstractVector, Vararg{AbstractVector}}, nodes, _, ::Val{N}, ::Val,
+) where {N} =
     map(τ -> _gather_local(τ, nodes, Val(N)), τ_old)
 _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{Nτ, <:AbstractMatrix}, iel) where {Nτ} =
@@ -510,10 +514,10 @@ velocity and four cell-local pressure modes `(1, ξ, η, ζ)`.
 this repeatedly should hand over one it owns.
 """
 function assemble_stokes_momentum_residual_3d!(
-    R::NTuple{3}, v::NTuple{3}, P::AbstractMatrix, mesh::Mesh,
-    cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
-    tables = stokes_tables_3d(KA.get_backend(first(R)), mesh.element),
-)
+        R::NTuple{3}, v::NTuple{3}, P::AbstractMatrix, mesh::Mesh,
+        cell_phase, η, ρ, g::NTuple{3}; workgroup = 256,
+        tables = stokes_tables_3d(KA.get_backend(first(R)), mesh.element),
+    )
     size(P) == (4, mesh.nels) || throw(DimensionMismatch("P must be 4 × nels"))
     all(length(r) == mesh.nnodes for r in R) || throw(DimensionMismatch("residual size must match mesh nodes"))
     all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
@@ -530,9 +534,9 @@ function assemble_stokes_momentum_residual_3d!(
 end
 
 @kernel function stokes_momentum_residual_3d_kernel!(
-    R, @Const(v), @Const(P), @Const(el2n), @Const(geometry), @Const(cell_phase),
-    @Const(η), @Const(ρ), @Const(g), @Const(Nq), @Const(NqP), @Const(∂N∂ξ),
-)
+        R, @Const(v), @Const(P), @Const(el2n), @Const(geometry), @Const(cell_phase),
+        @Const(η), @Const(ρ), @Const(g), @Const(Nq), @Const(NqP), @Const(∂N∂ξ),
+    )
     cell = @index(Global)
     nodes = local_nodes_of(el2n, cell, Val(27))
     velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)
@@ -587,17 +591,19 @@ function stokes_preconditioner_3d!(
 end
 
 @kernel function stokes_preconditioner_3d_kernel!(
-    diagonal, pressure_mass, @Const(el2n), @Const(geometry), @Const(cell_phase),
-    @Const(η), @Const(modes), @Const(∂N∂ξ),
-)
+        diagonal, pressure_mass, @Const(el2n), @Const(geometry), @Const(cell_phase),
+        @Const(η), @Const(modes), @Const(∂N∂ξ),
+    )
     cell = @index(Global)
     phase = Int(cell_phase[cell])
     geo_el = element_geometry(geometry, cell, ∂N∂ξ)
     for q in eachindex(geo_el)
         gradient, dΩ = geo_el[q]
         for a in 1:27, component in 1:3
-            value = η[phase] * (dot(gradient[a, :], gradient[a, :]) +
-                    gradient[a, component]^2 / 3) * dΩ
+            value = η[phase] * (
+                dot(gradient[a, :], gradient[a, :]) +
+                    gradient[a, component]^2 / 3
+            ) * dΩ
             Atomix.@atomic :monotonic diagonal[component][el2n[a, cell]] += value
         end
         for mode in 1:4
@@ -607,8 +613,8 @@ end
 end
 
 _gather_or_scalar(x::Number, _, ::Val) = x
-@inline function _gather_or_scalar(arr, nodes, ::Val{N}) where N
-    _gather_local(arr, nodes, Val(N))
+@inline function _gather_or_scalar(arr, nodes, ::Val{N}) where {N}
+    return _gather_local(arr, nodes, Val(N))
 end
 
 """
@@ -660,21 +666,21 @@ and `diags_*[i]` is the absolute diagonal of the same-component block. The
 row sums provide a conservative smoother/preconditioner and spectral estimate.
 """
 @inline function element_momentum_jacobians(
-    vx, vy, P, T, el2n_v, el2nP, geo, phases,
-    η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
-    τ_old = nothing,
-    plastic = nothing,
-) where {NV, NP}
+        vx, vy, P, T, el2n_v, el2nP, geo, phases,
+        η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
+        τ_old = nothing,
+        plastic = nothing,
+    ) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_el    = element_geometry(geo, iel, ∂N∂ξ_v)
-    vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
-    vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
-    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
-    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_el = element_geometry(geo, iel, ∂N∂ξ_v)
+    vxloc = _gather_local(vx, local_nodes_v, Val(NV))
+    vyloc = _gather_local(vy, local_nodes_v, Val(NV))
+    P_loc = _gather_local(P, local_nodes_P, Val(NP))
+    T_loc = _gather_local(T, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_el))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
-    η_pc      = _element_max_phase_property(η, phase_loc)
+    η_pc = _element_max_phase_property(η, phase_loc)
 
     J = _velocity_jacobian_blocks(
         v_arg -> integrate_momentum_residual(
@@ -706,36 +712,36 @@ same-component and shear-coupling blocks, which is safer for the mixed T7/P1
 Stokes smoother than using only the absolute diagonal.
 """
 function assemble_momentum_jacobian_matrices_atomix!(
-    ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
-    vx, vy,
-    P, T,
-    el2n_v, el2nP,
-    geo_v,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases,
-    η, G, α, ρ0, K,
-    g, Tref, Δt,
-    backend, workgroup;
-    τ_old = nothing,
-    plastic = nothing,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
-    Nq  = shape_function_values(element_v)
+        ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
+        vx, vy,
+        P, T,
+        el2n_v, el2nP,
+        geo_v,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases,
+        η, G, α, ρ0, K,
+        g, Tref, Δt,
+        backend, workgroup;
+        τ_old = nothing,
+        plastic = nothing,
+    ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
 
     fill!(∂Rv_x∂vx, 0)
-    fill!(PC_vx,    0)
+    fill!(PC_vx, 0)
     fill!(∂Rv_y∂vy, 0)
-    fill!(PC_vy,    0)
+    fill!(PC_vy, 0)
     momentum_jacobian_atomic_kernel!(backend, workgroup)(
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         vx, vy, P, T, el2n_v, el2nP, geo_v, phases,
         τ_old, plastic, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = nels,
     )
-    KA.synchronize(backend)
+    return KA.synchronize(backend)
 end
 
 """
@@ -780,27 +786,27 @@ end
 # it as the residual closure the Jacobian differentiates, alongside the trial
 # velocity it is differentiated at.
 @inline function _element_augmented_momentum_problem(
-    v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
-    phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-    MP, Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
-    τ_old = nothing,
-    plastic = nothing,
-) where {D, NV, NP}
+        v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
+        phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        MP, Nq, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP},
+        τ_old = nothing,
+        plastic = nothing,
+    ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = element_geometry(geo_v, iel, ∂N∂ξ_v)
-    geo_P_el  = element_geometry(geo_P, iel)
-    vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
-    P_loc     = _gather_local(P, local_nodes_P, Val(NP))
-    P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
-    T_loc     = _gather_local(T, local_nodes_P, Val(NP))
-    T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
-    MP_loc    = _gather_local(MP, local_nodes_P, Val(NP))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_v_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+    geo_P_el = element_geometry(geo_P, iel)
+    vloc = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
+    P_loc = _gather_local(P, local_nodes_P, Val(NP))
+    P0loc = _gather_local(P0, local_nodes_P, Val(NP))
+    T_loc = _gather_local(T, local_nodes_P, Val(NP))
+    T0loc = _gather_local(T0, local_nodes_P, Val(NP))
+    MP_loc = _gather_local(MP, local_nodes_P, Val(NP))
     γ_eff_loc = _gather_or_scalar(γ_eff, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_v_el))
-    phase_v   = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
-    phase_P   = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
-    η_pc      = _element_max_phase_property(η, phase_v)
+    phase_v = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
+    phase_P = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
+    η_pc = _element_max_phase_property(η, phase_v)
 
     momentum = v_arg -> integrate_momentum_residual(
         v_arg, P_loc, P0loc, T_loc, T0loc,
@@ -812,7 +818,8 @@ end
 end
 
 @inline function element_augmented_momentum_jacobians(
-        vx::AbstractVector, vy::AbstractVector, args...)
+        vx::AbstractVector, vy::AbstractVector, args...
+    )
     local_nodes_v, J = element_augmented_momentum_jacobians((vx, vy), args...)
     return local_nodes_v, J[1][1], J[1][2], J[2][1], J[2][2]
 end
@@ -837,25 +844,25 @@ for incompressible Stokes flows. `P0`, `T0`, `ηb`, `γ_eff`, and `MP` are
 the additional arguments relative to the non-augmented assembler.
 """
 function assemble_augmented_momentum_jacobian_matrices_atomix!(
-    ∂Rv∂v::NTuple{D, <:AbstractVector},
-    PC::NTuple{D, <:AbstractVector},
-    v::NTuple{D, <:AbstractVector},
-    P, P0,
-    T, T0,
-    el2n_v, el2nP,
-    geo_v, geo_P,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases_v, phases_P,
-    η, G, α, ρ0, K,
-    g, Tref,
-    ηb, Δt, γ_eff, MP,
-    backend, workgroup;
-    τ_old = nothing,
-    plastic = nothing,
-) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
-    Nq  = shape_function_values(element_v)
+        ∂Rv∂v::NTuple{D, <:AbstractVector},
+        PC::NTuple{D, <:AbstractVector},
+        v::NTuple{D, <:AbstractVector},
+        P, P0,
+        T, T0,
+        el2n_v, el2nP,
+        geo_v, geo_P,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases_v, phases_P,
+        η, G, α, ρ0, K,
+        g, Tref,
+        ηb, Δt, γ_eff, MP,
+        backend, workgroup;
+        τ_old = nothing,
+        plastic = nothing,
+    ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+    Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
 
@@ -868,30 +875,32 @@ function assemble_augmented_momentum_jacobian_matrices_atomix!(
         Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = nels,
     )
-    KA.synchronize(backend)
+    return KA.synchronize(backend)
 end
 
 assemble_augmented_momentum_jacobian_matrices_atomix!(
-        ∂Rv_x∂vx::AbstractVector, PC_vx::AbstractVector,
-        ∂Rv_y∂vy::AbstractVector, PC_vy::AbstractVector,
-        vx::AbstractVector, vy::AbstractVector, args...; kwargs...) =
+    ∂Rv_x∂vx::AbstractVector, PC_vx::AbstractVector,
+    ∂Rv_y∂vy::AbstractVector, PC_vy::AbstractVector,
+    vx::AbstractVector, vy::AbstractVector, args...; kwargs...
+) =
     assemble_augmented_momentum_jacobian_matrices_atomix!(
-        (∂Rv_x∂vx, ∂Rv_y∂vy), (PC_vx, PC_vy), (vx, vy), args...; kwargs...)
+    (∂Rv_x∂vx, ∂Rv_y∂vy), (PC_vx, PC_vy), (vx, vy), args...; kwargs...
+)
 
 @kernel function augmented_momentum_jacobian_atomic_kernel!(
-    ∂Rv∂v, PC,
-    @Const(v),
-    @Const(P), @Const(P0),
-    @Const(T), @Const(T0),
-    @Const(el2n_v), @Const(el2nP),
-    @Const(geo_v), @Const(geo_P),
-    @Const(phases_v), @Const(phases_P),
-    τ_old,
-    plastic,
-    η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
-    @Const(MP),
-    Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+        ∂Rv∂v, PC,
+        @Const(v),
+        @Const(P), @Const(P0),
+        @Const(T), @Const(T0),
+        @Const(el2n_v), @Const(el2nP),
+        @Const(geo_v), @Const(geo_P),
+        @Const(phases_v), @Const(phases_P),
+        τ_old,
+        plastic,
+        η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
+        @Const(MP),
+        Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
+    ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, momentum, vloc = _element_augmented_momentum_problem(
         v, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
@@ -947,7 +956,7 @@ end
     ) where {C}
     for (i, inod) in enumerate(nodes)
         Atomix.@atomic :monotonic ∂Rv∂v[C][inod] += rowsum[i]
-        Atomix.@atomic :monotonic PC[C][inod]    += diagonal[i]
+        Atomix.@atomic :monotonic PC[C][inod] += diagonal[i]
     end
     return nothing
 end
@@ -958,12 +967,12 @@ end
 # same-direction block alone.
 @inline function _scatter_jacobian_diagnostics!(∂Rv∂v::NTuple{D}, PC::NTuple{D}, nodes, J) where {D}
     ntuple(Val(D)) do c
-        row  = J[c]
+        row = J[c]
         same = row[c]
         for (i, inod) in enumerate(nodes)
             rowsum = sum(B -> sum(j -> abs(B[i, j]), axes(B, 2)), row)
             Atomix.@atomic :monotonic ∂Rv∂v[c][inod] += rowsum
-            Atomix.@atomic :monotonic PC[c][inod]    += abs(same[i, i])
+            Atomix.@atomic :monotonic PC[c][inod] += abs(same[i, i])
         end
         nothing
     end
@@ -971,18 +980,18 @@ end
 end
 
 @kernel function momentum_jacobian_atomic_kernel!(
-    ∂Rv_x∂vx, PC_vx,
-    ∂Rv_y∂vy, PC_vy,
-    @Const(vx), @Const(vy),
-    @Const(P), @Const(T),
-    @Const(el2n_v), @Const(el2nP),
-    @Const(geo_v),
-    @Const(phases),
-    τ_old,
-    plastic,
-    η, G, α, ρ0, K, g, Tref, Δt,
-    Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+        ∂Rv_x∂vx, PC_vx,
+        ∂Rv_y∂vy, PC_vy,
+        @Const(vx), @Const(vy),
+        @Const(P), @Const(T),
+        @Const(el2n_v), @Const(el2nP),
+        @Const(geo_v),
+        @Const(phases),
+        τ_old,
+        plastic,
+        η, G, α, ρ0, K, g, Tref, Δt,
+        Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
+    ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, rowsums_x, diags_x, rowsums_y, diags_y = element_momentum_jacobians(
         vx, vy, P, T, el2n_v, el2nP, geo_v, phases,
@@ -990,8 +999,8 @@ end
     )
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic ∂Rv_x∂vx[inod] += rowsums_x[i]
-        Atomix.@atomic :monotonic PC_vx[inod]    += diags_x[i]
+        Atomix.@atomic :monotonic PC_vx[inod] += diags_x[i]
         Atomix.@atomic :monotonic ∂Rv_y∂vy[inod] += rowsums_y[i]
-        Atomix.@atomic :monotonic PC_vy[inod]    += diags_y[i]
+        Atomix.@atomic :monotonic PC_vy[inod] += diags_y[i]
     end
 end

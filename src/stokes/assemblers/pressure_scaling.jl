@@ -6,14 +6,14 @@ Assemble pressure mass and scaling using the geometry and elements stored in
 `mesh.geometry`. The backend is inferred from `mesh.coords`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
-    γP,
-    dr::StokesDR,
-    mesh::MixedMesh,
-    γfact,
-    Δt;
-    workgroup = 256,
-    kwargs...,
-)
+        γP,
+        dr::StokesDR,
+        mesh::MixedMesh,
+        γfact,
+        Δt;
+        workgroup = 256,
+        kwargs...,
+    )
     cache = _mesh_geometry(mesh)
     return assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, cache.geo_P, cache.element_v, cache.element_P,
@@ -38,19 +38,19 @@ the pressure field enter this quadrature.
 element-wise phase layouts or alternate pressure-scaling material properties.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
-    γP,
-    dr::StokesDR,
-    mesh::MixedMesh,
-    geo_P,
-    element_v::ReferenceElement,
-    element_P::ReferenceElement,
-    γfact,
-    Δt,
-    backend, workgroup;
-    phases_v = dr.phases_v,
-    η = dr.η,
-    K = dr.K,
-)
+        γP,
+        dr::StokesDR,
+        mesh::MixedMesh,
+        geo_P,
+        element_v::ReferenceElement,
+        element_P::ReferenceElement,
+        γfact,
+        Δt,
+        backend, workgroup;
+        phases_v = dr.phases_v,
+        η = dr.η,
+        K = dr.K,
+    )
     return assemble_viscosity_weighted_pressure_scaling!(
         dr.M_P, γP,
         mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
@@ -90,17 +90,17 @@ to the incompressible JustRelax penalty branch where
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)` and `γ_num = γ_phy = γfact * η`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
-    MP, γP,
-    el2n_v, dofs_P,
-    geo_P,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases_v,
-    η,
-    γfact,
-    backend, workgroup,
-) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+        MP, γP,
+        el2n_v, dofs_P,
+        geo_P,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases_v,
+        η,
+        γfact,
+        backend, workgroup,
+    ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     return assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n_v, dofs_P, geo_P, nels, element_v, element_P,
         phases_v, η, γfact, nothing, nothing, backend, workgroup,
@@ -108,19 +108,19 @@ function assemble_viscosity_weighted_pressure_scaling!(
 end
 
 function assemble_viscosity_weighted_pressure_scaling!(
-    MP, γP,
-    el2n_v, dofs_P,
-    geo_P,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases_v,
-    η,
-    γfact,
-    K,
-    Δt,
-    backend, workgroup,
-) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+        MP, γP,
+        el2n_v, dofs_P,
+        geo_P,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases_v,
+        η,
+        γfact,
+        K,
+        Δt,
+        backend, workgroup,
+    ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     NqV = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
 
@@ -156,16 +156,16 @@ The three-dimensional linear modal basis uses the positive Jacobi weight
 `N_a² dΩ`; its signed modes have zero or negative lumped integrals.
 """
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
-    MP, γP,
-    @Const(el2n_v), @Const(dofs_P),
-    @Const(geo_P),
-    @Const(phases_v),
-    η, γfact, K, Δt,
-    NqV, NqP, ::Val{NV}, ::Val{NP}, dim::Val{D},
-) where {NV, NP, D}
+        MP, γP,
+        @Const(el2n_v), @Const(dofs_P),
+        @Const(geo_P),
+        @Const(phases_v),
+        η, γfact, K, Δt,
+        NqV, NqP, ::Val{NV}, ::Val{NP}, dim::Val{D},
+    ) where {NV, NP, D}
     iel = @index(Global)
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_dofs_P  = local_nodes_of(dofs_P,  iel, Val(NP))
+    local_dofs_P = local_nodes_of(dofs_P, iel, Val(NP))
     phase_loc = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
     geo_P_el = geo_P[iel]
 

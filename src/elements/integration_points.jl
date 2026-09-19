@@ -21,7 +21,7 @@ end
 
 Construct integration points for element type `T`.
 """
-IntegrationPoints(::Type{T}) where {nDim, nVert, T<:AbstractElement{nDim, nVert}} = IntegrationPoints(T())
+IntegrationPoints(::Type{T}) where {nDim, nVert, T <: AbstractElement{nDim, nVert}} = IntegrationPoints(T())
 IntegrationPoints(::Type{LinearElement{nDim, nVert}}) where {nDim, nVert} =
     IntegrationPoints(LinearElement{nDim, nVert, Float64})
 IntegrationPoints(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
@@ -69,10 +69,10 @@ function gauss_legendre_triangle(::Type{T}, n::Int) where {T <: AbstractFloat}
     n > 0 || throw(ArgumentError("quadrature order must be positive, got $n"))
     s1d, w1d = _gauss_legendre_01(T, n)
 
-    nq  = n^2
-    ξv  = Vector{T}(undef, nq)
-    ηv  = Vector{T}(undef, nq)
-    ωv  = Vector{T}(undef, nq)
+    nq = n^2
+    ξv = Vector{T}(undef, nq)
+    ηv = Vector{T}(undef, nq)
+    ωv = Vector{T}(undef, nq)
 
     q = 1
     for i in 1:n
@@ -111,8 +111,8 @@ function _gauss_legendre_01(::Type{T}, n::Int) where {T <: AbstractFloat}
     # Eigendecomposition of the symmetric tridiagonal matrix (diagonal = 0)
     vals, vecs = eigen(SymTridiagonal(zeros(T, n), β))
     # GL points on [-1,1] → shift to [0,1]; weights = 2*(v₁ᵢ)² → divide by 2
-    pts = SVector{n,T}((vals .+ 1) ./ 2)
-    wts = SVector{n,T}(vecs[1, :] .^ 2)   # already normalised: sum = 1
+    pts = SVector{n, T}((vals .+ 1) ./ 2)
+    wts = SVector{n, T}(vecs[1, :] .^ 2)   # already normalised: sum = 1
     return pts, wts
 end
 
@@ -121,7 +121,7 @@ end
 
 Return the two-point Gauss rule on the reference line.
 """
-function IntegrationPoints(::LinearElement{1, 2, T}) where T
+function IntegrationPoints(::LinearElement{1, 2, T}) where {T}
     ξ = SVector(-√T(1 / 3), +√T(1 / 3))
     η = nothing
     ζ = nothing
@@ -134,7 +134,7 @@ end
 
 Return the three-point Gauss rule on the reference line.
 """
-function IntegrationPoints(::QuadraticElement{1, 3, T}) where T
+function IntegrationPoints(::QuadraticElement{1, 3, T}) where {T}
     ξ = SVector(-√T(3 / 5), zero(T), +√T(3 / 5))
     η = nothing
     ζ = nothing
@@ -147,7 +147,7 @@ end
 
 Return a three-point degree-two rule on the reference triangle.
 """
-function IntegrationPoints(::LinearElement{2, 3, T}) where T
+function IntegrationPoints(::LinearElement{2, 3, T}) where {T}
     ξ = SVector(T.((1 / 6, 2 / 3, 1 / 6))...)
     η = SVector(T.((1 / 6, 1 / 6, 2 / 3))...)
     ζ = nothing
@@ -160,10 +160,10 @@ end
 
 Return a six-point degree-four rule on the reference triangle.
 """
-function IntegrationPoints(::QuadraticElement{2, 6, T}) where T
+function IntegrationPoints(::QuadraticElement{2, 6, T}) where {T}
     a = T(0.816847572980459)
     b = T(0.091576213509771)
-    c = T(0.108103018168070)
+    c = T(0.10810301816807)
     d = T(0.445948490915965)
     w1 = T(0.054975871827661)
     w2 = T(0.111690794839005)
@@ -185,17 +185,17 @@ cubic bubble of the T7 element. Points come from two symmetric orbits around
 the centroid plus the centroid itself; weights sum to 1/2 (area of the
 reference triangle).
 """
-function IntegrationPoints(::QuadraticElement{2, 7, T}) where T
+function IntegrationPoints(::QuadraticElement{2, 7, T}) where {T}
     a1 = T(0.101286507323456)
     a2 = T(0.470142064105115)
     b1 = 1 - 2a1              # 0.797426985353088
     b2 = 1 - 2a2              # 0.059715871789770
     w1 = T(0.062969590272414)
     w2 = T(0.066197076394253)
-    wc = T(0.112500000000000)  # 9/80
+    wc = T(0.1125)  # 9/80
 
-    ξ = SVector(a1, b1, a1, a2, b2, a2, T(1/3))
-    η = SVector(a1, a1, b1, a2, a2, b2, T(1/3))
+    ξ = SVector(a1, b1, a1, a2, b2, a2, T(1 / 3))
+    η = SVector(a1, a1, b1, a2, a2, b2, T(1 / 3))
     ζ = nothing
     ω = SVector(w1, w1, w1, w2, w2, w2, wc)
     return IntegrationPoints{2, 7, T}(ξ, η, ζ, ω)
@@ -206,7 +206,7 @@ end
 
 Return the tensor-product two-by-two Gauss rule on the reference quadrilateral.
 """
-function IntegrationPoints(::LinearElement{2, 4, T}) where T
+function IntegrationPoints(::LinearElement{2, 4, T}) where {T}
     ξ = SVector(-√T(1 / 3), +√T(1 / 3), -√T(1 / 3), +√T(1 / 3))
     η = SVector(-√T(1 / 3), -√T(1 / 3), +√T(1 / 3), +√T(1 / 3))
     ζ = nothing
@@ -220,7 +220,7 @@ end
 Return the tensor-product three-by-three Gauss rule on the reference
 quadrilateral.
 """
-function IntegrationPoints(::QuadraticElement{2, 9, T}) where T
+function IntegrationPoints(::QuadraticElement{2, 9, T}) where {T}
     # Tensor-product ordering: ξ varies fastest, then η.
     a = √T(3 / 5)
     z = zero(T)
@@ -246,11 +246,11 @@ end
 
 Return the one-point centroid rule on the reference tetrahedron.
 """
-function IntegrationPoints(::LinearElement{3, 4, T}) where T
-    ξ = SVector(T(1/4))
-    η = SVector(T(1/4))
-    ζ = SVector(T(1/4))
-    ω = SVector(T(1/6))
+function IntegrationPoints(::LinearElement{3, 4, T}) where {T}
+    ξ = SVector(T(1 / 4))
+    η = SVector(T(1 / 4))
+    ζ = SVector(T(1 / 4))
+    ω = SVector(T(1 / 6))
     return IntegrationPoints{3, 1, T}(ξ, η, ζ, ω)
 end
 
@@ -259,12 +259,12 @@ end
 
 Return the symmetric four-point degree-two rule on the reference tetrahedron.
 """
-function IntegrationPoints(::QuadraticElement{3, 10, T}) where T
+function IntegrationPoints(::QuadraticElement{3, 10, T}) where {T}
     a, b = T((5 + 3sqrt(5)) / 20), T((5 - sqrt(5)) / 20)
     ξ = SVector(a, b, b, b)
     η = SVector(b, a, b, b)
     ζ = SVector(b, b, a, b)
-    ω = SVector{4, T}(ntuple(_ -> T(1/24), Val(4)))
+    ω = SVector{4, T}(ntuple(_ -> T(1 / 24), Val(4)))
     return IntegrationPoints{3, 4, T}(ξ, η, ζ, ω)
 end
 
@@ -273,20 +273,24 @@ end
 
 Return the symmetric fifteen-point degree-five rule for the T11 element.
 """
-function IntegrationPoints(::QuadraticElement{3, 11, T}) where T
+function IntegrationPoints(::QuadraticElement{3, 11, T}) where {T}
     pairs = ((1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4))
     points = (
         ntuple(_ -> T(1 / 4), 4),
         (ntuple(i -> ntuple(j -> j == i ? zero(T) : T(1 / 3), 4), 4))...,
         (ntuple(i -> ntuple(j -> j == i ? T(8 / 11) : T(1 / 11), 4), 4))...,
-        (ntuple(6) do i
-            a, b = pairs[i]
-            ntuple(j -> (j == a || j == b) ? T(0.4334498464263357) : T(0.0665501535736643), 4)
-        end)...,
+        (
+            ntuple(6) do i
+                a, b = pairs[i]
+                ntuple(j -> (j == a || j == b) ? T(0.4334498464263357) : T(0.0665501535736643), 4)
+            end
+        )...,
     )
-    weights = (T(0.030283678097089), ntuple(_ -> T(0.006026785714286), 4)...,
-               ntuple(_ -> T(0.011645249086029), 4)...,
-               ntuple(_ -> T(0.010949141561386), 6)...)
+    weights = (
+        T(0.030283678097089), ntuple(_ -> T(0.006026785714286), 4)...,
+        ntuple(_ -> T(0.011645249086029), 4)...,
+        ntuple(_ -> T(0.010949141561386), 6)...,
+    )
     ξ = SVector{15, T}(p[2] for p in points)
     η = SVector{15, T}(p[3] for p in points)
     ζ = SVector{15, T}(p[4] for p in points)
@@ -299,7 +303,7 @@ end
 Return the tensor-product two-by-two-by-two Gauss rule on the reference
 hexahedron.
 """
-function IntegrationPoints(::LinearElement{3, 8, T}) where T
+function IntegrationPoints(::LinearElement{3, 8, T}) where {T}
     a = √T(1 / 3)
     ξ = SVector(-a, +a, -a, +a, -a, +a, -a, +a)
     η = SVector(-a, -a, +a, +a, -a, -a, +a, +a)
@@ -314,7 +318,7 @@ end
 Return the tensor-product three-by-three-by-three Gauss rule on the reference
 hexahedron.
 """
-function IntegrationPoints(::QuadraticElement{3, 27, T}) where T
+function IntegrationPoints(::QuadraticElement{3, 27, T}) where {T}
     a = √T(3 / 5)
     points = (-a, zero(T), +a)
     weights = T.((5 / 9, 8 / 9, 5 / 9))
@@ -323,9 +327,11 @@ function IntegrationPoints(::QuadraticElement{3, 27, T}) where T
     ξ = SVector{27, T}(ntuple(i -> points[mod1(i, 3)], Val(27)))
     η = SVector{27, T}(ntuple(i -> points[mod1(cld(i, 3), 3)], Val(27)))
     ζ = SVector{27, T}(ntuple(i -> points[cld(i, 9)], Val(27)))
-    ω = SVector{27, T}(ntuple(Val(27)) do i
-        weights[mod1(i, 3)] * weights[mod1(cld(i, 3), 3)] * weights[cld(i, 9)]
-    end)
+    ω = SVector{27, T}(
+        ntuple(Val(27)) do i
+            weights[mod1(i, 3)] * weights[mod1(cld(i, 3), 3)] * weights[cld(i, 9)]
+        end
+    )
 
     return IntegrationPoints{3, 27, T}(ξ, η, ζ, ω)
 end

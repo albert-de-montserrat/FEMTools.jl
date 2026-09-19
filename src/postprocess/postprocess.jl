@@ -15,12 +15,12 @@ loop.
 Each field is integrated against `dΩ` and divided by the element volume.
 """
 function _strain_rate_stress_diagnostics(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    element_v::ReferenceElement{TV},
-    element_stress,
-) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
+        vx, vy,
+        el2n_v,
+        geo_v,
+        element_v::ReferenceElement{TV},
+        element_stress,
+    ) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
     ∂N∂ξ_v = shape_function_gradients(element_v)
@@ -82,12 +82,12 @@ from integration-point stresses.
 component follows from the deviatoric constraint `τzz = −(τxx + τyy)`.
 """
 function compute_strain_rate_stress_postprocess(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    τ_ip,
-    element_v::ReferenceElement{TV},
-) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
+        vx, vy,
+        el2n_v,
+        geo_v,
+        τ_ip,
+        element_v::ReferenceElement{TV},
+    ) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     function element_stress(iel, _)
         return function (q, _, _)
             τxx_q = τ_ip[1][q, iel]
@@ -110,14 +110,14 @@ Compliance `1/G` is interpolated rather than `G`, so the purely viscous limit
 `G = Inf` stays finite where quadratic shape functions are negative.
 """
 function compute_strain_rate_stress_postprocess(
-    vx, vy,
-    el2n_v,
-    geo_v,
-    phases_v,
-    τ_old,
-    η, G, Δt,
-    element_v::ReferenceElement{TV},
-) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
+        vx, vy,
+        el2n_v,
+        geo_v,
+        phases_v,
+        τ_old,
+        η, G, Δt,
+        element_v::ReferenceElement{TV},
+    ) where {NV, FP, TV <: AbstractElement{2, NV, FP}}
     invG = map(inv, G)
     function element_stress(iel, local_nodes)
         τxx_old_loc = _gather_local(τ_old[1], local_nodes, Val(NV))
@@ -166,12 +166,12 @@ Normal strain rates are reported in full while the invariant `εII` is formed
 from the deviatoric part, matching the plane-strain method.
 """
 function compute_strain_rate_stress_postprocess(
-    v::NTuple{3},
-    el2n_v,
-    geo_v,
-    τ_ip::NTuple{6},
-    element_v::ReferenceElement{TV},
-) where {NV, FP, TV <: AbstractElement{3, NV, FP}}
+        v::NTuple{3},
+        el2n_v,
+        geo_v,
+        τ_ip::NTuple{6},
+        element_v::ReferenceElement{TV},
+    ) where {NV, FP, TV <: AbstractElement{3, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
     fields = ntuple(_ -> zeros(FP, nels), length(_DIAGNOSTIC_FIELDS_3D))
@@ -226,8 +226,8 @@ Project cell-averaged stress diagnostics back to nodal old-stress arrays.
 the matching components are taken from `post`.
 """
 function update_old_stress_from_cells!(τ_old::NTuple{Nτ}, post, el2n_v, nnodes_v) where {Nτ}
-    cells  = _cell_stress_components(post, Val(Nτ))
-    nodal  = ntuple(c -> zeros(eltype(τ_old[c]), nnodes_v), Val(Nτ))
+    cells = _cell_stress_components(post, Val(Nτ))
+    nodal = ntuple(c -> zeros(eltype(τ_old[c]), nnodes_v), Val(Nτ))
     counts = zeros(Int, nnodes_v)
 
     for iel in axes(el2n_v, 2)
@@ -331,9 +331,11 @@ _vtk_mesh_arrays(mesh::MixedMesh{3}) =
 function _vtk_topology(mesh; coords_override = nothing)
     mesh_coords, el2n, nels, dim = _vtk_mesh_arrays(mesh)
     coords = coords_override === nothing ? mesh_coords : coords_override
-    length(coords) == length(mesh_coords) || throw(DimensionMismatch(
-        "coords has length $(length(coords)); expected $(length(mesh_coords))",
-    ))
+    length(coords) == length(mesh_coords) || throw(
+        DimensionMismatch(
+            "coords has length $(length(coords)); expected $(length(mesh_coords))",
+        )
+    )
     corner_rows = _vtk_corner_rows(dim, size(el2n, 1))
     corner_el2n = Matrix{Int}(el2n[corner_rows, :])
     nodes = Int.(sort!(unique(vec(corner_el2n))))
@@ -377,7 +379,7 @@ _vtk_cell_type(::Val{2}, ncorner::Int) = ncorner == 3 ? 5 : 9
 _vtk_cell_type(::Val{3}, ncorner::Int) = ncorner == 4 ? 10 : 12
 
 function _vtk_print_point(io, c)
-    if c isa Number
+    return if c isa Number
         println(io, "$c 0.0 0.0")
     elseif length(c) == 1
         println(io, "$(c[1]) 0.0 0.0")
@@ -398,9 +400,11 @@ function _vtk_point_values(field, topo, name)
     elseif length(values) == length(topo.coords)
         return values[topo.nodes]
     end
-    throw(DimensionMismatch(
-        "point_data[$(string(name))] has length $(length(values)); expected $(length(topo.nodes)) or $(length(topo.coords))",
-    ))
+    throw(
+        DimensionMismatch(
+            "point_data[$(string(name))] has length $(length(values)); expected $(length(topo.nodes)) or $(length(topo.coords))",
+        )
+    )
 end
 
 _vtk_cell_values(field::Tuple, topo, name) =
@@ -409,9 +413,11 @@ _vtk_cell_values(field::Tuple, topo, name) =
 function _vtk_cell_values(field, topo, name)
     values = vec(Array(field))
     length(values) == topo.nels && return values
-    throw(DimensionMismatch(
-        "cell_data[$(string(name))] has length $(length(values)); expected $(topo.nels)",
-    ))
+    throw(
+        DimensionMismatch(
+            "cell_data[$(string(name))] has length $(length(values)); expected $(topo.nels)",
+        )
+    )
 end
 
 _vtk_write_field(io, name, values) = _vtk_write_scalar_field(io, name, values)
@@ -420,10 +426,12 @@ function _vtk_write_field(io, name, components::Tuple)
     ncomp = length(components)
     ncomp in (2, 3) && return _vtk_write_vector_field(io, name, components)
     ncomp in (6, 9) && return _vtk_write_tensor_field(io, name, components)
-    throw(ArgumentError(
-        "field $(string(name)) has $ncomp components; a tuple field must hold 2 or 3 " *
-        "(vector), 6 (symmetric tensor), or 9 (full tensor) of them",
-    ))
+    throw(
+        ArgumentError(
+            "field $(string(name)) has $ncomp components; a tuple field must hold 2 or 3 " *
+                "(vector), 6 (symmetric tensor), or 9 (full tensor) of them",
+        )
+    )
 end
 
 function _vtk_write_scalar_field(io, name, values)
@@ -432,6 +440,7 @@ function _vtk_write_scalar_field(io, name, values)
     for value in values
         println(io, value)
     end
+    return
 end
 
 function _vtk_write_vector_field(io, name, components::Tuple)
@@ -442,6 +451,7 @@ function _vtk_write_vector_field(io, name, components::Tuple)
         third = length(components) == 3 ? components[3][i] : pad
         println(io, components[1][i], " ", components[2][i], " ", third)
     end
+    return
 end
 
 # Row-major 3 × 3 positions of the components of a symmetric tensor given in the
@@ -460,6 +470,7 @@ function _vtk_write_tensor_field(io, name, components::Tuple)
             println(io, entries[1], " ", entries[2], " ", entries[3])
         end
     end
+    return
 end
 
 """
@@ -474,19 +485,19 @@ is averaged to cells and written as `Q`; extra per-cell fields can be supplied
 with `cell_data`.
 """
 function write_stokes_vtk(
-    vtk_path,
-    mesh_stokes,
-    coords_v,
-    el2nP_cpu,
-    DoFsP_cpu,
-    P_cpu,
-    vx_cpu,
-    vy_cpu,
-    post;
-    title = "FEMTools Stokes 2D",
-    cell_data = (;),
-    Q_cpu = nothing,
-)
+        vtk_path,
+        mesh_stokes,
+        coords_v,
+        el2nP_cpu,
+        DoFsP_cpu,
+        P_cpu,
+        vx_cpu,
+        vy_cpu,
+        post;
+        title = "FEMTools Stokes 2D",
+        cell_data = (;),
+        Q_cpu = nothing,
+    )
     topo = _vtk_topology(mesh_stokes; coords_override = coords_v)
     NP = size(el2nP_cpu, 1)
 
@@ -503,23 +514,29 @@ function write_stokes_vtk(
 
     vtk_Vx = [vx_cpu[old_i] for old_i in topo.nodes]
     vtk_Vy = [vy_cpu[old_i] for old_i in topo.nodes]
-    vtk_cell_data = merge(cell_data, (;
-        strain_xx = post.εxx,
-        strain_yy = post.εyy,
-        strain_zz = post.εzz,
-        strain_xy = post.εxy,
-        strain_II = post.εII,
-        tau_xx = post.τxx,
-        tau_yy = post.τyy,
-        tau_zz = post.τzz,
-        tau_xy = post.τxy,
-        tau_II = post.tauII,
-    ))
+    vtk_cell_data = merge(
+        cell_data, (;
+            strain_xx = post.εxx,
+            strain_yy = post.εyy,
+            strain_zz = post.εzz,
+            strain_xy = post.εxy,
+            strain_II = post.εII,
+            tau_xx = post.τxx,
+            tau_yy = post.τyy,
+            tau_zz = post.τzz,
+            tau_xy = post.τxy,
+            tau_II = post.tauII,
+        )
+    )
     if Q_cpu !== nothing
-        vtk_cell_data = merge(vtk_cell_data, (Q = [
-            sum(Q_cpu[DoFsP_cpu[a, iel]] for a in axes(DoFsP_cpu, 1)) /
-            size(DoFsP_cpu, 1) for iel in axes(DoFsP_cpu, 2)
-        ],))
+        vtk_cell_data = merge(
+            vtk_cell_data, (
+                Q = [
+                    sum(Q_cpu[DoFsP_cpu[a, iel]] for a in axes(DoFsP_cpu, 1)) /
+                        size(DoFsP_cpu, 1) for iel in axes(DoFsP_cpu, 2)
+                ],
+            )
+        )
     end
 
     return write_vtk(
@@ -552,11 +569,11 @@ Pressure is written as cell data. For tetrahedra it is evaluated at the centroid
 by averaging the four P1 values; for Hex27 it uses the cell-center value.
 """
 function write_stokes_vtk(
-    vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu,
-    v_cpu::NTuple{3}, post;
-    title = "FEMTools Stokes 3D",
-    cell_data = (;),
-)
+        vtk_path, mesh_stokes, coords_v, el2nP_cpu, DoFsP_cpu, P_cpu,
+        v_cpu::NTuple{3}, post;
+        title = "FEMTools Stokes 3D",
+        cell_data = (;),
+    )
     topo = _vtk_topology(mesh_stokes; coords_override = coords_v)
     vtk_V = ntuple(c -> [v_cpu[c][old_i] for old_i in topo.nodes], 3)
     cell_P = if size(mesh_stokes.el2n, 1) in (10, 11)
@@ -569,13 +586,15 @@ function write_stokes_vtk(
         vtk_path,
         mesh_stokes;
         point_data = (; velocity = vtk_V, z = [topo.coords[i][3] for i in topo.nodes]),
-        cell_data = merge(cell_data, (;
-            P = cell_P,
-            strain = (post.εxx, post.εyy, post.εzz, post.εxy, post.εxz, post.εyz),
-            strain_II = post.εII,
-            tau = (post.τxx, post.τyy, post.τzz, post.τxy, post.τxz, post.τyz),
-            tau_II = post.tauII,
-        )),
+        cell_data = merge(
+            cell_data, (;
+                P = cell_P,
+                strain = (post.εxx, post.εyy, post.εzz, post.εxy, post.εxz, post.εyz),
+                strain_II = post.εII,
+                tau = (post.τxx, post.τyy, post.τzz, post.τxy, post.τxz, post.τyz),
+                tau_II = post.tauII,
+            )
+        ),
         coords = coords_v,
         title,
     )

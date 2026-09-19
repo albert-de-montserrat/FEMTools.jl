@@ -4,7 +4,7 @@
 Gather element-local values and return the integrated thermal residual with its
 global node indices.
 """
-@inline function element_residual(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where N
+@inline function element_residual(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where {N}
     nodes = local_nodes_of(el2n, iel, Val(N))
     Tloc = _gather_local(T, nodes, Val(N))
     args = (
@@ -25,7 +25,7 @@ end
 
 Return element node indices, absolute Jacobian row sums, and absolute diagonal.
 """
-@inline function element_jacobian(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where N
+@inline function element_jacobian(T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref, Nq, ∂N∂ξ, iel, ::Val{N}) where {N}
     nodes = local_nodes_of(el2n, iel, Val(N))
     Tloc = _gather_local(T, nodes, Val(N))
     T0loc = _gather_local(T0, nodes, Val(N))
@@ -49,7 +49,7 @@ end
 Integrate one element's transient, source, and diffusion contributions using
 the nodal phase assignments and linearised density equation of state.
 """
-@inline function integrate_residual(Tloc, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc, Δt, Tref, Nq, ::Val{N}) where N
+@inline function integrate_residual(Tloc, T0loc, geo_el, sloc, phase_loc, k, Cp, ρ0, α, K, Ploc, Δt, Tref, Nq, ::Val{N}) where {N}
     Re = zero(Tloc)
     # Compressibility β = 1/K: safe for K=Inf (β=0) and avoids NaN from
     # interp2ip_phase when quadratic shape functions are negative.
@@ -65,17 +65,23 @@ the nodal phase assignments and linearised density equation of state.
         ρq = interp2ip_phase(Nv, ρ0, phase_loc) * (1 - αq * (Tq - Tref) + βq * Pq)
         Δt_ρCp = Δt / (ρq * interp2ip_phase(Nv, Cp, phase_loc))
         KTloc = kq * (∂N∂x * (∂N∂x' * Tloc))
-        Re += SVector{N}(ntuple(Val(N)) do i
-            (-Tloc[i] + T0loc[i] + Δt_ρCp * sloc[i]) * Nv[i] * dΩ -
-            Δt_ρCp * KTloc[i] * dΩ
-        end)
+        Re += SVector{N}(
+            ntuple(Val(N)) do i
+                (-Tloc[i] + T0loc[i] + Δt_ρCp * sloc[i]) * Nv[i] * dΩ -
+                    Δt_ρCp * KTloc[i] * dΩ
+            end
+        )
     end
     return Re
 end
 
 # Argument bundle shared by the atomic and colored thermal assemblers, in the
 # order `element_residual` and `element_jacobian` consume it.
-@inline diffusion_element_arguments(T, T0, source, el2n, geo, phases,
-        k, Cp, ρ0, α, K, P, Δt, Tref, element) =
-    (T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref,
-     shape_function_values(element), shape_function_gradients(element))
+@inline diffusion_element_arguments(
+    T, T0, source, el2n, geo, phases,
+    k, Cp, ρ0, α, K, P, Δt, Tref, element
+) =
+    (
+    T, T0, source, el2n, geo, phases, k, Cp, ρ0, α, K, P, Δt, Tref,
+    shape_function_values(element), shape_function_gradients(element),
+)

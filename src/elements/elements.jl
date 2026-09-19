@@ -59,9 +59,9 @@ LinearElement{2, 3}
     |
     3
     |\
-    | \
-    |  \
-    1---2 --> ξ
+| \
+|  \
+1---2 --> ξ
 
 
 LinearElement{2, 4}
@@ -133,11 +133,11 @@ QuadraticElement{2, 6}
     |
     3
     |\
-    | \
-    6  5
+| \
+6  5
     |   \
-    |    \
-    1--4--2 --> ξ
+|    \
+1--4--2 --> ξ
 
 
 QuadraticElement{2, 9}
@@ -212,29 +212,31 @@ Fields:
 - `shape_functions`: shape-function data.
 - `integration_points`: integration-point data.
 """
-struct ReferenceElement{Element<:AbstractElement, SF, IP}
+struct ReferenceElement{Element <: AbstractElement, SF, IP}
     shape_functions::SF
     integration_points::IP
 
-    function ReferenceElement(element::T) where {T<:AbstractElement}
+    function ReferenceElement(element::T) where {T <: AbstractElement}
         # The concrete element tag selects the matching shape-function and
         # quadrature constructors through dispatch.
         shape_functions = ShapeFunctions(element)
         integration_points = IntegrationPoints(element)
 
-        new{T, typeof(shape_functions), typeof(integration_points)}(
+        return new{T, typeof(shape_functions), typeof(integration_points)}(
             shape_functions,
             integration_points,
         )
     end
 end
 
-function Base.show(io::IO, element::ReferenceElement{Element}) where Element
-    print(io, "ReferenceElement{", Element, "}(order=", order(element),
-          ", nodes=", length(element), ", nips=", length(element.integration_points.ω), ")")
+function Base.show(io::IO, element::ReferenceElement{Element}) where {Element}
+    return print(
+        io, "ReferenceElement{", Element, "}(order=", order(element),
+        ", nodes=", length(element), ", nips=", length(element.integration_points.ω), ")"
+    )
 end
 
-ReferenceElement(::Type{T}) where {T<:AbstractElement} = ReferenceElement(T())
+ReferenceElement(::Type{T}) where {T <: AbstractElement} = ReferenceElement(T())
 ReferenceElement(::Type{LinearElement{nDim, nVert}}) where {nDim, nVert} =
     ReferenceElement(LinearElement{nDim, nVert, Float64})
 ReferenceElement(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
@@ -246,7 +248,7 @@ ReferenceElement(::Type{QuadraticElement{nDim, nVert}}) where {nDim, nVert} =
 
 Return the number of local nodes in an element or reference-element bundle.
 """
-Base.length(::ReferenceElement{T}) where {T<:AbstractElement} = length(T())
+Base.length(::ReferenceElement{T}) where {T <: AbstractElement} = length(T())
 Base.length(::AbstractElement{nDim, nVert}) where {nDim, nVert} = nVert
 
 """
@@ -265,6 +267,6 @@ Return the polynomial order associated with an element tag, element type, or
 `ReferenceElement`.
 """
 @inline order(::ReferenceElement{T}) where {T} = order(T)
-@inline order(::Type{T}) where T<:AbstractElement = order(T())
+@inline order(::Type{T}) where {T <: AbstractElement} = order(T())
 @inline order(::AbstractLinearElement) = 1
 @inline order(::AbstractQuadraticElement) = 2

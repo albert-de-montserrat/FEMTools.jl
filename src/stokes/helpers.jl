@@ -7,8 +7,10 @@ Launch the Stokes geometry precompute kernel and synchronize the backend.
 [`precompute_geometry_kernel!`](@ref) writes.
 """
 precompute_stokes_geometry!(geo, coords, el2n, ∂N∂ξq, ω, ::Val{N}, nels, backend, workgroup) where {N} =
-    launch!(precompute_geometry_kernel!, backend, workgroup, nels,
-            geo, coords, el2n, ∂N∂ξq, ω, Val(N))
+    launch!(
+    precompute_geometry_kernel!, backend, workgroup, nels,
+    geo, coords, el2n, ∂N∂ξq, ω, Val(N)
+)
 
 """
     stokes_update_rate!(∂u∂τ, R, PC, β, ndofs, backend, workgroup)
@@ -48,17 +50,21 @@ first form takes one tuple entry per direction; the second takes the two
 plane-strain components separately.
 """
 update_stokes_velocity!(
-        rate::NTuple{D}, v::NTuple{D}, R, PC, β, α_dr, ndofs, backend, workgroup,
-    ) where {D} =
-    launch!(update_stokes_velocity_kernel!, backend, workgroup, ndofs,
-            rate, v, R, PC, β, α_dr, Val(D))
+    rate::NTuple{D}, v::NTuple{D}, R, PC, β, α_dr, ndofs, backend, workgroup,
+) where {D} =
+    launch!(
+    update_stokes_velocity_kernel!, backend, workgroup, ndofs,
+    rate, v, R, PC, β, α_dr, Val(D)
+)
 
 update_stokes_velocity!(
-        rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
-        βx, βy, αx, αy, ndofs, backend, workgroup,
-    ) =
-    update_stokes_velocity!((rate_x, rate_y), (vx, vy), (Rx, Ry), (PCx, PCy),
-                            (βx, βy), (αx, αy), ndofs, backend, workgroup)
+    rate_x, rate_y, vx, vy, Rx, Ry, PCx, PCy,
+    βx, βy, αx, αy, ndofs, backend, workgroup,
+) =
+    update_stokes_velocity!(
+    (rate_x, rate_y), (vx, vy), (Rx, Ry), (PCx, PCy),
+    (βx, βy), (αx, αy), ndofs, backend, workgroup
+)
 
 """
     remove_pressure_mean!(P, M_P) -> p_mean

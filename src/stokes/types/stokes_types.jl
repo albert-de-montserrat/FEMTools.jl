@@ -20,11 +20,11 @@ The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
     Tref::FP = 0.0
 
     function StokesMaterial(
-        η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
-        G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
-        ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
-        g::NTuple{ndim, FP}, Tref::FP,
-    ) where {ndim, FP}
+            η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
+            G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
+            ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
+            g::NTuple{ndim, FP}, Tref::FP,
+        ) where {ndim, FP}
         nphases = length(η)
         length(ηb) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
             throw(DimensionMismatch("Stokes material property tuples must have the same length"))
@@ -204,38 +204,41 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
     ϵ::FP
 
     function StokesDR(
-        backend, nnodes_v, nnodes_P,
-        η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
-        ρ0   = nothing,
-        K    = nothing,
-        G    = nothing,
-        g    = nothing,
-        Tref = nothing,
-        CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
-        stress_size = nothing,
-    ) where {N, FP}
+            backend, nnodes_v, nnodes_P,
+            η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
+            ρ0 = nothing,
+            K = nothing,
+            G = nothing,
+            g = nothing,
+            Tref = nothing,
+            CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
+            stress_size = nothing,
+        ) where {N, FP}
         nphases = N + 1
-        _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
-        _K   = K   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
-        _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
-        _g   = g   === nothing ? (FP(0), FP(0))   : map(FP, Tuple(g))
-        _Tref = Tref === nothing ? FP(0)           : FP(Tref)
-        stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
-            "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
+        _ρ0 = ρ0 === nothing ? ntuple(_ -> FP(1), Val(nphases)) : NTuple{nphases, FP}(ρ0)
+        _K = K === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
+        _G = G === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
+        _g = g === nothing ? (FP(0), FP(0)) : map(FP, Tuple(g))
+        _Tref = Tref === nothing ? FP(0) : FP(Tref)
+        stress_size isa Symbol && stress_size !== :none && throw(
+            ArgumentError(
+                "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"
+            )
+        )
         dim = _spatial_dimension(_g)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
         stress_dims = stress_size === nothing ? v_dims :
             stress_size === :none ? nothing : _storage_dims(stress_size)
-        newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
-        newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
-        newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
-        newτ0() = KernelAbstractions.zeros(backend, FP,  map(zero, stress_dims)...)
-        newiv() = KernelAbstractions.ones(backend,  Int32, v_dims...)
-        newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
+        newv() = KernelAbstractions.zeros(backend, FP, v_dims...)
+        newP() = KernelAbstractions.zeros(backend, FP, P_dims...)
+        newτ() = KernelAbstractions.zeros(backend, FP, stress_dims...)
+        newτ0() = KernelAbstractions.zeros(backend, FP, map(zero, stress_dims)...)
+        newiv() = KernelAbstractions.ones(backend, Int32, v_dims...)
+        newip() = KernelAbstractions.ones(backend, Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
         newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
-        new{
+        return new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
             typeof(newiv()), typeof(newP()), typeof(newip()), FP,
         }(
@@ -304,9 +307,11 @@ StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
 
 StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
-    StokesDR(backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
-        ρ0 = material.ρ0, K = material.K, G = material.G,
-        g = material.g, Tref = material.Tref, kwargs...)
+    StokesDR(
+    backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
+    ρ0 = material.ρ0, K = material.K, G = material.G,
+    g = material.g, Tref = material.Tref, kwargs...
+)
 StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, material; kwargs...)
 
@@ -328,12 +333,12 @@ All fields are `NTuple{nphases, FP}`.  Pass `nothing` in place of a
 `DruckerPrager` wherever plasticity is not needed (the assemblers accept both).
 """
 struct DruckerPrager{nphases, FP}
-    cosϕ  :: NTuple{nphases, FP}
-    sinϕ  :: NTuple{nphases, FP}
-    sinΨ  :: NTuple{nphases, FP}
-    C     :: NTuple{nphases, FP}
-    η_reg :: NTuple{nphases, FP}
-    Kb    :: NTuple{nphases, FP}
+    cosϕ::NTuple{nphases, FP}
+    sinϕ::NTuple{nphases, FP}
+    sinΨ::NTuple{nphases, FP}
+    C::NTuple{nphases, FP}
+    η_reg::NTuple{nphases, FP}
+    Kb::NTuple{nphases, FP}
 end
 
 """
@@ -355,13 +360,13 @@ true
 ```
 """
 function DruckerPrager(
-    ϕ     :: Tuple{FP, Vararg{FP, N}},
-    Ψ     :: Tuple{FP, Vararg{FP, N}},
-    C     :: Tuple{FP, Vararg{FP, N}},
-    η_reg :: Tuple{FP, Vararg{FP, N}},
-    Kb    :: Tuple{FP, Vararg{FP, N}},
-) where {N, FP}
-    DruckerPrager{N + 1, FP}(
+        ϕ::Tuple{FP, Vararg{FP, N}},
+        Ψ::Tuple{FP, Vararg{FP, N}},
+        C::Tuple{FP, Vararg{FP, N}},
+        η_reg::Tuple{FP, Vararg{FP, N}},
+        Kb::Tuple{FP, Vararg{FP, N}},
+    ) where {N, FP}
+    return DruckerPrager{N + 1, FP}(
         map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
     )
 end
@@ -398,8 +403,8 @@ struct Stokes3DWorkspace{TV, TP, TB, TT}
 end
 
 function Stokes3DWorkspace(
-    velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
-)
+        velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+    )
     residual_v = ntuple(i -> similar(velocity[i]), 3)
     diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
     zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
@@ -447,15 +452,15 @@ function StokesAdjointWorkspace(dr::StokesDR{<:Any, 2}, vx_nodes, vy_nodes; enzy
         zero_vy_bc = fill!(similar(dr.v.y, length(vy_nodes)), 0),
     )
     enzyme_scratch = enzyme ? (;
-        Rv_x_buf = zero(dr.Rv.x),
-        Rv_y_buf = zero(dr.Rv.y),
-        seed_Rv_x = zero(dr.Rv.x),
-        seed_Rv_y = zero(dr.Rv.y),
-        seed_RP = zero(dr.RP),
-        dP = zero(dr.P),
-        dP_scratch = zero(dr.P),
-        Pnum = zero(dr.P),
-        dPnum = zero(dr.P),
-    ) : nothing
+            Rv_x_buf = zero(dr.Rv.x),
+            Rv_y_buf = zero(dr.Rv.y),
+            seed_Rv_x = zero(dr.Rv.x),
+            seed_Rv_y = zero(dr.Rv.y),
+            seed_RP = zero(dr.RP),
+            dP = zero(dr.P),
+            dP_scratch = zero(dr.P),
+            Pnum = zero(dr.P),
+            dPnum = zero(dr.P),
+        ) : nothing
     return StokesAdjointWorkspace(common, enzyme_scratch)
 end

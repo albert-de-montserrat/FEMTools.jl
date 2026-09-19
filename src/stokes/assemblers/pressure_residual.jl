@@ -10,13 +10,13 @@ over all nodes `i` and spatial dimensions `j`. Implemented as a `@generated`
 function to unroll all loops at compile time.
 """
 @generated function compute_velocity_divergence(v::Tuple{SVector{M}, Vararg{SVector{M}, N}}, ∂N∂x_v) where {N, M}
-    quote
+    return quote
         @inline
         ∇V = zero(∂N∂x_v[1, 1] * v[1][1])
-        Base.@nexprs $(N + 1) j-> begin
+        Base.@nexprs $(N + 1) j -> begin
             v_j = v[j]
-            Base.@nexprs $M i-> begin
-                ∇V += ∂N∂x_v[i,j] * v_j[i]
+            Base.@nexprs $M i -> begin
+                ∇V += ∂N∂x_v[i, j] * v_j[i]
             end
         end
         return ∇V
@@ -52,22 +52,24 @@ material factors are applied.
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
-        dΩ      = geo_P_el[q] # pressure
-        Nv      = Nq[q]
-        Qq      = isnothing(Qloc) ? zero(P_loc[1]) : dot(Nv, Qloc)
+        dΩ = geo_P_el[q] # pressure
+        Nv = Nq[q]
+        Qq = isnothing(Qloc) ? zero(P_loc[1]) : dot(Nv, Qloc)
 
         # project parameters to integration point
         ηbq = interp2ip_phase(Nv, ηb, phase_loc)
-        αq  = interp2ip_phase(Nv, α, phase_loc)
+        αq = interp2ip_phase(Nv, α, phase_loc)
         ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt)
         ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
         # project divergence to integration point
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
         # compute pressure residual
-        RP_e += SVector{N}(ntuple(
-            i -> Nv[i] * (-∇V - ∂P∂t + ∂T∂t + Qq) * dΩ,
-            Val(N),
-        ))
+        RP_e += SVector{N}(
+            ntuple(
+                i -> Nv[i] * (-∇V - ∂P∂t + ∂T∂t + Qq) * dΩ,
+                Val(N),
+            )
+        )
     end
     return RP_e
 end
@@ -91,20 +93,20 @@ for material interpolation. `α` and `ηb` are per-phase thermal expansion and
 bulk viscosity `NTuple`s.
 """
 function assemble_pressure_residual_matrices_atomix!(
-    RP,
-    v::NTuple{D, <:AbstractVector},
-    P, P0,
-    T, T0, Q,
-    el2n_v, el2nP,
-    geo_v, geo_P,
-    nels,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases,
-    α, ηb,
-    Δt,
-    backend, workgroup,
-) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+        RP,
+        v::NTuple{D, <:AbstractVector},
+        P, P0,
+        T, T0, Q,
+        el2n_v, el2nP,
+        geo_v, geo_P,
+        nels,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases,
+        α, ηb,
+        Δt,
+        backend, workgroup,
+    ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     # Evaluate pressure shape functions at velocity IPs so that geo_P
     # (precomputed at velocity IPs) and NqP share the same quadrature points.
     NqP = shape_function_values(element_P, element_v.integration_points)
@@ -119,19 +121,22 @@ function assemble_pressure_residual_matrices_atomix!(
 end
 
 function assemble_pressure_residual_matrices_atomix!(
-    RP, v::NTuple{D, <:AbstractVector}, P, P0, T, T0,
-    el2n_v, el2nP, geo_v, geo_P, nels, element_v, element_P,
-    phases, α, ηb, Δt, backend, workgroup,
-) where D
+        RP, v::NTuple{D, <:AbstractVector}, P, P0, T, T0,
+        el2n_v, el2nP, geo_v, geo_P, nels, element_v, element_P,
+        phases, α, ηb, Δt, backend, workgroup,
+    ) where {D}
     Q = similar(P)
     fill!(Q, 0)
-    assemble_pressure_residual_matrices_atomix!(RP, v, P, P0, T, T0, Q,
+    return assemble_pressure_residual_matrices_atomix!(
+        RP, v, P, P0, T, T0, Q,
         el2n_v, el2nP, geo_v, geo_P, nels, element_v, element_P,
-        phases, α, ηb, Δt, backend, workgroup)
+        phases, α, ηb, Δt, backend, workgroup
+    )
 end
 
 assemble_pressure_residual_matrices_atomix!(
-        RP, vx::AbstractVector, vy::AbstractVector, args...) =
+    RP, vx::AbstractVector, vy::AbstractVector, args...
+) =
     assemble_pressure_residual_matrices_atomix!(RP, (vx, vy), args...)
 
 """
@@ -157,11 +162,11 @@ launches this repeatedly wants the arrays: a tuple is copied into the kernel
 argument pack on every launch.
 """
 function assemble_pressure_residual_kernel!(
-    RP, v::NTuple{D, <:AbstractVector}, P, P0, T, T0, Q,
-    el2n_v, el2nP, geo_v, geo_P, nels,
-    phases, α, ηb, Δt, NqP, ∂N∂ξ_v,
-    ::Val{NV}, ::Val{NP}, workgroup
-) where {D, NV, NP}
+        RP, v::NTuple{D, <:AbstractVector}, P, P0, T, T0, Q,
+        el2n_v, el2nP, geo_v, geo_P, nels,
+        phases, α, ηb, Δt, NqP, ∂N∂ξ_v,
+        ::Val{NV}, ::Val{NP}, workgroup
+    ) where {D, NV, NP}
     fill!(RP, 0)
     backend = KA.get_backend(RP)
     pressure_residual_atomic_kernel!(backend, workgroup)(
@@ -178,15 +183,15 @@ assemble_pressure_residual_kernel!(RP, vx::AbstractVector, vy::AbstractVector, a
     assemble_pressure_residual_kernel!(RP, (vx, vy), args...)
 
 @kernel function pressure_residual_atomic_kernel!(
-    RP,
-    @Const(v),
-    @Const(P), @Const(P0),
-    @Const(T), @Const(T0), @Const(Q),
-    @Const(el2n_v), @Const(el2nP),
-    @Const(geo_v), @Const(geo_P),
-    @Const(phases),
-    α, ηb, Δt, NqP, @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
-) where {NV, NP}
+        RP,
+        @Const(v),
+        @Const(P), @Const(P0),
+        @Const(T), @Const(T0), @Const(Q),
+        @Const(el2n_v), @Const(el2nP),
+        @Const(geo_v), @Const(geo_P),
+        @Const(phases),
+        α, ηb, Δt, NqP, @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
+    ) where {NV, NP}
     iel = @index(Global)
     local_nodes_P, Re = pressure_element_residual(
         v, P, P0, T, T0, Q, el2n_v, el2nP, geo_v, geo_P, phases,
@@ -206,18 +211,20 @@ Gather element-local nodal values and integrate the Stokes pressure residual for
 `v` holds one nodal velocity array per spatial direction. Returns
 `(local_nodes_P, Re)` ready for global scatter into `RP`.
 """
-@inline function pressure_element_residual(v::NTuple{D}, P, P0, T, T0, Q, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP}) where {D, NV, NP}
+@inline function pressure_element_residual(
+        v::NTuple{D}, P, P0, T, T0, Q, el2n_v, el2nP,
+        geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP}
+    ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
-    local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
-    geo_v_el  = element_geometry(geo_v, iel, ∂N∂ξ_v)
-    geo_P_el  = element_geometry(geo_P, iel)
-    vloc      = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
-    P_loc     = _gather_local(P,  local_nodes_P, Val(NP))
-    P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
-    Tloc      = _gather_local(T,  local_nodes_P, Val(NP))
-    T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
-    Qloc      = isnothing(Q) ? nothing : _gather_local(Q, local_nodes_P, Val(NP))
+    local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_v_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+    geo_P_el = element_geometry(geo_P, iel)
+    vloc = ntuple(i -> _gather_local(v[i], local_nodes_v, Val(NV)), Val(D))
+    P_loc = _gather_local(P, local_nodes_P, Val(NP))
+    P0loc = _gather_local(P0, local_nodes_P, Val(NP))
+    Tloc = _gather_local(T, local_nodes_P, Val(NP))
+    T0loc = _gather_local(T0, local_nodes_P, Val(NP))
+    Qloc = isnothing(Q) ? nothing : _gather_local(Q, local_nodes_P, Val(NP))
     phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))
     Re = integrate_PH_pressure_residual(
         vloc, P_loc, P0loc, Tloc, T0loc, Qloc,
@@ -227,10 +234,14 @@ Gather element-local nodal values and integrate the Stokes pressure residual for
 end
 
 # Backward-compatible zero-source overload for direct low-level callers.
-@inline function pressure_element_residual(v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}) where {D, NV, NP}
-    pressure_element_residual(v, P, P0, T, T0, nothing, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP))
+@inline function pressure_element_residual(
+        v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP,
+        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}
+    ) where {D, NV, NP}
+    return pressure_element_residual(
+        v, P, P0, T, T0, nothing, el2n_v, el2nP,
+        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP)
+    )
 end
 
 """
@@ -243,9 +254,9 @@ Assemble `-∇·v` against the four cell-local modes `(1, ξ, η, ζ)`.
 this repeatedly should hand over one it owns.
 """
 function assemble_stokes_pressure_residual_3d!(
-    RP::AbstractMatrix, v::NTuple{3}, mesh::Mesh; workgroup = 256,
-    tables = stokes_tables_3d(KA.get_backend(RP), mesh.element),
-)
+        RP::AbstractMatrix, v::NTuple{3}, mesh::Mesh; workgroup = 256,
+        tables = stokes_tables_3d(KA.get_backend(RP), mesh.element),
+    )
     size(RP) == (4, mesh.nels) || throw(DimensionMismatch("RP must be 4 × nels"))
     all(length(u) == mesh.nnodes for u in v) || throw(DimensionMismatch("velocity size must match mesh nodes"))
     backend = KA.get_backend(RP)
@@ -257,8 +268,8 @@ function assemble_stokes_pressure_residual_3d!(
 end
 
 @kernel function stokes_pressure_residual_3d_kernel!(
-    RP, @Const(v), @Const(el2n), @Const(geometry), @Const(NqP), @Const(∂N∂ξ),
-)
+        RP, @Const(v), @Const(el2n), @Const(geometry), @Const(NqP), @Const(∂N∂ξ),
+    )
     cell = @index(Global)
     nodes = local_nodes_of(el2n, cell, Val(27))
     velocity = ntuple(i -> _gather_local(v[i], nodes, Val(27)), 3)

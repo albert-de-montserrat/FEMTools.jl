@@ -12,7 +12,7 @@ viscous limit `G = Inf` stays numerically stable, including at quadratic
 integration points where shape functions can be negative.
 """
 @inline function viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
-    ηq  = interp2ip_phase(Nv, η, phase_loc)
+    ηq = interp2ip_phase(Nv, η, phase_loc)
     # Interpolate compliance so G=Inf stays finite at quadratic IPs.
     invGq = interp2ip_phase(Nv, map(inv, G), phase_loc)
     ηve = inv(inv(ηq) + invGq / Δt)
@@ -94,7 +94,7 @@ unchanged in practice.
     Azz = -A[1] - A[2]
     # typeof(real(A[1])) recovers the underlying float type when A[1] is a
     # ForwardDiff Dual (real(::Dual) = value(::Dual) is defined by ForwardDiff).
-    FT  = typeof(real(A[1]))
+    FT = typeof(real(A[1]))
     return √((A[1]^2 + A[2]^2 + Azz^2) / 2 + A[3]^2 + eps(FT)^2)
 end
 
@@ -120,7 +120,7 @@ is purely viscoelastic.
     εxx = ∇vx[1]
     εyy = ∇vy[2]
     εxy = (∇vx[2] + ∇vy[1]) / 2
-    tr  = (εxx + εyy) / 3
+    tr = (εxx + εyy) / 3
 
     ηve, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
     τxx_o, τyy_o, τxy_o = τ_old
@@ -158,7 +158,7 @@ denominator stays positive for any dilation angle.
     εxx = ∇vx[1]
     εyy = ∇vy[2]
     εxy = (∇vx[2] + ∇vy[1]) / 2
-    tr  = (εxx + εyy) / 3
+    tr = (εxx + εyy) / 3
 
     ηve, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
     τxx_o, τyy_o, τxy_o = τ_old
@@ -172,26 +172,26 @@ denominator stays positive for any dilation angle.
     τij = τxx, τyy, τxy
 
     # Interpolate per-phase plastic parameters to the quadrature point.
-    cosϕ  = interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
-    sinϕ  = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
-    sinΨ  = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
-    C     = interp2ip_phase(Nv, plastic.C,     phase_loc)
+    cosϕ = interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
+    sinϕ = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
+    sinΨ = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
+    C = interp2ip_phase(Nv, plastic.C, phase_loc)
     η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
-    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
+    Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
 
     # Drucker-Prager yield function.
     # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂) = sqrt(SI/2).
-    τII      = second_invariant(τij)
+    τII = second_invariant(τij)
     τII_safe = τII + eps(typeof(τII))^2
-    F        = τII - cosϕ * C - sinϕ * Pq
-    ∂F∂P     = -sinϕ
+    F = τII - cosϕ * C - sinϕ * Pq
+    ∂F∂P = -sinϕ
 
     # Derivatives of the plane-strain invariant with τzz = -τxx - τyy.
     ∂Q∂τxx = (2 * τxx + τyy) / (2 * τII_safe)
     ∂Q∂τyy = (τxx + 2 * τyy) / (2 * τII_safe)
     ∂Q∂τxy = τxy / τII_safe
-    ∂Q∂τ   = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
-    ∂Q∂P   = -sinΨ
+    ∂Q∂τ = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
+    ∂Q∂P = -sinΨ
 
     # Plastic dilation feeds back on the yield surface through the pressure: the
     # volumetric plastic strain enters the mass balance as `P ← P - Kb Δt λ ∂Q/∂P`,
@@ -297,18 +297,18 @@ three-dimensional kinematics reduce to plane strain.
     ηve = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
 
     # Interpolate per-phase plastic parameters to the quadrature point.
-    cosϕ  = interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
-    sinϕ  = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
-    sinΨ  = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
-    C     = interp2ip_phase(Nv, plastic.C,     phase_loc)
+    cosϕ = interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
+    sinϕ = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
+    sinΨ = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
+    C = interp2ip_phase(Nv, plastic.C, phase_loc)
     η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
-    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
+    Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
 
-    τII      = second_invariant(τij)
+    τII = second_invariant(τij)
     τII_safe = τII + eps(typeof(τII))^2
-    F        = τII - cosϕ * C - sinϕ * Pq
-    ∂F∂P     = -sinϕ
-    ∂Q∂P     = -sinΨ
+    F = τII - cosϕ * C - sinϕ * Pq
+    ∂F∂P = -sinϕ
+    ∂Q∂P = -sinΨ
     # Normal components carry a factor 1/2 that the stored shear components,
     # which each represent two tensor entries, do not.
     ∂Q∂τ = (
