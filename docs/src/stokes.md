@@ -135,7 +135,11 @@ stats.converged || error("coupled solve did not converge")
 ```
 
 The returned Stokes statistics additionally contain `err_T` and
-`thermal_iterations`. The caller still owns physical-time history: set
+`thermal_iterations`. On the 2-D path `converged` is true only when the outer
+test `min(err_abs, err_rel) < ϵ_tol` passed (and the thermal state converged), so
+a run that ends on `total_iterMax` reports `false` and `reached_total_iter` says
+why; `err` is then the inner velocity residual, and `err_abs` and `err_rel` carry
+the outer error. The caller still owns physical-time history: set
 `thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
 solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
 
@@ -243,6 +247,8 @@ julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_b
 julia --project=examples examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl
 julia --project=examples examples/stokes/volcano/volcano_thermal_stokes.jl
 julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
+julia --project=examples examples/reykjanes/reykjanes_thermal_stokes.jl
+julia --project=examples examples/reykjanes/elliptical_cavity.jl
 ```
 
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
@@ -250,8 +256,43 @@ The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 linear visco-elastic ice rheology. Mesh advection is enabled by default and
 recomputes the mesh geometry in place after each Lagrangian update.
 
-The current Stokes example tree includes the 2-D sinking-block, pure-shear, and
-volcano drivers. See [Sinking block](sinking_block.md) and
+The Reykjanes miniapp is the 2-D volcano driver without the cone: a 40 km by
+20 km cross-rift section with a flat surface and a thin elliptical magma sill,
+extended at the walls, on the same coupled thermal--Stokes solver and T7/P1-disc
+mesh, which it generates with Triangulate.jl instead of Gmsh. It runs on the CPU
+by default; set the top-level `isCUDA` flag to `true` to run the solve on an
+NVIDIA GPU, with meshing and output staying on the host. Its geometry, geotherm,
+and material values are illustrative placeholders, not calibrated Reykjanes
+values. With `advect_mesh = true` the mesh moves with the material: each step
+advects the corner nodes, re-straightens the T7 nodes, refreshes the geometry
+with [`update_geometry!`](@ref) and rotates the stress history with the local
+vorticity, and it stops if a step changes an element edge by more than
+`max_step_strain`. There is no remeshing, so this suits total strains of a few
+tens of percent.
+
+The same driver has an opt-in first-step dike injection path for development:
+pass a positive `dike_opening`, a physical `dike_band_width`, and selected
+1-based `dike_band_elements`; the helper updates `τ_old` and the discontinuous
+pressure source `Q`, then clears the transient source after the solve. The default
+driver invocation leaves this path disabled. It is a testing ground for the
+event protocol, not yet a validated intrusion workflow.
+
+The cavity miniapp `examples/reykjanes/elliptical_cavity.jl` is the elastic
+verification of the same solver. A soft, compressible elliptical inclusion is
+injected through the volumetric source `Q` inside a Maxwell host, one step with
+`Δt` far below the Maxwell time, on a disc whose outer circle carries the
+infinite-plane displacement. The cavity pressure, area change and opening are
+compared with the closed-form plane-strain solution for a pressurised elliptical
+hole (Muskhelishvili) in `examples/reykjanes/cavity_analytic.jl`; they agree to
+0.3 % on a 2 500-element mesh, the remainder being the inclusion's own shear
+stiffness. The solve runs in characteristic units chosen so that the solution
+is of order one, because the dynamic-relaxation stopping test takes the smaller
+of an absolute and a relative residual. The sweeps over mesh, shear-modulus
+contrast, time step, tolerance, inner-solve settings and stress scale are in
+`examples/benchmarks/stokes/elliptical_cavity/elliptical_cavity.jl`.
+
+The current Stokes example tree includes the 2-D sinking-block, pure-shear,
+volcano, and cross-rift drivers. See [Sinking block](sinking_block.md) and
 [Sinking block (3-D)](sinking_block_3d.md) for the discretisations, physical
 setup, output, figure, and material-gradient checks of each. The broader
 legacy dike/adjoint notes remain in the example-specific documentation and are

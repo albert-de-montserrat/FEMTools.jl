@@ -349,6 +349,67 @@ function generate_node2element(el2n, n_nodes = maximum(el2n))
 end
 
 """
+    generate_element_adjacency(el2n; shared=:face, dimension=nothing)
+
+Build deterministic element-to-element adjacency from element connectivity.
+
+With `shared=:face`, two elements are adjacent only when they share a complete
+codimension-one entity: an edge in 2-D or a face in 3-D. `shared=:node` is the
+more permissive corner/node graph. High-order connectivity uses only corner
+nodes to identify faces, so midpoint and bubble numbering cannot change the
+topological graph. A four-node element is interpreted as a 2-D quadrilateral;
+pass `dimension=3` to interpret it as a tetrahedron.
+
+The result is a vector of sorted `Int32` neighbor lists, with one entry per
+element. Host-side construction is intentional; it is used by diagnostics and
+event-level graph searches, not solver kernels.
+"""
+function generate_element_adjacency(el2n; shared = :face, dimension = nothing)
+    shared in (:face, :node) || throw(ArgumentError("shared must be :face or :node"))
+    ndims(el2n) == 2 || throw(ArgumentError("element connectivity must be a matrix"))
+    nlocal, nels = size(el2n)
+    nels > 0 || return Vector{Vector{Int32}}()
+    all(>(0), el2n) || throw(ArgumentError("connectivity indices must be positive"))
+    dim = dimension === nothing ? (nlocal in (10, 11, 8, 27) ? 3 : 2) : dimension
+    dim in (2, 3) || throw(ArgumentError("dimension must be 2 or 3"))
+
+    corner_rows, entities = if shared === :node
+        (collect(1:nlocal), nothing)
+    elseif dim == 2 && nlocal in (3, 6, 7)
+        ([1, 2, 3], ((1, 2), (2, 3), (3, 1)))
+    elseif dim == 2 && nlocal in (4, 8, 9)
+        ([1, 2, 3, 4], ((1, 2), (2, 3), (3, 4), (4, 1)))
+    elseif dim == 3 && nlocal in (4, 10, 11)
+        ([1, 2, 3, 4], ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4)))
+    elseif dim == 3 && nlocal in (8, 27)
+        ([1, 2, 3, 4, 5, 6, 7, 8],
+            ((1, 2, 3, 4), (5, 6, 7, 8), (1, 2, 6, 5),
+             (2, 3, 7, 6), (3, 4, 8, 7), (4, 1, 5, 8)))
+    else
+        throw(ArgumentError("unsupported local node count $nlocal for $dim-D adjacency"))
+    end
+
+    adjacency = [Int32[] for _ in 1:nels]
+    owners = Dict{Tuple, Vector{Int32}}()
+    for iel in 1:nels
+        nodes = @view el2n[:, iel]
+        keys = shared === :node ?
+            ((Int(nodes[row]),) for row in corner_rows) :
+            (Tuple(sort(Int[nodes[row] for row in entity])) for entity in entities)
+        for key in keys
+            prior = get!(owners, key, Int32[])
+            for jel in prior
+                push!(adjacency[iel], jel)
+                push!(adjacency[jel], Int32(iel))
+            end
+            push!(prior, Int32(iel))
+        end
+    end
+    foreach(a -> sort!(unique!(a)), adjacency)
+    return adjacency
+end
+
+"""
     generate_boundary_elements(Γnodes, n2el)
 
 Return the unique element ids attached to the boundary nodes `Γnodes`.

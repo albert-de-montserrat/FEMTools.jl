@@ -257,6 +257,11 @@ function solve_stokes_adjoint_dyrel!(
             mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_P, Δt, workgroup,
         )
+        # The same pass also produced (∂RP/∂P)ᵀ of that seed, which is the storage
+        # term of the pressure row: (∂RP/∂P)ᵀλP plus the augmentation's route from
+        # λv through Pnum. It is zero only when the bulk is incompressible, so it
+        # is added rather than dropped. See [`FrozenAdjointOperator`](@ref).
+        @. ResλP += dP_scratch
 
         return nothing
     end

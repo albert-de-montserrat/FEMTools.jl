@@ -1,0 +1,13 @@
+# VTK snapshots of run_cycles. Corridor: 58 elements in 4 bins, counts [22, 13, 14, 9].
+# index  tag            time_kyr   P_res_MPa   failed  corridor   band  file
+      1  spinup           0.0000    120.2444       91     0.111      0  reykjanes_cycle_0001.vtk
+      2  step             1.0000    124.3237      210     0.600      0  reykjanes_cycle_0002.vtk
+      3  step             2.0000    126.2360      265     0.735      0  reykjanes_cycle_0003.vtk
+      4  step             3.0000    127.0351      320     0.811      0  reykjanes_cycle_0004.vtk
+      5  step             4.0000    127.4266      418     1.000      0  reykjanes_cycle_0005.vtk
+      6  event_pre        3.0625    127.0810      324     0.816     47  reykjanes_cycle_0006.vtk
+      7  event_post       3.0625    120.1306      202     0.205     47  reykjanes_cycle_0007.vtk
+      8  step             4.0635    126.6127      273     0.205      0  reykjanes_cycle_0008.vtk
+      9  step             5.0635    127.5196      436     0.965      0  reykjanes_cycle_0009.vtk
+     10  event_pre        4.7198    127.3963      407     0.897     56  reykjanes_cycle_0010.vtk
+     11  event_post       4.7198    121.4034      204     0.073     56  reykjanes_cycle_0011.vtk

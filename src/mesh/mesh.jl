@@ -519,14 +519,18 @@ whatever container holds the reference-element gradients.
 
 """
     element_geometry(geo, iel, ∂N∂ξ) -> ElementGeometry
+    element_geometry(geo, iel) -> NTuple
 
 View the geometry of element `iel` in the precomputed array `geo`, using the
 reference-element gradients `∂N∂ξ` to form physical gradients on access.
 
 `∂N∂ξ` must come from the element whose connectivity built `geo`, and from the
-quadrature rule `geo` was built at.
+quadrature rule `geo` was built at. A weights-only array such as
+`MixedMeshCache.geo_P` stores no gradients, so the two-argument form returns the
+element's weighted volumes at its quadrature points.
 """
 @inline element_geometry(geo, iel, ∂N∂ξ) = ElementGeometry(∂N∂ξ, geo[iel])
+@inline element_geometry(geo, iel) = geo[iel]
 
 """
     _geometry_entry(T, J, ω) -> T
@@ -594,11 +598,20 @@ function precompute_geometry(
         geometry_precision = FP,
     ) where {nDim, N, FP, T <: AbstractElement{nDim, N, FP}}
     _check_geometry_precision(geometry_precision)
+    NQ = length(element.integration_points.ω)
+    Point = QuadraturePointGeometry{nDim, geometry_precision, nDim * nDim}
+    geometry = KA.allocate(backend, NTuple{NQ, Point}, size(el2n, 2))
+    return _fill_geometry!(geometry, coords, el2n, element, backend, workgroup)
+end
+
+# Fill `geometry` in place; its element type selects the stored precision.
+function _fill_geometry!(
+        geometry, coords, el2n, element::ReferenceElement{T}, backend, workgroup,
+    ) where {N, T <: AbstractElement{<:Any, N}}
     ip = element.integration_points
     NQ = length(ip.ω)
     ∂N∂ξq = shape_function_gradients(element, ip)
-    Point = QuadraturePointGeometry{nDim, geometry_precision, nDim * nDim}
-    geometry = KA.allocate(backend, NTuple{NQ, Point}, size(el2n, 2))
+    Point = eltype(eltype(geometry))
     if backend isa CPU
         for iel in axes(el2n, 2)
             local_nodes = local_nodes_of(el2n, iel, Val(N))
@@ -615,6 +628,28 @@ function precompute_geometry(
     )
     KA.synchronize(backend)
     return geometry
+end
+
+"""
+    update_geometry!(mesh::Mesh; workgroup=256) -> mesh
+
+Recompute `mesh.geometry` in place from the current `mesh.coords`. Call it after
+moving the mesh nodes; the geometry array keeps its identity, so references to
+`mesh.geometry` stay valid.
+
+A mesh built without a reference element has no geometry to refresh.
+"""
+function update_geometry!(mesh::Mesh; workgroup = 256)
+    isnothing(mesh.geometry) && throw(
+        ArgumentError(
+            "mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"
+        )
+    )
+    _fill_geometry!(
+        mesh.geometry, mesh.coords, mesh.el2n, mesh.element,
+        KA.get_backend(mesh.coords), workgroup,
+    )
+    return mesh
 end
 
 """

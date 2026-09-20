@@ -125,6 +125,7 @@ export DirichletBoundaryCondition, apply_bc!
 # Mesh construction and graph utilities.
 export generate_element2node,
     generate_node2element,
+    generate_element_adjacency,
     generate_boundary_elements,
     generate_coordinates,
     generate_dofs,
@@ -187,6 +188,6 @@ public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public renumber_connectivity, orient_triangle_elements!, add_t7_bubbles!,
     straighten_t7_geometry!, rectangle_boundary_nodes, circle_boundary_nodes
-public velocity, stress, stress_old, pressure, temperature
+public velocity, stress, stress_old, pressure, temperature, plastic_multiplier
 
 end # module FEMTools

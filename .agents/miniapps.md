@@ -89,6 +89,10 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 | `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear |
+| `examples/reykjanes/reykjanes_thermal_stokes.jl` | Triangulate T7/P1-disc; CPU, or CUDA via the top-level `isCUDA` flag | Coupled thermal--Stokes cross-rift section with a flat surface and a thin elliptical magma sill under wall extension; the 2-D volcano driver without the cone. Geometry, geotherm and material values are illustrative, not calibrated. Starting point of the Reykjanes project in `REYKJANES_PLAN.md` |
+| `examples/reykjanes/elliptical_cavity.jl` | Triangulate T7/P1-disc; CPU | Milestone M0 of `REYKJANES_PLAN.md`: a soft compressible inclusion injected through `Q` inside a Maxwell host, one elastic step (`Δt ≪ η/G`) on a disc whose outer circle carries the infinite-plane displacement, compared with Muskhelishvili's closed form (`cavity_analytic.jl`). The driver runs the default case of `solve_elliptical_cavity`, which returns pressure, area change, displacement error and solver statistics and lives in the function-only `elliptical_cavity_setup.jl` shared with `test/test_elliptical_cavity.jl` and the benchmark. Iteration counts are in `solver.md` |
+| `examples/reykjanes/reykjanes_cycles.jl` | Triangulate T7/P1-disc; CPU | The event protocol of GAP-11 of `REYKJANES_PLAN.md` end to end: recharge the sill until a connected failed path reaches the shallow crust, bracket the step at which it first does, and open a dike on that path by the amount that drains the magma pressure to the closure stress of the path plus the arrest overpressure. The driver runs two events on a coarse section through `run_cycles` in `event_cycles.jl`; every rule it applies is a field of `EventProtocol` in `event_protocol.jl` and is a placeholder until Phase 0 of the science plan fixes it |
+| `examples/reykjanes/dike_crack.jl` | Triangulate T7/P1-disc; CPU | The dike-opening row of the benchmark ladder of `REYKJANES_PLAN.md`: a flat elliptical band of ordinary host material is opened by the eigenstrain of GAP-11 (`τ_old` and `Q` alone, no hole and nothing soft) and one elastic step is compared with the pressurised elliptical hole of the same semi-axes, whose `b → 0` limit is Sneddon's crack. The driver runs the default case of `solve_dike_crack`, which returns the opening profile, the band's closure traction, the area change, the continuity balance and solver statistics and lives in the function-only `dike_crack_setup.jl` shared with `test/test_dike_functions.jl` and the benchmark. Measurements are in `solver.md` |
 | `examples/miniapps/stokes/solvi2D/Solvi2D_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 
@@ -144,7 +148,20 @@ applications.
 | `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` | Includes the 2-D sinking-block adjoint and sweeps mesh size/viscosity contrast |
 | `examples/benchmarks/stokes/forward_lambda_perf/forward_lambda_perf.jl` | Compares Gershgorin and measured forward spectral bounds on the sinking block |
 | `examples/benchmarks/stokes/forward_lambda_shear_band_perf/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
-| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion |
+| `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion, including the volcano section and the flat-surface sill section (`build_gmsh_t7_sill_mesh`) |
+| `examples/triangulate_meshing.jl` | Triangulate T7 meshes without Gmsh: the flat-surface sill section (`build_triangulate_t7_sill_mesh`, used by the Reykjanes driver) and a disc with a concentric elliptical inclusion (`build_triangulate_t7_cavity_mesh`, used by the cavity benchmark) |
+| `examples/reykjanes/cavity_analytic.jl` | Function-only closed form for a pressurised elliptical hole in an infinite plane under plane strain: displacement field and area compliance |
+| `examples/reykjanes/elliptical_cavity_setup.jl` | Function-only `solve_elliptical_cavity` and its report, shared by the cavity driver, `test/test_elliptical_cavity.jl` and the cavity benchmark |
+| `examples/reykjanes/injection_source.jl` | Function-only host helpers for the continuity source `Q`: `uniform_pressure_source` turns a volume rate into a constant `Q` over a set of elements, and `pressure_source_integral` integrates a `Q` with the quadrature of the pressure residual. `balance_dike_source!` adds, in place, the uniform reservoir sink that cancels the integral of a band source so that the two integrate to zero, which is cancellation of the source terms and not a magma mass budget. Used for recharge and for dike transfers; covered by `test/test_elliptical_cavity.jl` |
+| `examples/reykjanes/reykjanes_setup.jl` | Function-only `build_reykjanes_model`: the cross-rift mesh, material, boundary conditions, initial fields and solver states of the Reykjanes driver, built but not run, so the driver, the event engine and the tests share one model |
+| `examples/reykjanes/event_stepping.jl` | Function-only transactional stepping on the snapshots: `attempt_step!` captures the state, runs a step, accepts it when every `StepCheck` passes, and otherwise restores the state and retries with a smaller step, reporting the outcome instead of throwing. A step rejects its own trial with a `StepRejection`. `capture_trials`/`run_trial!` repeat trials from one left state, `bracket_crossing!` samples and then bisects the step at which a detector first trips, and `solve_amplitude!` doubles and then bisects the smallest injection amplitude that drives an observed quantity to a target. Covered by `test/test_event_stepping.jl` |
+| `examples/reykjanes/event_protocol.jl` | Function-only `EventProtocol`, the rules that turn a stress state into an event and an event into an intrusion, with `build_event_detector` (the two-stage detector: failed integration points, then a face-connected path from the reservoir to the target depth), `failed_elements`, `closure_stress`, `band_closure_traction`, `magma_pressure` and `normal_deviatoric_stress`. Covered by `test/test_event_protocol.jl` |
+| `examples/reykjanes/event_cycles.jl` | Function-only `run_cycles`: recharge steps, crossing refinement at the first trip, and the dike amplitude search on the failed path, with the reservoir sink that balances the injection. Steps 4 and 5 of the plan's protocol (contact rule, enthalpy, full event record) wait for the thermal work of M3 |
+| `examples/reykjanes/state_snapshot.jl` | Function-only in-memory snapshot of a run: `capture_state` deep-copies the state arrays of a `StokesDR`, a `ThermalDiffusionDR`, a plastic-history bundle and caller arrays (plus non-array `values` such as time), and `restore_state!` copies them back in place as often as needed. `physical_state` lists the state arrays and `STOKES_SCRATCH_FIELDS`/`THERMAL_SCRATCH_FIELDS` the scratch that the solvers rebuild. Covered by `test/test_state_snapshot.jl` |
+| `examples/reykjanes/dike_crack_setup.jl` | Function-only `solve_dike_crack` and its report, shared by the dike driver, `test/test_dike_functions.jl` and the dike benchmark. A band of semi-axes `(a, b)` is `2b √(1 − (x/a)²)` thick, so one uniform eigenstrain opens it into the profile of a uniformly pressurised crack; the eigenstrain is set by a fixed point on the band's own elastic storage |
+| `examples/benchmarks/stokes/first_threshold/first_threshold.jl` | Runs `run_cycles` to its first event only and reports `ΔP_crit`, when it happened, how wide the crossing bracket was left, the failed path and the opening. Separates numerical sweeps (mesh, time step, crossing refinement, spin-up, domain), where the threshold must not move, from protocol sweeps (`T₀`, reach depth, `ΔP_arrest`, band width), where its sensitivity has to be quoted. Each run is minutes; the mesh result is in `solver.md` |
+| `examples/benchmarks/stokes/dike_crack/dike_crack.jl` | Sweeps mesh, band aspect, `Δt`, storage passes, `ϵ_tol` and domain radius of the eigenstrain dike and reports the opening profile, the closure traction, the continuity balance, iterations and wall time against the closed form; the tables in `solver.md` come from it |
+| `examples/benchmarks/stokes/elliptical_cavity/elliptical_cavity.jl` | Sweeps mesh, shear-modulus contrast, `Δt`, `ϵ_tol`, `rel_drop0`/`ncheck` and stress scale of the cavity solve and reports accuracy against the closed form, iterations, wall time and the residual reduction reached; the tables in `solver.md` come from it |
 | `examples/miniapps/stokes/mesher/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
 | `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
 | `examples/miniapps/stokes/2D_Elasticity_stress_postprocess/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
@@ -170,7 +187,12 @@ New or polished primary miniapps should follow this shape:
 6. Rely on `--project=examples`; do not mutate the active Julia environment from
    inside a maintained script.
 7. Keep default problem sizes runnable on a normal workstation. Put expensive
-   sweeps in `examples/benchmarks/`.
+   sweeps in `examples/benchmarks/`. A verification miniapp that measures
+   accuracy or solver cost against an oracle also gets its own benchmark folder,
+   `examples/benchmarks/<physics>/<name>/<name>.jl`: it includes the shared
+   function-only setup, keeps the sweep settings in a function so a subset can
+   run, warms up first, prints one line per run with its `converged` flag, and
+   records a failing case as a row instead of aborting.
 8. Use public FEMTools APIs for supported workflows. Script-local low-level
    experiments are allowed, but label them as such and avoid presenting them as
    stable package API.
@@ -204,6 +226,11 @@ The 3-D volcano driver keeps mesh generation and post-processing on the host,
 but moves solver connectivity, phases, boundary data, and state arrays to the
 selected backend. It defaults to `CPU()` and can be launched with
 `FEMTOOLS_BACKEND=cuda` after CUDA is available in the examples environment.
+
+The Reykjanes dike workflow keeps reusable dike transformations under
+`examples/reykjanes/dike_functions/`; these helpers are example-level contracts,
+covered by focused tests, and should move to core only after a second maintained
+consumer exists.
 
 ## Acceptance checks
 

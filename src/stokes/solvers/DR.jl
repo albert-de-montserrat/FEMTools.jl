@@ -209,7 +209,12 @@ the raw `geo_v`, `geo_P` arrays.
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
 iterations), `err`, `err_abs`, `err_rel`, `err_v`, `err_P`,
 `converged::Bool`, `reached_total_iter::Bool`, and `history` (empty unless
-`collect_history`).
+`collect_history`). `converged` is true only when the outer test
+`min(err_abs, err_rel) < ϵ_tol` passed (and, when coupled, the thermal state
+converged), so a run that ends on `total_iterMax` or `max_ph_iterations` is
+never converged. `err` is the last outer error on convergence but the inner
+velocity residual when a cap ends the run, so read `err_abs` and `err_rel` for
+the outer error.
 """
 solve_stokes_dyrel!(
     dr, mesh_stokes, cache::MixedMeshCache, element_v, element_P,
@@ -221,7 +226,7 @@ solve_stokes_dyrel!(
 )
 
 solve_stokes_dyrel!(
-    dr, mesh_stokes, geo_v::AbstractMatrix, geo_P::AbstractMatrix,
+    dr, mesh_stokes, geo_v::AbstractVector, geo_P::AbstractVector,
     element_v, element_P,
     phases_v, phases_P, τ_old, plastic, G, Δt, γP, Γnodes,
     bc_vx_vals::AbstractVector, bc_vy_vals::AbstractVector, backend, workgroup;
@@ -237,8 +242,8 @@ solve_stokes_dyrel!(
 function solve_stokes_dyrel!(
         dr,
         mesh_stokes,
-        geo_v::AbstractMatrix,
-        geo_P::AbstractMatrix,
+        geo_v::AbstractVector,
+        geo_P::AbstractVector,
         element_v,
         element_P,
         phases_v,
@@ -345,6 +350,7 @@ function solve_stokes_dyrel!(
     err_P_rel = Inf
     iter = 0
     itPH_done = 0
+    converged = false
     rel_drop = rel_drop0
     history = NamedTuple[]
 
@@ -368,7 +374,7 @@ function solve_stokes_dyrel!(
             valNV, valNP, workgroup,
         )
 
-        assemble_momentum_residual_matrices_atomix!(
+        assemble_momentum_residual_kernel!(
             Rv,
             v, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
@@ -401,7 +407,11 @@ function solve_stokes_dyrel!(
                 itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel
             )
         end
-        err < ϵ && thermal_converged && break
+        # The inner loop overwrites `err`, so convergence is recorded here, where the outer test passes.
+        if err < ϵ && thermal_converged
+            converged = true
+            break
+        end
 
         if err > err_min * 1.05
             rel_drop = max(rel_drop * 0.1, 1.0e-3)
@@ -486,7 +496,7 @@ function solve_stokes_dyrel!(
 
             @. dr.Pnum = γP * dr.RP / M_P
 
-            assemble_momentum_residual_matrices_atomix!(
+            assemble_momentum_residual_kernel!(
                 Rv,
                 v, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
@@ -521,7 +531,7 @@ function solve_stokes_dyrel!(
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
                 λmin_v = ntuple(
-                    c -> _stokes_λmin(α_v[c], rate[c], Rv[c] .- Rv0[c], PC_v[c]), Val(D)
+                    c -> _stokes_λmin(α_v[c], rate[c], Rv[c], Rv0[c], PC_v[c]), Val(D)
                 )
 
                 if !freeze_jacobian
@@ -587,7 +597,7 @@ function solve_stokes_dyrel!(
         err_rel,
         err_v,
         err_P,
-        converged = err < ϵ && thermal_converged,
+        converged,
         reached_total_iter = iter > total_iterMax,
         λmax = maximum(λmax_v),
         λmax_gershgorin,
@@ -606,6 +616,10 @@ Refresh integration-point stresses using the elements in `mesh.geometry`, solver
 material and stress history, and optional phase-layout overrides. `τ` receives
 components in the assembler order returned by `stress(dr)`; the history
 defaults to `stress_old(dr)`.
+Pass `plastic_history=` to capture multiplier and accumulated plastic strain;
+its `D` field is used as optional lagged damage input unless `damage_old=` is
+provided explicitly. Pass `damage_update=(εc, th)` with matching per-IP arrays
+to update `D` once from the accepted plastic-strain increment.
 """
 function update_stokes_current_stress!(
         dr::StokesDR{<:Any, D},
@@ -616,12 +630,16 @@ function update_stokes_current_stress!(
         plastic = nothing,
         phases_v = dr.phases_v,
         τ_old = stress_old(dr),
+        plastic_history = nothing,
+        damage_old = nothing,
+        damage_update = nothing,
         workgroup = 256,
     ) where {D}
     backend = KA.get_backend(mesh.coords)
     return update_stokes_current_stress!(
         dr, mesh, cache, cache.element_v, cache.element_P,
-        phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup,
+        phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup, plastic_history,
+        damage_old, damage_update,
     )
 end
 
@@ -647,10 +665,14 @@ function update_stokes_current_stress!(
         Δt,
         backend,
         workgroup,
+        plastic_history = nothing,
+        damage_old = nothing,
+        damage_update = nothing,
     )
     return update_stokes_current_stress!(
         dr, mesh_stokes, cache.geo_v, element_v, element_P,
-        phases_v, τ_old, plastic, τ, G, Δt, backend, workgroup,
+        phases_v, τ_old, plastic, τ, G, Δt, backend, workgroup, plastic_history,
+        damage_old, damage_update,
     )
 end
 
@@ -668,15 +690,25 @@ function update_stokes_current_stress!(
         Δt,
         backend,
         workgroup,
+        plastic_history = nothing,
+        damage_old = nothing,
+        damage_update = nothing,
     )
+    εpl_old = isnothing(damage_update) || isnothing(plastic_history) ? nothing : copy(plastic_history.εpl)
     assemble_momentum_residual_matrices_atomix!(
         Tuple(getfield(dr, :Rv)),
         velocity(dr), dr.P, dr.T, nothing,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-        backend, workgroup,
+        backend, workgroup;
+        plastic_multiplier_store = plastic_history,
+        damage_old = isnothing(damage_old) && !isnothing(plastic_history) ? plastic_history.D : damage_old,
     )
+    if !isnothing(damage_update) && !isnothing(plastic_history)
+        εc, th = damage_update
+        update_damage_from_history!(plastic_history, εpl_old, εc, th, Δt; workgroup)
+    end
     return τ
 end
 

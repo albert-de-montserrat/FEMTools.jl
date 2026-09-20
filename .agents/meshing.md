@@ -26,7 +26,7 @@ Meshing spans `src/elements/` and `src/mesh/`:
 - In three dimensions, `MixedMesh` supports T10/T11 tetrahedral or Hex27
   velocity connectivity with four discontinuous linear pressure DoFs per cell;
   3-D nodal normals are currently zero because no solver path consumes them.
-- Sparsity, node-to-element adjacency, greedy coloring, color groups, and
+- Sparsity, node-to-element and face-based element adjacency, greedy coloring, color groups, and
   discontinuous linear mesh generation are available.
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
@@ -34,7 +34,7 @@ Meshing spans `src/elements/` and `src/mesh/`:
   `circle_boundary_nodes`. They are `public`, not exported, and cover tag
   renumbering, triangle orientation, T6-to-T7 promotion, and coordinate-based
   boundary selection.
-- Gmsh is the sole external mesher in the examples environment. The shared
+- Gmsh and Triangulate are external meshers in the examples environment. The shared
   `examples/gmsh_meshing.jl` helper drives the utilities above to convert its
   triangle tags/order to FEMTools connectivity. Reading mesh files is still
   outside the package API; only the post-import conversion is package code.
@@ -55,8 +55,14 @@ Primary checks: `test/test_elements.jl`,
 `test/test_shape_function_evaluations.jl`, `test/test_mesh.jl`,
 `test/test_mixed_mesh.jl`, `test/test_mesh_producer_api.jl`, and
 `test/test_mesh_utils.jl`.
-`examples/gmsh_meshing.jl` defines mesh builders only; it is exercised by the
-example scripts that include it, not by the package test suite.
+`examples/gmsh_meshing.jl` defines mesh builders only; the example scripts
+exercise it, and `test/test_volcano_mesh.jl` checks the conformity of its 2-D
+sill mesh. `examples/triangulate_meshing.jl` does the same with Triangulate.jl
+for the Reykjanes sill section, permuting Triangle's mid-edge nodes (numbered
+after the opposite corner) to edges 1-2, 2-3, 3-1; the same test file checks it. Its
+`build_triangulate_t7_cavity_mesh` meshes a disc around a concentric elliptical
+inclusion and takes the outer-circle node group from Triangle's point markers, which
+cover only Triangle's own points and not the appended bubble nodes.
 
 ## Invariants
 

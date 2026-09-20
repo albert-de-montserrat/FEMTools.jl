@@ -82,6 +82,8 @@ Weak form per node `i`:
         τ_old = nothing,
         plastic = nothing,
         τ_store = nothing,
+        λ_store = nothing,
+        D_old = nothing,
     ) where {N, T, NP}
     Rv_x = zero(SVector{N, T})
     Rv_y = zero(SVector{N, T})
@@ -90,8 +92,16 @@ Weak form per node `i`:
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(3))
         Pq = dot(NqP[q], P_loc)
-        τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+        Dq = _damage_at_ip(D_old, q)
+        τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
+        λ = plastic === nothing ? zero(τxx) : plastic_multiplier(
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+        )
+        ε̇pl = plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+        )
+        store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy) dΩ
         Rv_x += (∂N∂x[:, 1] * (τxx - Pq) + ∂N∂x[:, 2] * τxy) * dΩ
         # y-momentum: ∫ (∂Nᵢ/∂y·(τyy−P) + ∂Nᵢ/∂x·τxy) dΩ
@@ -132,6 +142,8 @@ quadrature-point stress output, as for the body-force-free method.
         τ_old = nothing,
         plastic = nothing,
         τ_store = nothing,
+        λ_store = nothing,
+        D_old = nothing,
     ) where {N, NP}
     T = promote_type(map(eltype, v)...)
     R = ntuple(_ -> zero(SVector{N, T}), Val(2))
@@ -143,10 +155,18 @@ quadrature-point stress output, as for the body-force-free method.
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(3))
         Pq = dot(NqP[q], P_loc)
+        Dq = _damage_at_ip(D_old, q)
         # Plane strain: τzz = −(τxx + τyy) is carried by `deviatoric_stress`
         # and never enters the in-plane residual.
-        τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+        τxx, τyy, τxy = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy)
+        λ = plastic === nothing ? zero(τxx) : plastic_multiplier(
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+        )
+        ε̇pl = plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+        )
+        store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         τ = SMatrix{2, 2}(τxx, τxy, τxy, τyy)
         Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
         Tq = dot(NqP[q], T_loc)
@@ -185,6 +205,8 @@ the deviatoric stress at each quadrature point in the same component order.
         τ_old = nothing,
         plastic = nothing,
         τ_store = nothing,
+        λ_store = nothing,
+        D_old = nothing,
     ) where {N, NP}
     T = promote_type(map(eltype, v)...)
     R = ntuple(_ -> zero(SVector{N, T}), 3)
@@ -194,8 +216,9 @@ the deviatoric stress at each quadrature point in the same component order.
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(6))
         Pq = dot(NqP[q], P_loc)
+        Dq = _damage_at_ip(D_old, q)
         τxx, τyy, τzz, τxy, τxz, τyz =
-            deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+            deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τzz, τxy, τxz, τyz)
         τ = SMatrix{3, 3, T}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
         Ptotal = Pq + dot_or_zero(NqP[q], Pnum_loc)
@@ -310,7 +333,9 @@ function assemble_momentum_residual_matrices_atomix!(
         τ_store,
         η, G, α, ρ0, K,
         g, Tref, Δt,
-        backend, workgroup,
+        backend, workgroup;
+        plastic_multiplier_store = nothing,
+        damage_old = nothing,
     ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
@@ -321,6 +346,7 @@ function assemble_momentum_residual_matrices_atomix!(
         el2n_v, el2nP, geo_v, nels, phases,
         τ_old, plastic, τ_store, η, G, α, ρ0, K,
         g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP), workgroup,
+        plastic_multiplier_store, damage_old,
     )
 end
 
@@ -360,12 +386,15 @@ function assemble_momentum_residual_kernel!(
         τ_old, plastic, τ_store,
         η, G, α, ρ0, K, g, Tref, Δt,
         Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
+        plastic_multiplier_store = nothing,
+        damage_old = nothing,
     ) where {D, NV, NP}
     foreach(R -> fill!(R, 0), Rv)
     backend = KA.get_backend(first(Rv))
     momentum_residual_atomic_kernel!(backend, workgroup)(
         Rv, v, P, T, Pnum, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
-        τ_store, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
+        τ_store, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP),
+        plastic_multiplier_store, damage_old;
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -391,13 +420,14 @@ assemble_momentum_residual_kernel!(
         τ_store,
         @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K),
         @Const(g), @Const(Tref), @Const(Δt),
-        @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
+        @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP}, λ_store,
+        D_old,
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Re = momentum_element_residual(
         v, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP),
-        τ_old, plastic, τ_store,
+        τ_old, plastic, τ_store, λ_store, D_old,
     )
     _scatter_momentum!(Rv, local_nodes_v, Re)
 end
@@ -434,6 +464,8 @@ scatter.
         τ_old = nothing,
         plastic = nothing,
         τ_store = nothing,
+        λ_store = nothing,
+        D_old = nothing,
     ) where {D, NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP, iel, Val(NP))
@@ -443,14 +475,23 @@ scatter.
     T_loc = _gather_local(T, local_nodes_P, Val(NP))
     Pnum_loc = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_v_el))
+    D_old_loc = _gather_old_damage(D_old, iel, quadrature_points_val(geo_v_el))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
     Re = integrate_momentum_residual(
         vloc, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, τ_old_loc, plastic,
         _stress_output(τ_store, iel),
+        _plastic_multiplier_output(λ_store, iel, Δt),
+        D_old_loc,
     )
     return local_nodes_v, Re
 end
+
+_gather_old_damage(::Nothing, _, ::Val) = nothing
+@inline _gather_old_damage(D_old::AbstractMatrix, iel, ::Val{NQ}) where {NQ} =
+    SVector{NQ}(ntuple(q -> D_old[q, iel], Val(NQ)))
+_damage_at_ip(::Nothing, _) = nothing
+@inline _damage_at_ip(D_old, q) = D_old[q]
 
 _gather_or_nothing(::Nothing, _, ::Val) = nothing
 @inline function _gather_or_nothing(arr, nodes, ::Val{N}) where {N}
@@ -469,6 +510,14 @@ _gather_old_stress(::Nothing, _, _, ::Val, ::Val) = nothing
 _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{Nτ, <:AbstractMatrix}, iel) where {Nτ} =
     IntegrationPointStressOutput(τ_store, Int(iel))
+_plastic_multiplier_output(::Nothing, _) = nothing
+_plastic_multiplier_output(::Nothing, _, _) = nothing
+@inline _plastic_multiplier_output(λ_store::AbstractMatrix, iel) =
+    IntegrationPointPlasticMultiplierOutput(λ_store, Int(iel))
+@inline _plastic_multiplier_output(λ_store::AbstractMatrix, iel, _) =
+    IntegrationPointPlasticMultiplierOutput(λ_store, Int(iel))
+@inline _plastic_multiplier_output(history::IntegrationPointPlasticHistory, iel, Δt) =
+    IntegrationPointPlasticHistoryOutput(history, iel, Δt)
 
 """
     pressure_mode_table(element) -> NTuple

@@ -1,5 +1,5 @@
 """
-    FrozenAdjointOperator(A, B, C)
+    FrozenAdjointOperator(A, B, C, D, W)
 
 Element blocks of the transposed Stokes adjoint operator, held for the lifetime of
 one adjoint solve.
@@ -9,7 +9,7 @@ operator, so the blocks are assembled once and applied many times:
 
 ```
 ResλV = objective_v + Aᵀλv + CᵀλP
-ResλP = Bᵀλv
+ResλP = Bᵀλv + Dᵀ(Wᵀλv + λP)
 ```
 
 - `A` is the augmented velocity block `∂Rv/∂v`, `2NV`×`2NV` per element, ordered
@@ -20,6 +20,30 @@ ResλP = Bᵀλv
 - `B` is `∂Rv/∂P`, `2NV`×`NP` per element, differentiated with `Pnum` held as an
   independent variable so it excludes the augmentation already inside `A`.
 - `C` is `∂RP/∂v`, `NP`×`2NV` per element, or `nothing`.
+- `D` is `∂RP/∂P`, `NP`×`NP` per element, or `nothing`. It is the storage term
+  `−∫ Nᵢ Nⱼ/(ηb Δt) dΩ`, so it vanishes identically when every phase is
+  incompressible in the bulk-viscosity sense, and only then.
+- `W` is `∂Rv/∂Pnum · Γ`, `2NV`×`NP` per element, or `nothing`, where `Γ` is
+  `γP/M_P` on the element's pressure nodes. It is the route from the velocity
+  adjoint into the pressure row through the augmentation, carried as one block
+  because only the product is ever needed.
+
+The pressure row carries two terms rather than one, and both are consequences of
+`A` carrying the augmentation. The system the operator transposes is
+`[Aaug Baug; C D]` with `Aaug = A + Bnum·Γ·C` and `Baug = B + Bnum·Γ·D = B + W·D`,
+because `Pnum` depends on `P` through `D` exactly as it depends on `v` through
+`C`. So `Baugᵀλv = Bᵀλv + Dᵀ·Wᵀλv` and the whole row is `Bᵀλv + Dᵀ(Wᵀλv + λP)`.
+Dropping it was GAP-25: with `ηb` finite the pressure row of the operator is not
+the pressure row of the transposed Jacobian, and the gradient is wrong by that
+amount while every incompressible test stays green, because `D` is exactly zero
+there.
+
+`Bnum` is kept rather than reusing `B` because the two differ: `Pnum` reaches the
+momentum residual only through `Ptotal = P + Pnum`, while `P` also sets the
+density through `ρ = ρ0(1 − α(T − Tref) + P/K)`. They coincide exactly in the
+incompressible gauge and nowhere else, and an oracle that switches the
+augmentation on at `K = 10` reads the difference as a 2.6 × 10⁻² relative error in
+the pressure row.
 
 A purely viscous forward model has a symmetric element tangent, and the layout
 exploits that twice: `A` keeps only its upper triangle, and `C` is `nothing`
@@ -35,10 +59,12 @@ case with 97 % of quadrature points at yield, `‖A − Aᵀ‖/‖A‖` is 2 ×
 `‖C − Bᵀ‖/‖C‖` is 0.125, against 7 × 10⁻¹⁵ and 0 at the same forward state with
 the plastic tangent switched off.
 """
-struct FrozenAdjointOperator{TA, TB, TC}
+struct FrozenAdjointOperator{TA, TB, TC, TD, TW}
     A::TA
     B::TB
     C::TC
+    D::TD
+    W::TW
 end
 
 struct FrozenVelocityOperator{TA}
@@ -109,28 +135,56 @@ end
 Raise if a structural identity the frozen operator's storage layout relies on
 does not hold to `sqrt(eps(T))`.
 
-The check cannot be tripped by a caller: it is `plastic === nothing` that makes
-the element tangent symmetric, so the packing and the identity are enabled by the
-same condition. It guards against the tangent itself changing — a new rheology, or
-an edit to the momentum residual — in which case the adjoint must fail rather
-than return a gradient computed from a layout the operator no longer satisfies.
+Two conditions make the element tangent symmetric, and [`_symmetric_tangent`](@ref)
+requires both before the packing is enabled: no plastic model, and no
+pressure-dependent density. A non-associated flow rule breaks `A == Aᵀ`; a finite
+bulk modulus breaks `C == Bᵀ`, because `ρ = ρ0(1 − α(T − Tref) + P/K)` puts a
+pressure derivative in the momentum residual that the pressure residual has no
+counterpart for. Measured on a 2×2 element mesh at `K = 10`, `‖C − Bᵀ‖/‖C‖` is
+7.8 × 10⁻³ with `plastic === nothing`, which is why the condition is stated here
+rather than assumed from the plastic model alone.
+
+The check therefore guards two things: a caller reaching a configuration the
+layout does not cover, and the tangent itself changing under a new rheology or an
+edit to the momentum residual. Either way the adjoint must fail rather than return
+a gradient computed from a layout the operator no longer satisfies.
 """
 function _assert_frozen_symmetry(worst, quantity, what, nels, ::Type{T}) where {T}
     worst ≤ sqrt(eps(T)) && return nothing
     return error(
         "the frozen adjoint operator $what, which assumes the element tangent is " *
             "symmetric, but the assembled blocks disagree: max $quantity = $worst over " *
-            "$nels elements. Without a plastic model the tangent is symmetric and this " *
-            "cannot happen, so the element operator no longer has the symmetry the " *
-            "storage layout depends on."
+            "$nels elements. The layout is enabled only for a viscous model with an " *
+            "incompressible momentum residual, so either that condition is no longer " *
+            "what makes the tangent symmetric, or the element operator has changed."
     )
 end
+
+"""
+    _symmetric_tangent(plastic, K) -> Bool
+
+Whether the element tangent is symmetric, and hence whether the packed storage
+layout of [`FrozenAdjointOperator`](@ref) may be used.
+
+`K` is the per-phase bulk modulus; `Inf` is the incompressible gauge in which the
+density carries no pressure dependence.
+"""
+@inline _symmetric_tangent(plastic, K) = plastic === nothing && all(isinf, K)
 
 # A symmetric operator keeps no pressure-coupling block: Cᵀ is B.
 @inline _store_pressure_coupling!(::Nothing, _, _) = nothing
 @inline _store_pressure_coupling!(Cblocks, iel, C) = (Cblocks[iel] = C; nothing)
 @inline _pressure_coupling(::Nothing, Bblocks, iel) = Bblocks[iel]
 @inline _pressure_coupling(Cblocks, _, iel) = transpose(Cblocks[iel])
+
+# An incompressible bulk keeps no storage block: ∂RP/∂P is identically zero, so
+# the pressure row is Bᵀλv alone and nothing is allocated for it.
+@inline _store_pressure_storage!(::Nothing, ::Nothing, _, _, _) = nothing
+@inline _store_pressure_storage!(Dblocks, Wblocks, iel, D, W) =
+    (Dblocks[iel] = D; Wblocks[iel] = W; nothing)
+@inline _pressure_storage(::Nothing, ::Nothing, _, _, λP_loc) = zero(λP_loc)
+@inline _pressure_storage(Dblocks, Wblocks, iel, λv, λP_loc) =
+    transpose(Dblocks[iel]) * (transpose(Wblocks[iel]) * λv .+ λP_loc)
 
 @kernel function velocity_operator_assembly_kernel!(
         Ablocks, ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
@@ -251,10 +305,13 @@ function estimate_velocity_λmax(
 end
 
 """
-    element_adjoint_operator_blocks(...) -> (local_nodes_v, local_nodes_P, A, B, C)
+    element_adjoint_operator_blocks(...) -> (local_nodes_v, local_nodes_P, A, B, C, D, W)
 
-Build the three transposed-operator blocks for element `iel` at the current
-forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
+Build the transposed-operator blocks for element `iel` at the current forward
+state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
+
+`D` and `W` are formed unconditionally — two small Jacobians cost nothing beside
+`A` — and the assembler decides whether to keep them.
 """
 @inline function element_adjoint_operator_blocks(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
@@ -306,11 +363,38 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
         vcat(vxloc, vyloc),
     )
 
-    return local_nodes_v, local_nodes_P, A, B, C
+    # ∂RP/∂P: the storage term alone, since the divergence, the thermal rate and
+    # the source do not depend on the pressure.
+    D = ForwardDiff.jacobian(
+        P_arg -> integrate_PH_pressure_residual(
+            (vxloc, vyloc), P_arg, P0loc, T_loc, T0loc,
+            geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+        ),
+        P_loc,
+    )
+
+    # ∂Rv/∂Pnum, column-scaled by Γ. Pnum reaches the residual only through the
+    # total pressure, while P also sets the density, so this is not B unless the
+    # bulk modulus is infinite.
+    Bnum = ForwardDiff.jacobian(
+        Pnum_arg -> begin
+            Rx, Ry = integrate_momentum_residual(
+                (vxloc, vyloc), P_loc, Pnum_arg, T_loc,
+                geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP,
+                τ_old_loc, plastic,
+            )
+            vcat(Rx, Ry)
+        end,
+        Pnum_loc,
+    )
+    Γ = _gather_or_scalar(γ_eff, local_nodes_P, Val(NP)) ./ _gather_local(MP, local_nodes_P, Val(NP))
+    W = Bnum .* transpose(Γ)
+
+    return local_nodes_v, local_nodes_P, A, B, C, D, W
 end
 
 @kernel function adjoint_operator_assembly_kernel!(
-        Ablocks, Bblocks, Cblocks, defect_A, defect_C,
+        Ablocks, Bblocks, Cblocks, Dblocks, Wblocks, defect_A, defect_C,
         ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy),
         @Const(P), @Const(P0),
@@ -324,7 +408,7 @@ end
         Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_v, _, A, B, C = element_adjoint_operator_blocks(
+    local_nodes_v, _, A, B, C, D, W = element_adjoint_operator_blocks(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, τ_old, plastic, η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff,
         MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP),
@@ -333,6 +417,7 @@ end
     _store_velocity_block!(Ablocks, iel, A)
     Bblocks[iel] = B
     _store_pressure_coupling!(Cblocks, iel, C)
+    _store_pressure_storage!(Dblocks, Wblocks, iel, D, W)
     normA = norm(A)
     normC = norm(C)
     defect_A[iel] = iszero(normA) ? zero(normA) : norm(A - transpose(A)) / normA
@@ -371,17 +456,22 @@ function assemble_adjoint_operator(
     nels = mesh_stokes.nels
     Tv = eltype(dr.v.x)
 
-    # A viscous tangent is symmetric: A keeps only its upper triangle and C is Bᵀ
-    # and is not stored at all. The kernel still forms both blocks whole and
-    # reports how far each identity is from holding; the checks below turn a
-    # violated assumption into an error rather than a wrong gradient.
-    symmetric = plastic === nothing
+    # A viscous, incompressible tangent is symmetric: A keeps only its upper
+    # triangle and C is Bᵀ and is not stored at all. The kernel still forms both
+    # blocks whole and reports how far each identity is from holding; the checks
+    # below turn a violated assumption into an error rather than a wrong gradient.
+    symmetric = _symmetric_tangent(plastic, dr.K)
     Ablocks = symmetric ?
         similar(dr.v.x, SVector{_packed_symmetric_length(2NV), Tv}, nels) :
         similar(dr.v.x, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
     Bblocks = similar(dr.v.x, SMatrix{2NV, NP, Tv, 2NV * NP}, nels)
     Cblocks = symmetric ? nothing :
         similar(dr.v.x, SMatrix{NP, 2NV, Tv, 2NV * NP}, nels)
+    # ∂RP/∂P is the storage term, so it is identically zero under an infinite bulk
+    # viscosity and is not allocated there.
+    stores = any(isfinite, dr.ηb)
+    Dblocks = stores ? similar(dr.v.x, SMatrix{NP, NP, Tv, NP * NP}, nels) : nothing
+    Wblocks = stores ? similar(dr.v.x, SMatrix{2NV, NP, Tv, 2NV * NP}, nels) : nothing
     defect_A = similar(dr.v.x, nels)
     defect_C = similar(dr.v.x, nels)
 
@@ -390,7 +480,7 @@ function assemble_adjoint_operator(
     fill!(dr.∂Rv∂v.y, 0)
     fill!(dr.PC_v.y, 0)
     adjoint_operator_assembly_kernel!(backend, workgroup)(
-        Ablocks, Bblocks, Cblocks, defect_A, defect_C,
+        Ablocks, Bblocks, Cblocks, Dblocks, Wblocks, defect_A, defect_C,
         dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
         dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P,
@@ -410,12 +500,12 @@ function assemble_adjoint_operator(
             "dropped its pressure-coupling block", nels, Tv
         )
     end
-    return FrozenAdjointOperator(Ablocks, Bblocks, Cblocks)
+    return FrozenAdjointOperator(Ablocks, Bblocks, Cblocks, Dblocks, Wblocks)
 end
 
 @kernel function adjoint_operator_apply_kernel!(
         dvx, dvy, dP,
-        @Const(Ablocks), @Const(Bblocks), @Const(Cblocks),
+        @Const(Ablocks), @Const(Bblocks), @Const(Cblocks), @Const(Dblocks), @Const(Wblocks),
         @Const(λvx), @Const(λvy), @Const(λP),
         @Const(el2n_v), @Const(el2nP),
         ::Val{NV}, ::Val{NP},
@@ -431,7 +521,7 @@ end
     λP_loc = _gather_local(λP, local_nodes_P, Val(NP))
 
     resv = _velocity_apply(Ablocks[iel], λv) + _pressure_coupling(Cblocks, Bblocks, iel) * λP_loc
-    resp = transpose(Bblocks[iel]) * λv
+    resp = transpose(Bblocks[iel]) * λv + _pressure_storage(Dblocks, Wblocks, iel, λv, λP_loc)
 
     for (i, inod) in enumerate(local_nodes_v)
         Atomix.@atomic :monotonic dvx[inod] += resv[i]
@@ -524,10 +614,10 @@ end
                             element_v, element_P, backend, workgroup)
 
 Apply the transposed adjoint operator, overwriting `dvx`, `dvy`, and `dP` with
-`Aᵀλv + CᵀλP` and `Bᵀλv`.
+`Aᵀλv + CᵀλP` and `Baugᵀλv + DᵀλP`.
 
 No rheology is evaluated and no primal residual is recomputed: this is a gather,
-a pair of dense element products, and a scatter.
+a handful of dense element products, and a scatter.
 """
 function apply_adjoint_operator!(
         dvx, dvy, dP, op::FrozenAdjointOperator, λvx, λvy, λP, mesh_stokes,
@@ -539,7 +629,7 @@ function apply_adjoint_operator!(
     fill!(dvy, 0)
     fill!(dP, 0)
     adjoint_operator_apply_kernel!(backend, workgroup)(
-        dvx, dvy, dP, op.A, op.B, op.C, λvx, λvy, λP,
+        dvx, dvy, dP, op.A, op.B, op.C, op.D, op.W, λvx, λvy, λP,
         mesh_stokes.el2n, mesh_stokes.DoFsP, Val(NV), Val(NP);
         ndrange = mesh_stokes.nels,
     )
@@ -559,14 +649,16 @@ reference tables that the element residuals read. Nothing is stored per element,
 so the operator's own footprint does not grow with the mesh. Every apply re-reads
 those arrays, so mutating them changes the operator.
 
-The apply evaluates the forward-mode products `A·λv`, `B·λP` and `C·λv` where the
-adjoint residual calls for `Aᵀλv`, `CᵀλP` and `Bᵀλv`. The two agree exactly when
-`A == Aᵀ` and `C == Bᵀ`, which a purely viscous element tangent satisfies and a
-plastic one does not; see [`FrozenAdjointOperator`](@ref) for what each block
-contains and how far a non-associated flow rule moves each identity.
+The apply evaluates the forward-mode products `A·λv`, `B·λP`, `C·λv` and `D·w`
+where the adjoint residual calls for `Aᵀλv`, `CᵀλP`, `Bᵀλv` and `Dᵀw`. The two
+agree exactly when `A == Aᵀ`, `C == Bᵀ` and `D == Dᵀ`, which a purely viscous
+incompressible element tangent satisfies and a plastic or pressure-dependent one
+does not; see [`FrozenAdjointOperator`](@ref) for what each block contains and how
+far a non-associated flow rule moves each identity. `D` is a mass matrix weighted
+by `1/(ηb Δt)`, so its symmetry is structural.
 
-Cost per element per apply is one pressure residual and two momentum residuals
-carrying a single dual partial, against three dense element products for the
+Cost per element per apply is two pressure residuals and two momentum residuals
+carrying a single dual partial, against four dense element products for the
 frozen blocks and three reverse sweeps for the Enzyme path.
 """
 struct MatrixFreeAdjointOperator{TS}
@@ -600,14 +692,17 @@ Strip the directional derivative out of a seeded residual, discarding its value.
         -> (local_nodes_v, local_nodes_P, resvx, resvy, resp)
 
 Apply element `iel` of the adjoint operator to `λ` without forming any block,
-returning `A·λv + B·λP` split by velocity component and `C·λv`.
+returning `A·λv + B·λP` split by velocity component and `C·λv + D·(Γ·C·λv + λP)`.
 
-Two seeded evaluations produce all three products. The velocity seed runs
+Three seeded evaluations produce all four products. The velocity seed runs
 through the pressure residual first: its directional derivative is `C·λv`, and
 scaling it into `Pnum` and passing that on to the momentum residual reproduces
 the velocity-to-pressure-to-velocity coupling that the augmented block `A`
 carries. The pressure seed runs through the momentum residual with `Pnum` held
-at a constant, matching the definition of `B`.
+at a constant, matching the definition of `B`. A third seed runs the same
+augmented combination back through the pressure residual with the velocity held
+fixed, which is the storage block `D` applied to it; see
+[`FrozenAdjointOperator`](@ref) for why the pressure row carries that term.
 """
 @inline function element_adjoint_matrix_free_apply(
         λvx, λvy, λP, vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
@@ -659,7 +754,16 @@ at a constant, matching the definition of `B`.
 
     resvx = _partials(Avx_dual) + _partials(Bvx_dual)
     resvy = _partials(Avy_dual) + _partials(Bvy_dual)
-    return local_nodes_v, local_nodes_P, resvx, resvy, _partials(RP_dual)
+
+    # The storage row. `u` is C·λv, and what the augmentation feeds back through
+    # the pressure is the same combination the momentum residual saw as `Pnum`.
+    u = _partials(RP_dual)
+    RP_storage = integrate_PH_pressure_residual(
+        (vxloc, vyloc),
+        _seed_partials(P_loc, pressure_scale(γ_eff_loc, u, MP_loc) + λP_loc),
+        P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+    )
+    return local_nodes_v, local_nodes_P, resvx, resvy, u + _partials(RP_storage)
 end
 
 @kernel function matrix_free_adjoint_apply_kernel!(
@@ -696,7 +800,7 @@ end
                             backend, workgroup)
 
 Apply the adjoint operator by directional differentiation, overwriting `dvx`,
-`dvy`, and `dP` with `Aᵀλv + CᵀλP` and `Bᵀλv`.
+`dvy`, and `dP` with `Aᵀλv + CᵀλP` and `Baugᵀλv + DᵀλP`.
 
 The rheology and the primal residuals are re-evaluated on every call, in
 exchange for storing no element blocks.
@@ -730,7 +834,7 @@ end
     _assert_matrix_free_symmetry(op, mesh_stokes, element_v, element_P,
                                  backend, workgroup)
 
-Raise unless the element operator `M = [A B; C 0]` that the matrix-free apply
+Raise unless the element operator `M = [A B; C D]` that the matrix-free apply
 differentiates is symmetric to `sqrt(eps)`.
 
 The apply substitutes forward-mode products for transposed ones, which is exact
@@ -788,10 +892,11 @@ function _assert_matrix_free_symmetry(
     defect ≤ sqrt(eps(Tv)) && return nothing
     return error(
         "the matrix-free adjoint operator applies forward-mode products in place " *
-            "of transposed ones, which assumes the element operator [A B; C 0] is " *
-            "symmetric, but ⟨u, Mw⟩ and ⟨Mu, w⟩ differ by a relative $defect. Without " *
-            "a plastic model the tangent is symmetric and this cannot happen, so the " *
-            "element operator no longer has the symmetry the apply depends on."
+            "of transposed ones, which assumes the element operator [A B; C D] is " *
+            "symmetric, but ⟨u, Mw⟩ and ⟨Mu, w⟩ differ by a relative $defect. The " *
+            "operator is constructed only for a viscous model with an incompressible " *
+            "momentum residual, so either that condition is no longer what makes the " *
+            "tangent symmetric, or the element operator has changed."
     )
 end
 
@@ -820,12 +925,14 @@ function matrix_free_adjoint_operator(
         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
         backend, workgroup,
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
-    plastic === nothing || throw(
+    _symmetric_tangent(plastic, dr.K) || throw(
         ArgumentError(
             "the matrix-free adjoint operator applies the element tangent through " *
                 "forward-mode products, which reproduce the transpose only for a " *
-                "symmetric tangent; a plastic model gives a non-normal one. Assemble the " *
-                "element blocks instead."
+                "symmetric tangent; a plastic model gives a non-normal one, and a finite " *
+                "bulk modulus puts a pressure derivative in the density that the " *
+                "pressure residual has no counterpart for. Assemble the element blocks " *
+                "instead."
         )
     )
     state = (;

@@ -313,6 +313,9 @@ end
     @test τxx ≈ τxx_trial - 2 * λ * (2 * τxx_trial + τyy_trial) / (2 * τII)
     @test τyy ≈ τyy_trial - 2 * λ * (τxx_trial + 2 * τyy_trial) / (2 * τII)
     @test τxy ≈ τxy_trial
+    @test FEMTools.plastic_multiplier(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, 1.0, τ_old, 0.0, plastic,
+    ) ≈ λ
 end
 
 @testset "DruckerPrager pressure derivative sign in plastic denominator" begin

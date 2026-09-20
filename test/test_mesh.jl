@@ -1,3 +1,5 @@
+using KernelAbstractions: CPU
+
 for FP in (FP32, FP64)
     @testset "mesh coordinates" begin
         Ω = zero(FP) .. FP(10.0)
@@ -154,6 +156,27 @@ for FP in (FP32, FP64)
         @test mesh2D.nnodes == 6
         @test mesh2D.nels == 2
         @test sprint(show, mesh2D) == "Mesh{2, 1}(nnodes=6, nels=2)"
+    end
+
+    @testset "mesh geometry update" begin
+        element = ReferenceElement(QuadraticElement{2, 7, FP})
+        mesh = Mesh(CPU(), (FP(0) .. FP(1)) × (FP(0) .. FP(1)), element, (2, 2))
+        fresh_before = precompute_geometry(mesh.coords, mesh.el2n, element)
+        @test mesh.geometry == fresh_before
+
+        # Stretching the nodes and refreshing reproduces a freshly built geometry
+        # while keeping the stored array.
+        geometry = mesh.geometry
+        mesh.coords .= [SVector{2, FP}(2 * c[1], 3 * c[2]) for c in mesh.coords]
+        @test update_geometry!(mesh) === mesh
+        @test mesh.geometry === geometry
+        @test mesh.geometry == precompute_geometry(mesh.coords, mesh.el2n, element)
+        @test mesh.geometry != fresh_before
+        @test mesh.geometry[1][1].dΩ ≈ 6 * fresh_before[1][1].dΩ
+
+        topology_only = Mesh(CPU(), Array(mesh.coords), Array(mesh.el2n); order = 2)
+        @test isnothing(topology_only.geometry)
+        @test_throws "mesh has no geometry" update_geometry!(topology_only)
     end
 
     @testset "mesh sparsity pattern" begin

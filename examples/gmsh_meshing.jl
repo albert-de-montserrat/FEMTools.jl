@@ -255,6 +255,77 @@ function build_gmsh_t7_volcano_mesh(;
     end
 end
 
+"""
+    build_gmsh_t7_sill_mesh(; kwargs...) -> (coords, el2n, groups)
+
+Build a T7 (Crouzeix-Raviart velocity) Gmsh mesh of a flat-surfaced crustal
+cross-section `[-Lx/2, Lx/2] × [-depth, 0]` that holds an elliptical magma sill
+as a conforming material interface. Lengths are in meters and the ground
+surface is at `y = 0`; the defaults are a Reykjanes-like cross-rift section.
+
+`groups` is a `NamedTuple` of node indices: `Γnodes` (every boundary node),
+`surface`, `bottom`, `left`, `right`, and `sill` (the material interface), plus
+`phase`, the material of each element (`1` crust, `2` sill).
+"""
+function build_gmsh_t7_sill_mesh(;
+        Lx = 40.0e3,
+        depth = 20.0e3,
+        sill_center = (0.0, -4.5e3),
+        sill_radii = (2.5e3, 0.5e3),
+        max_area = nothing,
+        refinement = 4,
+    )
+    cx, cy = sill_center
+    rx, ry = sill_radii
+    # Gmsh builds a disk from a major and a minor radius, in that order.
+    rx >= ry > 0 ||
+        throw(ArgumentError("sill_radii must be positive and horizontally elongated"))
+    abs(cx) + rx < Lx / 2 ||
+        throw(ArgumentError("the sill must lie strictly inside the domain width Lx"))
+    cy + ry < 0 && -depth < cy - ry ||
+        throw(ArgumentError("the sill must lie strictly below the surface and above the base"))
+    refinement >= 1 || throw(ArgumentError("refinement must be at least one"))
+
+    x1 = Lx / 2
+    mesh_size = _mesh_size(max_area, Lx, depth)
+    sill_level(c) = hypot((c[1] - cx) / rx, (c[2] - cy) / ry)
+
+    gmsh.initialize()
+    try
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("sill")
+
+        domain = gmsh.model.occ.addRectangle(-x1, -depth, 0.0, Lx, depth)
+        sill = gmsh.model.occ.addDisk(cx, cy, 0.0, rx, ry)
+        _, fragments = gmsh.model.occ.fragment([(2, domain)], [(2, sill)])
+        gmsh.model.occ.synchronize()
+
+        gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+        sill_curves = [tag for (_, tag) in gmsh.model.getBoundary(fragments[2], false, false)]
+        _refine_near_curves!(sill_curves, mesh_size / refinement, mesh_size, 2 * rx)
+
+        coords, el2n = FEMTools.add_t7_bubbles!(_gmsh_triangles(2)...)
+
+        tol = sqrt(eps(Float64)) * max(Lx, depth)
+        select(f) = Int32[i for i in eachindex(coords) if f(coords[i])]
+        surface = select(c -> abs(c[2]) <= tol)
+        bottom = select(c -> abs(c[2] + depth) <= tol)
+        left = select(c -> abs(c[1] + x1) <= tol)
+        right = select(c -> abs(c[1] - x1) <= tol)
+        sill_nodes = select(c -> abs(sill_level(c) - 1) <= sqrt(eps(Float64)))
+        Γnodes = sort!(union(surface, bottom, left, right))
+        # Elements never straddle the conforming interface, so the mean level of
+        # their vertex and edge nodes is below one only inside the sill.
+        phase = Int[
+            sum(a -> sill_level(coords[el2n[a, iel]]), 1:6) / 6 < 1 ? 2 : 1
+            for iel in axes(el2n, 2)
+        ]
+        return coords, el2n, (; Γnodes, surface, bottom, left, right, sill = sill_nodes, phase)
+    finally
+        gmsh.isInitialized() == 1 && gmsh.finalize()
+    end
+end
+
 """Write the volcano mesh, its element phases, and its boundary groups to `path`."""
 function _write_volcano_vtk(path, coords, el2n, groups, chamber_center, chamber_radii)
     phase = [

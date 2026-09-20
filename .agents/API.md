@@ -10,6 +10,23 @@ API tests, and method implementations remain the source of truth.
 Read [solver.md](solver.md) for the mathematical contract behind solver entry
 points and [meshing.md](meshing.md) for topology/layout invariants.
 
+The Stokes assembler has an internal `IntegrationPointPlasticHistory`
+container for `(λ, εpl, D)` arrays indexed by quadrature point and element,
+plus a backend-neutral `update_plastic_history!` once-per-step update helper.
+`update_stokes_current_stress!` accepts this bundle through the optional
+`plastic_history=` keyword during its post-convergence diagnostic pass. These
+names remain unexported while the flow-direction and damage contracts are
+completed; the internal `plastic_strain_rate_invariant` helper pins the
+plane-strain `J₂` convention used by the diagnostic history write.
+
+The internal `DamageLaw`, `weakened_drucker_prager_parameters`, and
+`update_damage!` provide the validated lagged damage foundation; the
+2-D diagnostic constitutive path accepts optional per-IP `damage_old`; the
+state remains lagged and ordinary calls without it are unchanged. The same
+post-convergence hook accepts `damage_update=(εc, th)` for accepted-step
+damage evolution, and `damage_update_parameters` derives matching arrays from
+per-IP phase indices.
+
 ## API tiers
 
 FEMTools uses three tiers:
@@ -50,6 +67,7 @@ implementation; unsupported combinations must fail explicitly.
 - Types: `AbstractMesh`, `Mesh`, `MixedMesh`, `MixedMeshCache`,
   `AbstractBoundaryCondition`, `DirichletBoundaryCondition`.
 - Mesh producers: `generate_element2node`, `generate_node2element`,
+  `generate_element_adjacency`,
   `generate_boundary_elements`, `generate_coordinates`, `generate_dofs`,
   `generate_discontinuous_linear_mesh`.
 - Derived data: `precompute_geometry`, `update_geometry!`, `QuadraturePointGeometry`,
@@ -63,12 +81,14 @@ precomputes solver geometry; omitting it produces a topology-only mesh.
 `MixedMesh` owns distinct velocity and pressure layouts and, when built from an
 element-aware velocity mesh, a `MixedMeshCache` in `mesh.geometry` holding their
 precomputed geometry and reference elements. `update_geometry!(mesh)` recomputes
-it in place after the coordinates move.
+it in place after the coordinates move, for a `MixedMesh` and for an
+element-aware `Mesh` alike (a topology-only `Mesh` throws).
 
 Precomputed geometry holds one `QuadraturePointGeometry` per element and
 quadrature point: the inverse isoparametric Jacobian and the weighted volume.
 `MixedMeshCache.geo_P` instead holds the weighted volume alone, since no consumer
-takes pressure-field gradients.
+takes pressure-field gradients; it is read with the two-argument
+`element_geometry(geo_P, iel)`.
 Physical shape-function gradients are formed on access by pairing it with the
 reference-element gradients through `element_geometry`, so an assembler that
 consumes geometry also takes `shape_function_gradients(element)` alongside
@@ -122,6 +142,7 @@ The module currently marks the following categories `public`:
 
 - backend and interpolation: `TA`, `interp2ip`, `interp2ip_phase`;
 - low-level Dirichlet application: `apply_dirichlet!`;
+- pointwise 2-D plastic diagnostic: `plastic_multiplier`;
 - thermal, lithostatic, momentum, pressure, Jacobian, and adjoint assemblers;
 - raw KA update/geometry kernels and their Stokes launch wrappers;
 - coloring/pressure utilities: `color_mesh_greedy`, `remove_pressure_mean!`;
@@ -164,6 +185,10 @@ assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, γfact, Δt)
 stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP)
 stats.converged || error("Stokes solve did not converge")
 ```
+
+`stats.converged` is true only when the outer test `min(err_abs, err_rel) < ϵ_tol`
+passed, so a run that ends on `total_iterMax` is never converged; `stats.err` is
+the inner velocity residual in that case, so read `err_abs` and `err_rel`.
 
 `solve_coupled_dyrel!` accepts thermal and 2-D or 3-D Stokes states plus their
 meshes and boundary conditions. It advances one thermal DR step per inner velocity

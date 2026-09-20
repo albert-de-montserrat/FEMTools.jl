@@ -94,8 +94,13 @@ For documentation changes, check:
 After each task, review all `.agents/` guides. Edit a guide when durable facts,
 decisions, invariants, accepted limitations, priorities, or validation commands
 changed. Remove resolved gaps instead of appending a chronological log. Keep
-deep investigation records in a dedicated plan such as
-`ADJOINT_PERF_PLAN.md` only when their measurements and history remain useful.
+deep investigation records in a dedicated plan only when their measurements
+and history remain useful. `REYKJANES_PLAN.md` is the current study implementation
+roadmap; its source audit, historical run reports and proposed acceptance gates
+are distinct evidence categories. `ADJOINT_PERF_PLAN.md` was removed and is
+available through git history, not as a required local document. The canonical
+science proposal is `reykjanes/reykjanes_thermomechanical_memory_project_v3_adjoint.typ`;
+the root-level file of the same name differs and must not be substituted silently.
 
 ## Update this guide when
 

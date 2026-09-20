@@ -231,3 +231,46 @@ end
     @test Array(dr_power.v.x) ≈ Array(dr_bound.v.x) rtol = 1.0e-5
     @test any(!iszero, Array(dr_power.v.y))
 end
+
+@testset "solve_stokes_dyrel! does not report convergence on an iteration cap" begin
+    (; backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+
+    η = (1.0, 1.0)
+    Δt = 1.0
+    nq = length(element_v.integration_points.ω)
+    bc = zeros(length(Γ))
+
+    function solve(; ϵ_tol, total_iterMax)
+        dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
+            ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
+        γP = zeros(Float64, mesh.nnodesP)
+        FEMTools.assemble_viscosity_weighted_pressure_scaling!(
+            γP, dr, mesh, mesh.geometry.geo_P, element_v, element_P, 20.0, Δt, backend, workgroup;
+            phases_v = phases, η)
+        τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+        return solve_stokes_dyrel!(
+            dr, mesh, mesh.geometry, element_v, element_P,
+            phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
+            Γ, bc, bc, backend, workgroup;
+            ncheck = 100, ϵ_tol, rel_drop0 = 0.1, iterMax = total_iterMax, total_iterMax,
+            verbose = false, verbose_inner = false, vx_nodes, vy_nodes)
+    end
+
+    # The inner loop overwrites `err` with a velocity residual that is far smaller than the outer
+    # error, so a run stopped by `total_iterMax` used to read as converged at some caps (600 and 900
+    # at 1e-4, 1500 at 1e-6 among them). `converged` must imply the outer test passed.
+    capped = 0
+    for ϵ_tol in (1.0e-4, 1.0e-6), total_iterMax in 300:300:1800
+        stats = solve(; ϵ_tol, total_iterMax)
+        capped += stats.reached_total_iter
+        @test !stats.converged || (!stats.reached_total_iter && min(stats.err_abs, stats.err_rel) < ϵ_tol)
+    end
+    @test capped > 0
+
+    stats = solve(; ϵ_tol = 1.0e-6, total_iterMax = 50_000)
+    @test stats.converged
+    @test !stats.reached_total_iter
+    @test min(stats.err_abs, stats.err_rel) < 1.0e-6
+end
