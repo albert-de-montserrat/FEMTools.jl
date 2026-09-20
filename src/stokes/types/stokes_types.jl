@@ -350,6 +350,102 @@ function DruckerPrager(
 end
 
 """
+    DruckerPragerCap{nphases, FP}
+
+Drucker-Prager parameters closed on the tensile side by a globally continuous
+circular cap, after Popov, Berlie and Kaus (2025), Geosci. Model Dev. 18,
+7035-7058.
+
+| Field    | Description                                |
+|:-------- |:------------------------------------------ |
+| `cosϕ`   | cos(friction angle)                        |
+| `sinϕ`   | sin(friction angle)                        |
+| `sinΨ`   | sin(dilation angle)                        |
+| `C`      | cohesion [Pa]                              |
+| `pT`     | tensile strength [Pa], compression-positive so `pT ≤ 0` |
+| `η_reg`  | plastic regularization viscosity [Pa s]    |
+| `Kb`     | bulk modulus for volumetric correction [Pa]|
+
+All fields are `NTuple{nphases, FP}`. The shear branch is identical to
+[`DruckerPrager`](@ref); the extra `pT` adds the cap. Unlike `DruckerPrager`,
+`Kb` **must be finite**: every dilatant plasticity model needs a finite elastic
+bulk modulus, so the cap cannot be used in the `K = Inf` incompressible gauge.
+"""
+struct DruckerPragerCap{nphases, FP}
+    cosϕ  :: NTuple{nphases, FP}
+    sinϕ  :: NTuple{nphases, FP}
+    sinΨ  :: NTuple{nphases, FP}
+    C     :: NTuple{nphases, FP}
+    pT    :: NTuple{nphases, FP}
+    η_reg :: NTuple{nphases, FP}
+    Kb    :: NTuple{nphases, FP}
+end
+
+"""
+    DruckerPragerCap(ϕ, Ψ, C, pT, η_reg, Kb) -> DruckerPragerCap
+
+Construct tensile-cap Drucker-Prager parameters from friction angle `ϕ`,
+dilation angle `Ψ`, cohesion `C`, tensile strength `pT`, regularization
+viscosity `η_reg`, and bulk modulus `Kb`. All arguments are
+`NTuple{nphases, FP}`.
+
+Validates, per phase, the conditions under which the cap exists at all:
+
+  - `pT ≤ 0`, because pressure is compression-positive here;
+  - `C·cos(ϕ) + sin(ϕ)·pT > 0`, which is what makes the cap radius positive.
+    Cohesion must exceed `sin(ϕ)·|pT|`, so a rock cannot be given a tensile
+    strength that outruns its shear strength;
+  - `isfinite(Kb)`, since dilatant plasticity has no incompressible limit;
+  - `η_reg ≥ 0`.
+
+Each is an `ArgumentError` naming the offending phase.
+
+# Examples
+```jldoctest
+julia> dp = DruckerPragerCap((deg2rad(30),), (deg2rad(10),), (1.0e6,), (-5.0e5,), (0.0,), (2.0e11,));
+
+julia> dp.pT[1] ≈ -5.0e5
+true
+```
+"""
+function DruckerPragerCap(
+    ϕ     :: Tuple{FP, Vararg{FP, N}},
+    Ψ     :: Tuple{FP, Vararg{FP, N}},
+    C     :: Tuple{FP, Vararg{FP, N}},
+    pT    :: Tuple{FP, Vararg{FP, N}},
+    η_reg :: Tuple{FP, Vararg{FP, N}},
+    Kb    :: Tuple{FP, Vararg{FP, N}},
+) where {N, FP}
+    for i in 1:(N + 1)
+        pT[i] > 0 && throw(
+            ArgumentError(
+                "phase $i: tensile strength pT must be ≤ 0 with compression-positive \
+                 pressure, got $(pT[i])"
+            )
+        )
+        c = C[i] * cos(ϕ[i])
+        c + sin(ϕ[i]) * pT[i] > 0 || throw(
+            ArgumentError(
+                "phase $i: cap radius is not positive; need C·cos(ϕ) + sin(ϕ)·pT > 0, \
+                 got $(c + sin(ϕ[i]) * pT[i]). Cohesion must exceed sin(ϕ)·|pT|."
+            )
+        )
+        isfinite(Kb[i]) || throw(
+            ArgumentError(
+                "phase $i: dilatant plasticity requires a finite bulk modulus; the \
+                 tensile cap has no K = Inf incompressible limit"
+            )
+        )
+        η_reg[i] ≥ 0 || throw(
+            ArgumentError("phase $i: η_reg must be ≥ 0, got $(η_reg[i])")
+        )
+    end
+    return DruckerPragerCap{N + 1, FP}(
+        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, pT, η_reg, Kb,
+    )
+end
+
+"""
     Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
 
 Caller-owned scratch for the 3-D Hex27/Q2--P1 DYREL solver.

@@ -322,3 +322,153 @@ return map, where the pressure correction enters as `P ← P − Kb·Δt·λ·�
         geom.b / (2 * R̂q), -geom.b * (P - geom.p_q) / (3 * R̂q)
     end
 end
+
+# ---------------------------------------------------------------------------
+# Local return map for the tensile cap.
+#
+# The paper solves a 3-unknown system (τII, p, λ̇) because it carries diffusion
+# and dislocation creep, so even its deviatoric relation is nonlinear. Here `ηve`
+# is given and that relation is linear, so the system collapses to one scalar
+# equation — but only in the right variable. Parametrising by
+#
+#     μ = 2 λ Bτ
+#
+# rather than by `λ` makes *both* returns explicit on *both* branches:
+#
+#     τII(μ) = τII_trial / (1 + ηve μ)                         radial, either branch
+#     P(μ)   = P_trial + Kb Δt kq μ τII(μ)                     shear potential
+#     P(μ)   = (P_trial + Kb Δt μ p_q) / (1 + Kb Δt μ)         cap potential
+#
+# so no inner iteration is needed to evaluate the residual. The multiplier comes
+# back out as `λ = μ τII` on the shear branch and `λ = μ R̂_q / b` on the cap.
+# ---------------------------------------------------------------------------
+
+"""
+    cap_residual_and_slope(μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
+        -> (r, dr, τII, P, λ)
+
+Perzyna consistency residual `r(μ) = F(τII(μ), P(μ)) − η_reg λ(μ)` and its exact
+derivative, together with the state it implies. `geom` comes from
+[`cap_geometry`](@ref) and `KΔt` is `Kb * Δt`.
+
+The yield branch and the flow-potential branch are selected independently: `F`
+switches on `P + k τII ≥ p_y`, the flow direction on `P + kq τII ≥ p_q`. They are
+different rays and a point can sit on the shear side of one and the tensile side
+of the other, which is exactly the mode-I/mode-II transition region.
+"""
+@inline function cap_residual_and_slope(μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
+    ϵ²  = eps(typeof(μ))^2
+    s   = inv(one(μ) + ηve * μ)
+    τII = τII_trial * s
+    dτII = -ηve * τII * s
+
+    # Flow-potential branch fixes how the pressure returns.
+    P_s = P_trial + KΔt * kq * μ * τII
+    shear_Q = P_s + kq * τII ≥ geom.p_q
+    P, dP = if shear_Q
+        P_s, KΔt * kq * τII * s
+    else
+        den = one(μ) + KΔt * μ
+        (P_trial + KΔt * μ * geom.p_q) / den, KΔt * (geom.p_q - P_trial) / (den * den)
+    end
+
+    # Yield branch fixes the residual.
+    F, dF = if P + k * τII ≥ geom.p_y
+        τII - k * P - c, dτII - k * dP
+    else
+        R̂y = √(τII * τII + (P - geom.p_y)^2 + ϵ²)
+        geom.a * (R̂y - geom.R_y), geom.a * (τII * dτII + (P - geom.p_y) * dP) / R̂y
+    end
+
+    λ, dλ = if shear_Q
+        μ * τII, τII * s
+    else
+        R̂q  = √(τII * τII + (P - geom.p_q)^2 + ϵ²)
+        dR̂q = (τII * dτII + (P - geom.p_q) * dP) / R̂q
+        μ * R̂q / geom.b, (R̂q + μ * dR̂q) / geom.b
+    end
+
+    return F - η_reg * λ, dF - η_reg * dλ, τII, P, λ
+end
+
+"""
+    cap_return_map(τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, Val(maxiter))
+        -> (; τII, P, λ, iters, converged)
+
+Return-map the trial state onto the tensile-cap yield surface, solving the
+Perzyna consistency condition for the return parameter `μ = 2λBτ`.
+
+`KΔt` is `Kb * Δt`. `k = sin(ϕ)`, `kq = sin(Ψ)`, `c = C cos(ϕ)`, and `pT ≤ 0` is
+the tensile strength. Returns the returned invariant and pressure, the
+multiplier `λ`, and whether the local solve converged. The deviatoric return is
+radial, so a caller rescales the trial tensor by `τII / τII_trial`.
+
+An elastic trial state returns unchanged with `λ = 0`.
+
+Uses a bracketed Newton iteration with bisection fallback rather than the
+paper's Armijo line search. Both guard the same failure — the paper reports that
+unguarded local iterations cycle in stress space and never converge even though
+the surface is smooth — but a sign-change bracket is strictly more robust for a
+scalar unknown and needs no tuning constants. The bracket is `[0, μ_hi]`:
+`r(0) = F_trial > 0` whenever the trial state yields, and `μ_hi` is found by
+doubling from the scale `1/(ηve + KΔt)`.
+
+Both loops are fixed-trip with a guard rather than `while` on a residual test, so
+the iteration count does not depend on the data. That keeps it launchable inside
+a KernelAbstractions kernel without warp divergence, at the cost of always paying
+the full trip count; a kernel-side version should revisit that trade.
+"""
+@inline function cap_return_map(
+        τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, ::Val{maxiter} = Val(50)
+    ) where {maxiter}
+    FP   = typeof(τII_trial)
+    geom = cap_geometry(k, kq, c, pT)
+    F0   = cap_yield_function(τII_trial, P_trial, k, c, geom)
+
+    if F0 ≤ 0
+        return (; τII = τII_trial, P = P_trial, λ = zero(FP), iters = 0, converged = true)
+    end
+
+    scale = c + τII_trial + abs(P_trial)
+    tol   = √(eps(FP)) * scale
+
+    # Bracket: r(0) = F0 > 0, expand μ_hi by doubling until the residual changes
+    # sign.  32 doublings span 10 orders of magnitude from the initial scale.
+    μ_lo, r_lo = zero(FP), F0
+    μ_hi = inv(ηve + KΔt)
+    r_hi = first(cap_residual_and_slope(μ_hi, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom))
+    bracketed = r_hi ≤ 0
+    for _ in 1:32
+        if !bracketed
+            μ_lo, r_lo = μ_hi, r_hi
+            μ_hi *= 2
+            r_hi = first(
+                cap_residual_and_slope(μ_hi, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
+            )
+            bracketed = r_hi ≤ 0
+        end
+    end
+
+    μ    = (μ_lo + μ_hi) / 2
+    τII  = τII_trial
+    P    = P_trial
+    λ    = zero(FP)
+    done = false
+    iters = 0
+    for it in 1:maxiter
+        if !done
+            r, dr, τII, P, λ = cap_residual_and_slope(
+                μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom
+            )
+            r > 0 ? (μ_lo = μ) : (μ_hi = μ)
+            μ_newton = μ - r / dr
+            # Take Newton only where it stays inside the bracket; bisect otherwise.
+            μ = (isfinite(μ_newton) && μ_lo < μ_newton < μ_hi) ?
+                μ_newton : (μ_lo + μ_hi) / 2
+            done = abs(r) ≤ tol
+            iters = it
+        end
+    end
+
+    return (; τII, P, λ, iters, converged = done && bracketed)
+end
