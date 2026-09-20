@@ -18,13 +18,11 @@ independently by the geometric condition the paper states in words, so the readi
 the extraction at all. The Zenodo map script is therefore no longer a prerequisite for CAP-3; V3
 remains worth doing as a picture, not as the thing that decides the formulae. Details in §1.
 
-Why this matters here: the Reykjanes plan's GAP-5 option 2 is "a constitutive tensile cutoff", and
-its detector (GAP-6) currently decides mode-I failure with a *diagnostic* hydraulic margin
-`P_f − s₃ − T₀ ≥ 0` that the constitutive law knows nothing about. This model is GAP-5 option 2. It
-also produces the accumulated volumetric viscoplastic strain `θ`, which is the field that actually
-marks tensile failure zones, and which the event detector would rather use than a stress-space
-proxy. Implementing it lets the criterion that declares an event and the law that produces the
-failure be the same statement.
+This is a stand-alone constitutive extension to FEMTools: a smooth tensile cap with per-IP history
+for softening and volumetric viscoplastic strain, built to match the Popov et al. model without
+shipping any dependence on a larger event-detection workflow. The plan is self-contained and only
+addresses the material law, the local integration update, the required state storage, and the
+verification ladder that makes the implementation trustworthy.
 
 ## 1. The model
 
@@ -150,7 +148,7 @@ sizing are recorded under the table.
 | `_assert_frozen_symmetry` | `src/stokes/assemblers/adjoint_operator.jl:116`, fired from `:400` and `:402` | message to fix per §7 |
 | Cap geometry, yield function, flow direction | `src/stokes/assemblers/rheology.jl:211–324` | **added**; pure functions, not yet wired into any solver path |
 
-What this changes in the gap register:
+What this changes in the implementation register:
 
 - **CAP-6 is not "reuse `DamageLaw` or add linear moduli"** — there is no softening machinery of any
   kind to reuse, so the paper's Eq. 24 moduli are the only candidate and CAP-6 grows from M to L.
@@ -158,8 +156,8 @@ What this changes in the gap register:
   integration point, and there is no per-IP history array to accumulate into. That storage, and its
   update at the physical-time boundary, is infrastructure this plan never registered. It is the same
   storage CAP-6 needs, so build it once, under CAP-4.
-- **CAP-7 depends on which branch this lands on.** A 3-D method to extend exists only on
-  `adm/volcanos`.
+- **CAP-7 depends on which branch this lands on.** A 3-D extension is a follow-on implementation task,
+  not a dependency of the 2-D constitutive law itself.
 
 The structural fact that shapes this whole plan: **FEMTools' multiplier is closed-form because its
 yield surface is linear**. On the DP line `∂F/∂τII = 1` and `∂Q/∂τII = 1`, so consistency is one
@@ -179,7 +177,6 @@ linear equation in `λ`. On the cap both derivatives are state-dependent (`a τI
 | CAP-7 | 3-D method | `rheology.jl:567` | M |
 | CAP-8 | Adjoint: differentiating through a local iteration | `adjoint_operator.jl`, `DR_adjoint.jl` | **L, risky** |
 | CAP-9 | Verification ladder | `test/`, `examples/benchmarks/` | M |
-| CAP-10 | Detector and `θ` reconciliation in the Reykjanes workflow | `examples/reykjanes/` | M |
 
 ## 4. CAP-1, CAP-2: the type
 
@@ -276,16 +273,18 @@ global mass balance, which is the entire point of the model.
 
 Note also the paper's warning: **every dilatant plasticity model needs a finite elastic bulk
 modulus**; both schemes fail for `K → ∞`. FEMTools' `K` is `Inf` in the incompressible gauge that the
-adjoint tests and several miniapps use, so this interacts with GAP-25 in `REYKJANES_PLAN.md` and with
-the oracle finding that the frozen adjoint operator already refuses to assemble at finite `K`.
+adjoint tests and several miniapps use, so the cap cannot be introduced there without a separate
+compatibility decision, and the frozen adjoint operator already refuses to assemble at finite `K`.
 
 **Decided 2026-09-20: trial pressure scheme.** Recorded in `.agents/solver.md`. The local update is
 `p = p̄ + K ε̇_vol^vp Δt` and the volumetric term cancels from the global continuity residual, so the
 residual the solver assembles keeps its current form and only gains an elastic `K` in place of the
-bulk-viscosity term. Two things follow that CAP-3 must respect: `p(λ)` in the local solve is the
-*local* pressure recovered from the trial value, not the global unknown; and global and local
-pressure are not expected to agree at convergence under this scheme, so no diagnostic should treat
-their difference as an error — it is the dilation.
+bulk-viscosity term. This is the first required material step in the implementation: the continuity
+residual must include the elastic compressibility contribution before any cap-specific return-map work
+is considered. Two things follow that CAP-3 must respect: `p(λ)` in the local solve is the *local*
+pressure recovered from the trial value, not the global unknown; and global and local pressure are not
+expected to agree at convergence under this scheme, so no diagnostic should treat their difference as
+an error — it is the dilation.
 
 The `K → ∞` consequence stands and is now a hard constraint, not a caveat: the cap cannot be used in
 the incompressible gauge at all.
@@ -320,7 +319,7 @@ with Enzyme. Putting a Newton loop with a line search inside it has three conseq
 | V4 | 0-D stress integration (their §4.1) | stress paths for uniaxial restrained extension and pure shear, with their Table 1 parameters | seconds |
 | V5 | Perzyna regularisation (their §4.2) | mode-I band width independent of resolution at fixed `η_vp`, and mesh-dependent without it | hours |
 | V6 | Brittle crust localisation (their §4.3) | the Kaus (2010) benchmark, which FEMTools should be run against anyway | hours |
-| V7 | Tensile failure zone propagation (their §4.4) | the dike-relevant case; the one that feeds the Reykjanes work | hours |
+| V7 | Tensile failure zone propagation (their §4.4) | a standalone cap-driven localisation benchmark with a prescribed tensile front | hours |
 | V8 | Adjoint gradient | ForwardDiff through the return map against central differences at a point in each domain and, separately, near the delimiter | seconds |
 
 V1, V2 and V8 must exist before the kernel is used anywhere. V3 is what turns the reconstructed
@@ -328,28 +327,29 @@ equations into checked ones.
 
 ## 9. Build order
 
-1. ~~**CAP-2 geometry + V1 + V3.**~~ **Done 2026-09-20** except V3. `cap_geometry`,
+1. **Add the elastic compressibility term to the continuity equation.** This is the first required
+   material change: the pressure residual must carry the finite elastic bulk contribution before any
+   cap-specific return-map logic is trusted. It is the gate that makes the cap compatible with the
+   global mass balance and with the trial-pressure scheme.
+2. ~~**CAP-2 geometry + V1 + V3.**~~ **Done 2026-09-20** except V3. `cap_geometry`,
    `cap_yield_function` and `cap_flow_direction` are in `src/stokes/assemblers/rheology.jl`, pure and
    uncalled; `test/test_drucker_prager_cap.jl` is V1 at 140 checks. Every reconstructed formula was
    resolved against the paper and pinned by an independent geometric identity (§1). V3 is still open
    but is now a picture, not a decision.
-2. ~~**CAP-5 decision**, written into `.agents/solver.md` with its consequence for `K = Inf` runs.~~
+3. ~~**CAP-5 decision**, written into `.agents/solver.md` with its consequence for `K = Inf` runs.~~
    **Done 2026-09-20: trial pressure scheme.** See §6.
-3. **CAP-1 type + CAP-3 scalar Newton + V2.** The reduction test is the acceptance gate.
-4. **CAP-8 adjoint derivative + V8**, and the symmetry-assertion message fix.
-5. **CAP-4 volumetric history + CAP-6 softening**, then V4.
-6. **V5, V6, V7** as benchmarks under `examples/benchmarks/stokes/`, following the `first_threshold`
+4. **CAP-1 type + CAP-3 scalar Newton + V2.** The reduction test is the acceptance gate.
+5. **CAP-8 adjoint derivative + V8**, and the symmetry-assertion message fix.
+6. **CAP-4 volumetric history + CAP-6 softening**, then V4.
+7. **V5, V6, V7** as benchmarks under `examples/benchmarks/stokes/`, following the `first_threshold`
    layout: a function-only setup plus a sweep driver.
-7. **CAP-7 3-D**, last, and only if a 3-D consumer exists.
-8. **CAP-10**: point the Reykjanes detector at `θ` instead of the hydraulic-margin proxy, and record
-   in `REYKJANES_PLAN.md` whether that changes the threshold. GAP-5 closes here.
+8. **CAP-7 3-D**, last, and only if a 3-D consumer exists.
 
 ## 10. What this plan does not settle
 
 - Whether `p_T` is a per-phase constant or itself softens. The paper softens `φ` and `c_MC` only.
-- Whether the Reykjanes protocol's `T₀` and the constitutive `p_T` are the same number. They are the
-  same *concept*; making them the same *parameter* is the point of CAP-10, but it changes the
-  detector's calibration and is therefore a Phase-0 decision, not a code decision.
-- The value of `η_vp` for any Reykjanes run. The paper is explicit that regularisation viscosity is a
-  numerical parameter with a localisation-sharpness trade-off, to be chosen per process, and that it
-  introduces a length scale. It belongs in the run record, not in a default.
+- The exact value of `η_vp` for any production run. The paper is explicit that regularisation
+  viscosity is a numerical parameter with a localisation-sharpness trade-off, to be chosen per
+  process, and that it introduces a length scale. It belongs in the run record, not in a default.
+- Whether the tensile-cap law should be extended to a separate event detector or a higher-level
+  damage protocol. This plan intentionally stops at the constitutive model itself.
