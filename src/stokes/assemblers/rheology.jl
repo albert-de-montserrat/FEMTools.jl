@@ -206,3 +206,119 @@ denominator stays positive for any dilation angle.
     return τij
 end
 
+
+# ---------------------------------------------------------------------------
+# Drucker-Prager tensile cap
+#
+# Popov, Berlie & Kaus (2025), "A dilatant visco-elasto-viscoplasticity model
+# with globally continuous tensile cap", Geosci. Model Dev. 18, 7035-7058,
+# doi:10.5194/gmd-18-7035-2025. Equation numbers below refer to that paper.
+#
+# Pressure is compression-positive here and there (their Sect. 2.1), so the
+# tensile strength `pT` is the pressure at which the rock fails in pure tension
+# and is therefore negative. The shear branch reproduces the Drucker-Prager
+# surface `deviatoric_stress` already uses, with `k = sinϕ` and `c = C cosϕ`.
+# ---------------------------------------------------------------------------
+
+"""
+    cap_geometry(k, kq, c, pT) -> (; a, b, p_y, R_y, p_d, τ_d, p_q)
+
+Derived geometry of the circular tensile cap that closes the Drucker-Prager
+shear envelope on the tensile side (Popov et al. 2025, Eqs. 13-17).
+
+Takes the *derived* Drucker-Prager coefficients rather than the raw angles:
+friction coefficient `k = sin(ϕ)`, dilation coefficient `kq = sin(Ψ)`,
+Drucker-Prager cohesion `c = C·cos(ϕ)`, and tensile strength `pT ≤ 0`.
+
+Returns the scaling coefficients `a`, `b` (Eq. 14), the cap centre `p_y` and
+radius `R_y` (Eq. 15), the delimiter point `(p_d, τ_d)` where the cap meets the
+shear line (Eq. 16), and the flow-potential centre `p_q` (Eq. 17).
+
+The cap is the circle of radius `R_y` centred at `(p_y, 0)` in the meridional
+`(P, τII)` plane. `p_y` is fixed by two conditions at once: the circle meets the
+pressure axis at `pT`, so `R_y = p_y − pT`, and it is tangent to the shear line
+`τII = k·P + c`, so `R_y = (k·p_y + c)/a`. Eliminating `R_y` gives the `p_y`
+below. Tangency is what makes the composite surface continuously
+differentiable, which Perzyna viscoplasticity requires because `λ̇ = ⟨F⟩/η_reg`
+reads `F` *away* from the surface, not only on it.
+
+Nothing here is cached per phase: strain softening moves `k` and `c`, and the
+whole geometry moves with them, so a precomputed cap would silently freeze
+while the shear branch softened.
+
+`R_y > 0` requires `c + k·pT > 0`, i.e. cohesion must exceed `k·|pT|`; the caller
+is responsible for parameters that satisfy it.
+"""
+@inline function cap_geometry(k, kq, c, pT)
+    a = √(one(k) + k * k)
+    b = √(one(kq) + kq * kq)
+    # Eq. 15 written as (pT + c/a)/(1 - k/a); the equivalent form below avoids
+    # the nested division.
+    p_y = (a * pT + c) / (a - k)
+    R_y = p_y - pT
+    p_d = p_y - R_y * k / a
+    # Eq. 16 gives τ_d = k·p_d + c; tangency makes that equal R_y/a exactly.
+    τ_d = R_y / a
+    p_q = p_d + kq * τ_d
+    return (; a, b, p_y, R_y, p_d, τ_d, p_q)
+end
+
+"""
+    cap_yield_function(τII, P, k, c, geom) -> F
+
+Composite yield function of the smooth tensile cap (Popov et al. 2025, Eq. 18),
+where `geom` comes from [`cap_geometry`](@ref).
+
+    F = τII − k·P − c              in the shear domain
+    F = a·(R̂_y − R_y)              on the tensile cap,  R̂_y = √(τII² + (P − p_y)²)
+
+The cap branch carries the factor `a` so that `‖∇F‖ = a` on *both* branches:
+without it the two segments would agree on the surface but disagree everywhere
+outside it, and the overstress `⟨F⟩` that drives Perzyna viscoplasticity would
+jump across the delimiter.
+
+Eq. 18 selects the shear branch with `τII·(p_y − p_d) ≥ τ_d·(p_y − P)`.
+Substituting `p_y − p_d = R_y·k/a` and `τ_d = R_y/a` and cancelling the positive
+factor `R_y/a` reduces that to the half-plane test used below.
+"""
+@inline function cap_yield_function(τII, P, k, c, geom)
+    return if P + k * τII ≥ geom.p_y
+        τII - k * P - c
+    else
+        R̂y = √(τII * τII + (P - geom.p_y)^2 + eps(typeof(τII))^2)
+        geom.a * (R̂y - geom.R_y)
+    end
+end
+
+"""
+    cap_flow_direction(τII, P, kq, geom) -> (Bτ, Bp)
+
+Prefactors of the flow-potential gradient `∂Q/∂σᵢⱼ = Bτ·τᵢⱼ + Bp·δᵢⱼ`
+(Popov et al. 2025, Eqs. 21-22), where `geom` comes from [`cap_geometry`](@ref).
+
+    Bτ, Bp = 1/(2τII),  kq/3                      in the shear domain
+    Bτ, Bp = b/(2R̂_q), −b(P − p_q)/(3R̂_q)         on the tensile cap
+
+with `R̂_q = √(τII² + (P − p_q)²)`. The domain test is the same reduction as in
+[`cap_yield_function`](@ref), applied to Eq. 19 with the potential's own centre
+`p_q`: `τII·(p_q − p_d) ≥ τ_d·(p_q − P)` becomes `P + kq·τII ≥ p_q`.
+
+The potential is non-associated whenever `Ψ ≠ ϕ`, and `p_q` is placed so that its
+own shear/tensile transition passes through the *same* delimiter as the yield
+surface. That is what makes the return direction single-valued at every point
+above the surface, so no active-surface search is needed.
+
+Sign convention: the volumetric viscoplastic strain rate is
+`ε̇_vol = λ·tr(∂Q/∂σ) = 3λ·Bp`, since `tr(τ) = 0`. In the shear domain this is
+`λ·kq = λ·sin(Ψ)`, matching the existing `∂Q∂P = −sinΨ` of the Drucker-Prager
+return map, where the pressure correction enters as `P ← P − Kb·Δt·λ·∂Q∂P`.
+"""
+@inline function cap_flow_direction(τII, P, kq, geom)
+    ϵ² = eps(typeof(τII))^2
+    return if P + kq * τII ≥ geom.p_q
+        inv(2 * √(τII * τII + ϵ²)), kq / 3
+    else
+        R̂q = √(τII * τII + (P - geom.p_q)^2 + ϵ²)
+        geom.b / (2 * R̂q), -geom.b * (P - geom.p_q) / (3 * R̂q)
+    end
+end

@@ -265,6 +265,59 @@ For `F>0`, the regularized multiplier and stress correction are
 Here `∂Q/∂P=-sinψ` and `∂F/∂P=-sinφ`, making their product non-negative for the
 supported angles.
 
+### Drucker-Prager tensile cap (present, not yet wired)
+
+`cap_geometry`, `cap_yield_function`, and `cap_flow_direction` in
+`src/stokes/assemblers/rheology.jl` implement the globally continuous tensile
+cap of Popov, Berlie and Kaus (2025), GMD 18, 7035-7058. They are pure internal
+functions with no caller: no solver, state, or type uses them yet. See
+`DRUCKER_PRAGER_CAP_PLAN.md` for the remaining work.
+
+The cap closes the shear envelope on the tensile side with a circle of radius
+`R_y` centred at `(p_y,0)`, tangent to `τII=kP+c` and meeting the pressure axis
+at the tensile strength `pT≤0`, with `k=sinϕ` and `c=C cosϕ` as above. Tangency
+fixes `p_y=(a pT+c)/(a-k)` with `a=√(1+k²)`, and requires `c+k·pT>0` for a
+positive radius. The cap branch carries the factor `a` so that `‖∇F‖=a` on both
+branches: Perzyna viscoplasticity reads the overstress `⟨F⟩` *away* from the
+surface, so agreement only on the surface is not enough. Each branch pair
+agrees exactly along its whole switching ray `P+k·τII=p_y`, which the tests use
+as an exact identity rather than a tolerance.
+
+Two consequences are already fixed and should not be rediscovered:
+
+- The closed-form multiplier above exists only because the shear surface is
+  linear. On the cap both `∂F/∂τII` and `∂Q/∂τII` are state-dependent, so a
+  local scalar solve for `λ` replaces it, and the paper reports that without an
+  Armijo line search the local iterations cycle in stress space and never
+  converge even though the surface is smooth.
+- **Every dilatant plasticity model needs a finite elastic bulk modulus.** Both
+  of the paper's pressure schemes fail as `K→∞`. FEMTools uses `K=Inf` in the
+  incompressible gauge that several miniapps and the adjoint tests rely on, so
+  the cap and that gauge are mutually exclusive.
+
+**Decided 2026-09-20: the cap uses the trial pressure scheme.** The global
+pressure is the trial visco-elastic pressure, the local stress update applies
+`p=p̄+K ε̇_vol^vp Δt`, and the viscoplastic volumetric term therefore *cancels*
+from the global continuity residual, which keeps the residual the solver
+assembles unchanged in form. The alternative — global pressure as the true
+spherical Cauchy stress, with `ε̇_vol^vp` added to the continuity residual — is
+the same model but converges less robustly in the source's own testing, so it is
+not implemented. These are different models numerically, not two spellings of
+one; do not mix them. Consequences to hold onto:
+
+- Global and local pressure do not converge to each other under this scheme.
+  The global value converges to the trial pressure and the local value is the
+  true spherical stress. A diagnostic that compares them is measuring the
+  dilation, not an error.
+- FEMTools currently implements neither scheme.
+  `integrate_PH_pressure_residual` carries a bulk-viscosity term, not an elastic
+  `K`, and no viscoplastic volumetric term, so plastic dilation reaches only the
+  multiplier denominator and never the mass balance. The trial scheme needs an
+  elastic `K` in that residual before the cap means anything globally.
+- The elastic bulk modulus must be finite, so the cap cannot be used in the
+  `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
+  needs a finite `K` first.
+
 ### Two-dimensional Powell-Hestenes/DYREL iteration
 
 The 2-D saddle-point solver forms a lumped pressure scale `M_P`. During each
