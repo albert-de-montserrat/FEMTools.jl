@@ -19,6 +19,9 @@ The suite covers:
 - parsing of maintained example scripts;
 - sparse and finite-difference reference oracles for selected solver/adjoint
   behavior.
+- `test/test_drucker_prager_cap.jl` covers cap geometry, local return-map
+  derivatives, and the Drucker--Prager shear reduction; the adjoint regression
+  also compares cap-state ForwardDiff blocks with the Enzyme transpose path.
 
 GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later

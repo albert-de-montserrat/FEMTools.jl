@@ -86,13 +86,16 @@ Import `FEMTools.VectorField2D/3D` and `FEMTools.SymmetricTensor2D/3D`
 explicitly. Vector components use `.x`, `.y`, and `.z`; stress components
 include the invariant `II`. `Tuple` unpacks independent components for
 assemblers. `StokesDR` owns `v`, `Rv`, `PC_v`, `τ`, and `τ_old`
-containers; its spatial dimension follows the length of `g`.
+containers; its spatial dimension follows the length of `g`. Passing
+`plastic_history_size=(nq, nels)` additionally allocates zeroed integration-
+point `dr.plastic_history.γ` and `.θ` arrays for the experimental cap path;
+the default remains `nothing`.
 
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
   `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
-  `StokesAdjointWorkspace`, `DruckerPrager`.
+  `StokesAdjointWorkspace`, `DruckerPrager`, `DruckerPragerCap`.
 - Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
 - Stokes entry points: `solve_stokes_dyrel!`,
   `solve_coupled_dyrel!`,
@@ -134,6 +137,11 @@ The module currently marks the following categories `public`:
 These names are callable as `FEMTools.name` but are deliberately not imported
 by `using FEMTools`. Before adding another public low-level method, confirm that
 an extension, maintained miniapp, or downstream package genuinely needs it.
+
+The 2-D pressure residual assembler uses the solver state's finite elastic bulk
+modulus `K` for the experimental `DruckerPragerCap` path. Its element-level integration
+helper retains the legacy bulk-viscosity behavior when `K` is omitted, and uses
+`K` when supplied for the trial-pressure formulation.
 
 ## Canonical user flows
 

@@ -207,6 +207,33 @@ denominator stays positive for any dilation angle.
 end
 
 
+@inline function _drucker_prager_return(τij, ηve, Δt, Pq, cosϕ, sinϕ, sinΨ, C, η_reg, Kb)
+    τxx, τyy, τxy = τij
+    # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂).
+    τII      = second_invariant(τij)
+    τII_safe = τII + eps(typeof(τII))^2
+    F        = τII - cosϕ * C - sinϕ * Pq
+    ∂F∂P     = -sinϕ
+
+    # Plane-strain invariant gradient with τzz = -τxx - τyy.
+    ∂Q∂τxx = (2 * τxx + τyy) / (2 * τII_safe)
+    ∂Q∂τyy = (τxx + 2 * τyy) / (2 * τII_safe)
+    ∂Q∂τxy = τxy / τII_safe
+    ∂Q∂τ  = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
+    ∂Q∂P  = -sinΨ
+
+    λ = if F > 0
+        F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P)
+    else
+        zero(F)
+    end
+
+    return λ > 0 ?
+        map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) :
+        τij
+end
+
+
 # ---------------------------------------------------------------------------
 # Drucker-Prager tensile cap
 #
@@ -392,6 +419,50 @@ of the other, which is exactly the mode-I/mode-II transition region.
 end
 
 """
+    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+                      plastic::DruckerPragerCap) -> (τxx, τyy, τxy)
+
+Compute the plane-strain elasto-viscoplastic stress with the globally
+continuous tensile cap. Points in the shear domain intentionally reuse the
+existing Drucker-Prager return map exactly; points below the delimiter use the
+cap's bounded local scalar solve and radial deviatoric return.
+"""
+@inline function deviatoric_stress(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPragerCap,
+    )
+    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+
+    k     = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
+    kq    = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
+    c     = interp2ip_phase(Nv, plastic.C,      phase_loc) *
+            interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
+    pT    = interp2ip_phase(Nv, plastic.pT,     phase_loc)
+    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
+    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
+    τII   = second_invariant(τ_trial)
+    geom  = cap_geometry(k, kq, c, pT)
+    F     = cap_yield_function(τII, Pq, k, c, geom)
+
+    F ≤ 0 && return τ_trial
+    if Pq + k * τII ≥ geom.p_y
+        return _drucker_prager_return(
+            τ_trial, ηve, Δt, Pq,
+            interp2ip_phase(Nv, plastic.cosϕ, phase_loc), k, kq,
+            interp2ip_phase(Nv, plastic.C, phase_loc), η_reg, Kb,
+        )
+    end
+
+    result = cap_return_map(
+        τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50),
+    )
+    @assert result.converged "Drucker-Prager cap local return map did not converge"
+    scale = iszero(τII) ? zero(τII) : result.τII / τII
+    return map(τ -> scale * τ, τ_trial)
+end
+
+"""
     cap_return_map(τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, Val(maxiter))
         -> (; τII, P, λ, iters, converged)
 
@@ -418,6 +489,38 @@ the iteration count does not depend on the data. That keeps it launchable inside
 a KernelAbstractions kernel without warp divergence, at the cost of always paying
 the full trip count; a kernel-side version should revisit that trade.
 """
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::Nothing) = (0, 0)
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::DruckerPrager) = (0, 0)
+
+@inline function plastic_history_rates(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPragerCap,
+    )
+    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+    k = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
+    kq = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
+    c = interp2ip_phase(Nv, plastic.C, phase_loc) *
+        interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
+    pT = interp2ip_phase(Nv, plastic.pT, phase_loc)
+    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
+    Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
+    τII = second_invariant(τ_trial)
+    geom = cap_geometry(k, kq, c, pT)
+    F = cap_yield_function(τII, Pq, k, c, geom)
+    F ≤ 0 && return zero(F), zero(F)
+
+    if Pq + k * τII ≥ geom.p_y
+        λ = F / (ηve + η_reg + Kb * Δt * kq * k)
+        return λ / 2, λ * kq
+    end
+
+    result = cap_return_map(τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50))
+    @assert result.converged "Drucker-Prager cap local return map did not converge"
+    Bτ, Bp = cap_flow_direction(result.τII, result.P, kq, geom)
+    return result.λ * Bτ * result.τII, 3 * result.λ * Bp
+end
+
 @inline function cap_return_map(
         τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, ::Val{maxiter} = Val(50)
     ) where {maxiter}

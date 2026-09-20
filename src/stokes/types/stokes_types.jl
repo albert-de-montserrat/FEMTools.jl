@@ -60,7 +60,7 @@ _zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
 )
 
 """
-    StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
+    StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
 
 Solver state for an incompressible Stokes flow solved with a pseudo-transient
 dynamic-relaxation (DR) scheme using mixed elements (separate velocity and
@@ -125,12 +125,12 @@ temperature for the linearised EOS, default 0).
 # Constructor
     StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial;
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
-             stress_size=nothing)
+             stress_size=nothing, plastic_history_size=nothing)
     StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
              ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
-             stress_size=nothing)
-    StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
+             stress_size=nothing, plastic_history_size=nothing)
+StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Individual components are reached through the field containers, e.g. `dr.v.x`
@@ -140,6 +140,9 @@ arrays, so they add no per-element storage and are not available as scratch.
 Stress components default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
 integration points, or `stress_size=:none` to allocate no stress history at all.
+Pass `plastic_history_size=(nq, nels)` to allocate zeroed integration-point
+arrays `dr.plastic_history.γ` and `dr.plastic_history.θ` for the cap's future
+history update; it is independent of stress storage and defaults to `nothing`.
 `nnodes_v` and `nnodes_P` likewise accept a dimension tuple instead of a node
 count, which is how a cell-local pressure layout such as `(4, nels)` is
 expressed. `T` and `T0` should be filled via `copyto!` before calling the solver.
@@ -156,7 +159,18 @@ for a gravity-free three-dimensional problem — to obtain `VectorField3D`
 velocity fields and `SymmetricTensor3D` stresses. The two-dimensional
 mixed-mesh solvers accept only `StokesDR{<:Any, 2}`.
 """
-struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
+struct IntegrationPointPlasticHistory{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+end
+
+struct IntegrationPointPlasticHistoryOutput{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+    iel::Int
+end
+
+struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # velocity-node solution fields
     v::_TV
     ∂v∂τ::_TV
@@ -170,6 +184,8 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
     # deviatoric stress history
     τ::_TT
     τ_old::_TT
+    # optional cap plastic history at integration points
+    plastic_history::_TH
     # pressure-node solution fields
     P::_TP
     P0::_TP
@@ -209,6 +225,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         Tref = nothing,
         CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
         stress_size = nothing,
+        plastic_history_size = nothing,
     ) where {N, FP}
         nphases = N + 1
         _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
@@ -218,11 +235,15 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
         stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
             "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
+        plastic_history_size isa Symbol && plastic_history_size !== :none && throw(ArgumentError(
+            "plastic_history_size must be `nothing`, `:none`, an integer, or a size tuple; got :$plastic_history_size"))
         dim = _spatial_dimension(_g)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
         stress_dims = stress_size === nothing ? v_dims :
             stress_size === :none ? nothing : _storage_dims(stress_size)
+        history_dims = plastic_history_size === nothing || plastic_history_size === :none ?
+            nothing : _storage_dims(plastic_history_size)
         newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
         newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
         newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
@@ -231,15 +252,20 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
         newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
+        newhistory() = history_dims === nothing ? nothing : IntegrationPointPlasticHistory(
+            KernelAbstractions.zeros(backend, FP, history_dims...),
+            KernelAbstractions.zeros(backend, FP, history_dims...),
+        )
         new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
-            typeof(newiv()), typeof(newP()), typeof(newip()), FP,
+            typeof(newiv()), typeof(newP()), typeof(newip()), FP, typeof(newhistory()),
         }(
             newvfield(), newvfield(),                 # v, ∂v∂τ
             newvfield(), newvfield(),                 # Rv, Rv0
             newvfield(), newvfield(),                 # ∂Rv∂v, PC_v
             newiv(),                                  # phases_v
             newτfield(), newτfield(),                 # τ, τ_old
+            newhistory(),                              # optional cap history
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P

@@ -2,7 +2,8 @@
 # Reference: Popov, Berlie & Kaus (2025), Geosci. Model Dev. 18, 7035-7058,
 # doi:10.5194/gmd-18-7035-2025, Eqs. 13-22.
 
-using FEMTools: cap_geometry, cap_yield_function, cap_flow_direction
+using ForwardDiff
+using FEMTools: cap_geometry, cap_yield_function, cap_flow_direction, cap_return_map
 
 # Unit-scale parameters keep the finite-difference gradient checks well
 # conditioned; a Pa-scale set is exercised separately below.
@@ -223,5 +224,23 @@ end
         @test (@inferred cap_geometry(CAP_k, CAP_kq, CAP_c, CAP_pT)) isa NamedTuple
         @test (@inferred cap_yield_function(1.0, 1.0, CAP_k, CAP_c, geom)) isa Float64
         @test (@inferred cap_flow_direction(1.0, 1.0, CAP_kq, geom)) isa Tuple{Float64, Float64}
+    end
+
+    @testset "return-map derivative matches central differences" begin
+        ηve, KΔt, η_reg = 2.0, 10.0, 1.0
+        cases = ((30.0, 0.0), (0.5, -6.0), (geom.τ_d, geom.p_d - 1.0e-3))
+        for (τ_trial, P_trial) in cases
+            fτ(τ) = cap_return_map(
+                τ, P_trial, ηve, KΔt, CAP_k, CAP_kq, CAP_c, CAP_pT, η_reg, Val(50),
+            ).τII
+            fP(P) = cap_return_map(
+                τ_trial, P, ηve, KΔt, CAP_k, CAP_kq, CAP_c, CAP_pT, η_reg, Val(50),
+            ).τII
+            h = 1.0e-5
+            dτ_fd = (fτ(τ_trial + h) - fτ(τ_trial - h)) / (2h)
+            dP_fd = (fP(P_trial + h) - fP(P_trial - h)) / (2h)
+            @test ForwardDiff.derivative(fτ, τ_trial) ≈ dτ_fd rtol = 1.0e-5 atol = 1.0e-7
+            @test ForwardDiff.derivative(fP, P_trial) ≈ dP_fd rtol = 1.0e-5 atol = 1.0e-7
+        end
     end
 end

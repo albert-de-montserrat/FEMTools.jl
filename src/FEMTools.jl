@@ -147,6 +147,7 @@ export eval_shape_function,
 export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
 export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, DruckerPrager,
+    DruckerPragerCap,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,

@@ -309,14 +309,26 @@ one; do not mix them. Consequences to hold onto:
   The global value converges to the trial pressure and the local value is the
   true spherical stress. A diagnostic that compares them is measuring the
   dilation, not an error.
-- FEMTools currently implements neither scheme.
-  `integrate_PH_pressure_residual` carries a bulk-viscosity term, not an elastic
-  `K`, and no viscoplastic volumetric term, so plastic dilation reaches only the
-  multiplier denominator and never the mass balance. The trial scheme needs an
-  elastic `K` in that residual before the cap means anything globally.
+- The 2-D pressure residual now accepts an optional per-phase `K`; the solver
+  selects it by plastic-model dispatch only for the experimental
+  `DruckerPragerCap` path. Existing
+  non-cap Stokes and adjoint paths retain the historical bulk-viscosity form,
+  including the `K = Inf` incompressible gauge. Direct low-level callers that
+  omit `K` retain that behavior. The cap return map is dispatched by the
+  experimental 2-D constitutive path; per-IP volumetric history and softening
+  are not assembled yet, so this remains an incomplete cap solve.
 - The elastic bulk modulus must be finite, so the cap cannot be used in the
   `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
   needs a finite `K` first.
+- The cap-state 2-D adjoint path is covered by a ForwardDiff frozen-block versus
+  Enzyme transpose regression (`test/test_adjoint_operator.jl`); this validates
+  the local return-map derivative at a tensile-cap state, but not a full cap
+  benchmark or history/softening evolution.
+- `StokesDR(...; plastic_history_size=(nq, nels))` provides zeroed,
+  caller-visible per-integration-point `γ` and `θ` arrays. When a cap is passed
+  to `update_stokes_current_stress!`, one physical-time increment is accumulated
+  through a backend kernel; residual iterations do not mutate this history. The
+  default remains `nothing` to preserve non-cap memory behavior.
 
 ### Two-dimensional Powell-Hestenes/DYREL iteration
 

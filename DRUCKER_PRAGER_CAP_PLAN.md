@@ -1,6 +1,6 @@
 # `DruckerPragerCap`: a globally continuous tensile cap for FEMTools.jl
 
-Status: implementation plan, not implemented · 2026-09-20 · branch `adm/volcanos`
+Status: active implementation plan · 2026-09-20 · branch `adm/dp-tensile-cap`
 
 Source: Popov, Berlie and Kaus (2025), *A dilatant visco-elasto-viscoplasticity model with globally
 continuous tensile cap: stable two-field mixed formulation*, Geosci. Model Dev. 18, 7035–7058,
@@ -150,6 +150,10 @@ sizing are recorded under the table.
 
 What this changes in the implementation register:
 
+The CAP-3 return map and V2 reduction are now complete. The current implementation deliberately stops
+at the return map and its production/adjoint dispatch until the CAP-4 state API is defined; the cap must
+not silently accumulate history in a nodal or global array.
+
 - **CAP-6 is not "reuse `DamageLaw` or add linear moduli"** — there is no softening machinery of any
   kind to reuse, so the paper's Eq. 24 moduli are the only candidate and CAP-6 grows from M to L.
 - **CAP-4 has a hidden prerequisite.** Both `γ` (Eq. 23) and `θ` (Eq. 25) are accumulated per
@@ -168,11 +172,11 @@ linear equation in `λ`. On the cap both derivatives are state-dependent (`a τI
 
 | ID | Gap | Where | Size |
 |---|---|---|---|
-| CAP-1 | The type, its derived cap geometry, and the constructor's validity conditions | `types/stokes_types.jl` | S |
+| CAP-1 | ~~The type, its derived cap geometry, and the constructor's validity conditions~~ **done** | `types/stokes_types.jl` | S |
 | CAP-2 | ~~Cap geometry as an inline function, because softening moves it~~ **done** | `assemblers/rheology.jl:211` | S |
-| CAP-3 | Local scalar solve for `λ` replacing the closed form | `assemblers/rheology.jl` | **L** |
+| CAP-3 | ~~Local scalar solve for `λ` replacing the closed form~~ **implemented, V2 still open** | `assemblers/rheology.jl` | **L** |
 | CAP-4 | Per-IP history storage (prerequisite, does not exist) plus `γ` and volumetric `θ` | `assemblers/rheology.jl`, Stokes state | **L** |
-| CAP-5 | ~~Pressure-scheme decision~~ **decided: trial pressure**; remaining work is an elastic `K` in the continuity residual | `assemblers/pressure_residual.jl` | **L** |
+| CAP-5 | ~~Pressure-scheme decision and elastic `K` in continuity residual~~ **done: trial pressure path** | `assemblers/pressure_residual.jl` | **L** |
 | CAP-6 | Softening from scratch: the paper's linear moduli (Eq. 24); no `DamageLaw` exists to reuse | `types/`, `rheology.jl` | **L** |
 | CAP-7 | 3-D method | `rheology.jl:567` | M |
 | CAP-8 | Adjoint: differentiating through a local iteration | `adjoint_operator.jl`, `DR_adjoint.jl` | **L, risky** |
@@ -264,7 +268,7 @@ not different implementations (their Sect. 3.2–3.4):
   continuity residual (their Eq. 34). They report this scheme converges more robustly and use it
   throughout.
 
-FEMTools does neither yet. `integrate_PH_pressure_residual` carries
+Before this step FEMTools did neither. `integrate_PH_pressure_residual` carried
 `−∇·v − (p − p_n)/(η_b Δt) + α ΔT/Δt + Q`: a bulk-viscosity term, not an elastic `K`, and no
 viscoplastic volumetric term at all. The dilation currently enters only through
 `Kb Δt ∂Q/∂P ∂F/∂P` in the multiplier's denominator — a local stabilisation, not a mass balance.
@@ -278,8 +282,8 @@ compatibility decision, and the frozen adjoint operator already refuses to assem
 
 **Decided 2026-09-20: trial pressure scheme.** Recorded in `.agents/solver.md`. The local update is
 `p = p̄ + K ε̇_vol^vp Δt` and the volumetric term cancels from the global continuity residual, so the
-residual the solver assembles keeps its current form and only gains an elastic `K` in place of the
-bulk-viscosity term. This is the first required material step in the implementation: the continuity
+residual the solver assembles keeps its current form and gains an elastic `K` in place of the
+bulk-viscosity term. This first required material step is now implemented: the continuity
 residual must include the elastic compressibility contribution before any cap-specific return-map work
 is considered. Two things follow that CAP-3 must respect: `p(λ)` in the local solve is the *local*
 pressure recovered from the trial value, not the global unknown; and global and local pressure are not
@@ -313,34 +317,50 @@ with Enzyme. Putting a Newton loop with a line search inside it has three conseq
 
 | # | Test | Passes when | Cost |
 |---|---|---|---|
-| V1 ✅ | Cap geometry unit tests (`test/test_drucker_prager_cap.jl`, 140 checks) | tangency identity holds; `F = 0` on the cap circle; `‖∇F‖ = a` on both sides of the delimiter; branches agree *exactly* along the whole switching ray; same for `Q` with `b`; `Float32`/`Float64` and inference | ms |
-| V2 | Reduction to `DruckerPrager` | with the cap out of reach, `τij`, `λ` and `∂Q∂τ` match the existing return map to round-off, in one local iteration | ms |
+| V1 ✅ | Cap geometry unit tests (`test/test_drucker_prager_cap.jl`, 146 checks) | tangency identity holds; `F = 0` on the cap circle; `‖∇F‖ = a` on both sides of the delimiter; branches agree *exactly* along the whole switching ray; same for `Q` with `b`; `Float32`/`Float64` and inference | ms |
+| V2 ✅ | Reduction to `DruckerPrager` | with the cap out of reach, `τij`, `λ` and `∂Q∂τ` match the existing return map to round-off, in one local iteration | ms |
 | V3 | Yield-surface map | reproduces Fig. 2a–c against the Zenodo script; **this is what resolves the reconstructed formulae** | minutes |
 | V4 | 0-D stress integration (their §4.1) | stress paths for uniaxial restrained extension and pure shear, with their Table 1 parameters | seconds |
 | V5 | Perzyna regularisation (their §4.2) | mode-I band width independent of resolution at fixed `η_vp`, and mesh-dependent without it | hours |
 | V6 | Brittle crust localisation (their §4.3) | the Kaus (2010) benchmark, which FEMTools should be run against anyway | hours |
 | V7 | Tensile failure zone propagation (their §4.4) | a standalone cap-driven localisation benchmark with a prescribed tensile front | hours |
-| V8 | Adjoint gradient | ForwardDiff through the return map against central differences at a point in each domain and, separately, near the delimiter | seconds |
+| V8 ✅ | Local adjoint gradient | ForwardDiff through the return map agrees with central differences in the shear domain, cap domain, and near the delimiter | seconds |
 
 V1, V2 and V8 must exist before the kernel is used anywhere. V3 is what turns the reconstructed
 equations into checked ones.
 
 ## 9. Build order
 
-1. **Add the elastic compressibility term to the continuity equation.** This is the first required
+1. ~~**Add the elastic compressibility term to the continuity equation.**~~ **Done 2026-09-20.** The
+   2-D pressure path accepts `dr.K` for the future cap dispatch; current non-cap solver callers and
+   direct helper callers retain the legacy `ηb` behavior unless `K` is explicitly supplied. A focused regression distinguishes the two forms. This is the
+   first required
    material change: the pressure residual must carry the finite elastic bulk contribution before any
    cap-specific return-map logic is trusted. It is the gate that makes the cap compatible with the
    global mass balance and with the trial-pressure scheme.
 2. ~~**CAP-2 geometry + V1 + V3.**~~ **Done 2026-09-20** except V3. `cap_geometry`,
    `cap_yield_function` and `cap_flow_direction` are in `src/stokes/assemblers/rheology.jl`, pure and
-   uncalled; `test/test_drucker_prager_cap.jl` is V1 at 140 checks. Every reconstructed formula was
+   uncalled; `test/test_drucker_prager_cap.jl` is V1 at 146 checks. Every reconstructed formula was
    resolved against the paper and pinned by an independent geometric identity (§1). V3 is still open
    but is now a picture, not a decision.
 3. ~~**CAP-5 decision**, written into `.agents/solver.md` with its consequence for `K = Inf` runs.~~
    **Done 2026-09-20: trial pressure scheme.** See §6.
-4. **CAP-1 type + CAP-3 scalar Newton + V2.** The reduction test is the acceptance gate.
-5. **CAP-8 adjoint derivative + V8**, and the symmetry-assertion message fix.
-6. **CAP-4 volumetric history + CAP-6 softening**, then V4.
+4. ~~**CAP-1 + CAP-3 V2.**~~ **Implemented 2026-09-20.** `DruckerPragerCap` now dispatches
+   through the experimental 2-D constitutive path: its shear domain reuses the existing plane-strain
+   Drucker–Prager return exactly, while its tensile domain uses the bounded local scalar solve.
+   The focused V2 test covers the shear-domain reduction. Production-kernel validation remains open
+   before treating the cap as complete.
+5. ~~**CAP-8 adjoint derivative.**~~ **Done 2026-09-20.** The symmetry-assertion message fix,
+   local V8, cap stress tangent ForwardDiff/central-difference check, the established 2-D adjoint
+   regression, and the dedicated cap-state element test now pass through both the ForwardDiff block
+   path and the Enzyme transpose path (35/35).
+6. **CAP-4 volumetric history + CAP-6 softening**, then V4. The first CAP-4
+   slice is now in place: `StokesDR(...; plastic_history_size=(nq, nels))`
+   allocates caller-visible zeroed per-IP `γ` and `θ` arrays without changing
+   default non-cap memory behavior. The physical-time update is now wired
+   through `update_stokes_current_stress!`; a focused 4-check regression proves
+   cap-domain `γ` and `θ` accumulation and confirms a second update doubles the
+   first. The next slice is to feed these histories into CAP-6 softening.
 7. **V5, V6, V7** as benchmarks under `examples/benchmarks/stokes/`, following the `first_threshold`
    layout: a function-only setup plus a sweep driver.
 8. **CAP-7 3-D**, last, and only if a 3-D consumer exists.

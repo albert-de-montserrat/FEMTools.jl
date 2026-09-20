@@ -37,6 +37,8 @@ import FEMTools
         :ThermalDiffusionDR,
         :StokesMaterial,
         :StokesAdjointWorkspace,
+        :DruckerPrager,
+        :DruckerPragerCap,
         :solver!,
         :solve_coupled_dyrel!,
         :solve_stokes_dyrel!,

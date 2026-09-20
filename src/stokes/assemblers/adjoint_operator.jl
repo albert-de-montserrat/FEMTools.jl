@@ -45,6 +45,10 @@ struct FrozenVelocityOperator{TA}
     A::TA
 end
 
+@inline _plastic_tangent_symmetric(::Nothing) = true
+@inline _plastic_tangent_symmetric(::DruckerPrager) = false
+@inline _plastic_tangent_symmetric(::DruckerPragerCap) = false
+
 """
     _packed_symmetric_length(N) -> Int
 
@@ -118,9 +122,9 @@ function _assert_frozen_symmetry(worst, quantity, what, nels, ::Type{T}) where {
     return error(
         "the frozen adjoint operator $what, which assumes the element tangent is " *
         "symmetric, but the assembled blocks disagree: max $quantity = $worst over " *
-        "$nels elements. Without a plastic model the tangent is symmetric and this " *
-        "cannot happen, so the element operator no longer has the symmetry the " *
-        "storage layout depends on.")
+        "$nels elements. The selected frozen storage layout assumes this " *
+        "symmetry, so the element operator no longer has the identity the " *
+        "layout depends on.")
 end
 
 # A symmetric operator keeps no pressure-coupling block: Cᵀ is B.
@@ -297,7 +301,8 @@ forward state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
         v_arg -> integrate_PH_pressure_residual(
             (v_arg[SOneTo(NV)], v_arg[SVector{NV}(ntuple(i -> NV + i, Val(NV)))]),
             P_loc, P0loc, T_loc, T0loc,
-            geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+            geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP;
+            K = _pressure_bulk_modulus(plastic, K),
         ),
         vcat(vxloc, vyloc),
     )
@@ -371,7 +376,7 @@ function assemble_adjoint_operator(
     # and is not stored at all. The kernel still forms both blocks whole and
     # reports how far each identity is from holding; the checks below turn a
     # violated assumption into an error rather than a wrong gradient.
-    symmetric = plastic === nothing
+    symmetric = _plastic_tangent_symmetric(plastic)
     Ablocks = symmetric ?
         similar(dr.v.x, SVector{_packed_symmetric_length(2NV), Tv}, nels) :
         similar(dr.v.x, SMatrix{2NV, 2NV, Tv, 4NV * NV}, nels)
@@ -631,7 +636,8 @@ at a constant, matching the definition of `B`.
     vy_dual = _seed_partials(vyloc, λvyloc)
     RP_dual = integrate_PH_pressure_residual(
         (vx_dual, vy_dual), P_loc, P0loc, T_loc, T0loc,
-        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP,
+        geo_v_el, geo_P_el, phase_P, α, ηb, Δt, NqP;
+        K = nothing,
     )
     Pnum_dual = pressure_scale(γ_eff_loc, RP_dual, MP_loc)
     Avx_dual, Avy_dual = integrate_momentum_residual(
@@ -777,8 +783,8 @@ function _assert_matrix_free_symmetry(
         "the matrix-free adjoint operator applies forward-mode products in place " *
         "of transposed ones, which assumes the element operator [A B; C 0] is " *
         "symmetric, but ⟨u, Mw⟩ and ⟨Mu, w⟩ differ by a relative $defect. Without " *
-        "a plastic model the tangent is symmetric and this cannot happen, so the " *
-        "element operator no longer has the symmetry the apply depends on.")
+        "the selected matrix-free path assumes this symmetry, so the element " *
+        "operator no longer has the identity the apply depends on.")
 end
 
 """

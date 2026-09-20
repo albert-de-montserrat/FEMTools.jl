@@ -1,3 +1,9 @@
+@inline _pressure_bulk_modulus(::Nothing, K) = nothing
+@inline _pressure_bulk_modulus(::DruckerPrager, K) = nothing
+@inline _pressure_bulk_modulus(::DruckerPragerCap, K) = K
+@inline _select_pressure_bulk(ηb, ::Nothing) = ηb
+@inline _select_pressure_bulk(ηb, K) = K
+
 """
     compute_velocity_divergence(v, ∂N∂x_v) -> ∇V
 
@@ -36,6 +42,14 @@ are per-phase thermal expansion and bulk viscosity `NTuple`s; `Δt` is the time
 step. `Nq` contains pressure shape-function values at pressure quadrature
 points.
 
+The optional `K` keyword selects the trial-pressure formulation's elastic
+compressibility term: when supplied, `K` replaces `ηb` in the pressure-rate
+denominator. Omitting it preserves the historical bulk-viscosity form.
+
+The optional `K` keyword selects the trial-pressure formulation's elastic
+compressibility term: when supplied, `K` replaces `ηb` in the pressure-rate
+denominator. Omitting it preserves the historical bulk-viscosity form.
+
 Weak form per pressure node `i`:
 
     RPᵢ = ∫ Nᵢ (−∇·v − ∂P/∂t/ηb + α ∂T/∂t) dΩ
@@ -47,7 +61,7 @@ evaluated at velocity integration points rather than pressure points. Pressure
 and temperature rates are interpolated from their nodal increments before the
 material factors are applied.
 """
-@inline function integrate_PH_pressure_residual(v::Tuple{SVector{M}, Vararg{SVector{M}, D}}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) where {D, M, N}
+@inline function integrate_PH_pressure_residual(v::Tuple{SVector{M}, Vararg{SVector{M}, D}}, P_loc::SVector{N}, P0loc, Tloc, T0loc, geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq; K = nothing) where {D, M, N}
     RP_e = zero(P_loc)
     for q in eachindex(geo_P_el)
         ∂N∂x_v, = geo_v_el[q] # velocity NOTE: this should be ∂N∂x_v evaluated at linear 3 ips
@@ -55,7 +69,8 @@ material factors are applied.
         Nv      = Nq[q]
 
         # project parameters to integration point
-        ηbq = interp2ip_phase(Nv, ηb, phase_loc)
+        bulk = _select_pressure_bulk(ηb, K)
+        ηbq = interp2ip_phase(Nv, bulk, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
         ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt)
         ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
@@ -139,14 +154,14 @@ function assemble_pressure_residual_kernel!(
     RP, vx, vy, P, P0, T, T0,
     el2n_v, el2nP, geo_v, geo_P, nels,
     phases, α, ηb, Δt, NqP, ∂N∂ξ_v,
-    ::Val{NV}, ::Val{NP}, workgroup
+    ::Val{NV}, ::Val{NP}, workgroup, K = nothing,
 ) where {NV, NP}
     fill!(RP, 0)
     backend = KA.get_backend(RP)
     pressure_residual_atomic_kernel!(backend, workgroup)(
         RP, vx, vy, P, P0, T, T0,
         el2n_v, el2nP, geo_v, geo_P,
-        phases, α, ηb, Δt, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
+        phases, α, ηb, Δt, NqP, ∂N∂ξ_v, Val(NV), Val(NP), K;
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -161,10 +176,10 @@ end
     @Const(el2n_v), @Const(el2nP),
     @Const(geo_v), @Const(geo_P),
     @Const(phases),
-    α, ηb, Δt, NqP, @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
+    α, ηb, Δt, NqP, @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP}, K,
 ) where {NV, NP}
     iel = @index(Global)
-    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP))
+    local_nodes_P, Re = pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP), K)
     # P is discontinuous here, so element pressure DoFs are not shared.
     _add_local!(RP, local_nodes_P, Re, Val(false))
 end
@@ -179,7 +194,7 @@ Gather element-local nodal values and integrate the Stokes pressure residual for
 Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
 """
 @inline function pressure_element_residual(vx, vy, P, P0, T, T0, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP}) where {NV, NP}
+        geo_v, geo_P, phases, α, ηb, Δt, NqP, ∂N∂ξ_v, iel, ::Val{NV}, ::Val{NP}, K = nothing) where {NV, NP}
     local_nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
     local_nodes_P = local_nodes_of(el2nP,  iel, Val(NP))
     geo_v_el  = element_geometry(geo_v, iel, ∂N∂ξ_v)
@@ -193,7 +208,7 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
     phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))
     Re = integrate_PH_pressure_residual(
         (vxloc, vyloc), P_loc, P0loc, Tloc, T0loc,
-        geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NqP,
+        geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, NqP; K,
     )
     return local_nodes_P, Re
 end

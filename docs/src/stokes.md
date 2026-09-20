@@ -43,6 +43,7 @@ StokesDR
 Stokes3DWorkspace
 StokesAdjointWorkspace
 DruckerPrager
+DruckerPragerCap
 pressure_mass
 FEMTools.velocity
 FEMTools.stress
@@ -112,6 +113,12 @@ solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 `mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
+For the experimental Drucker--Prager cap, add
+`plastic_history_size=(nq, mesh.nels)` to allocate per-integration-point `γ`
+and `θ` history arrays; they are zeroed and are not allocated by default.
+Calling `update_stokes_current_stress!` with the cap accumulates one physical
+time increment into those arrays; nonlinear residual iterations do not update
+history.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 

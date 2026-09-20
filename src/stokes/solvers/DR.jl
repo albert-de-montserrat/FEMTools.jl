@@ -231,7 +231,7 @@ function solve_stokes_dyrel!(
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
-    spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
+    spectral_safety = _stokes_spectral_safety(plastic, λmax_safety)
 
     M_P = dr.M_P
     nout = ncheck
@@ -321,6 +321,7 @@ function solve_stokes_dyrel!(
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
             valNV, valNP, workgroup,
+            _pressure_bulk_modulus(plastic, dr.K),
         )
 
         assemble_momentum_residual_kernel!(
@@ -433,6 +434,7 @@ function solve_stokes_dyrel!(
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
                 valNV, valNP, workgroup,
+                _pressure_bulk_modulus(plastic, dr.K),
             )
 
             @. dr.Pnum = γP * dr.RP / M_P
@@ -626,8 +628,36 @@ function update_stokes_current_stress!(
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
         backend, workgroup,
     )
+    _update_stokes_plastic_history!(
+        dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,
+        plastic, G, Δt, backend, workgroup,
+    )
     return τ
 end
+
+@inline _stokes_spectral_safety(::Nothing, λmax_safety) = λmax_safety
+@inline _stokes_spectral_safety(::DruckerPrager, λmax_safety) = max(λmax_safety, 1.5)
+@inline _stokes_spectral_safety(::DruckerPragerCap, λmax_safety) = max(λmax_safety, 1.5)
+
+function _update_stokes_plastic_history!(
+    dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,
+    plastic::DruckerPragerCap, G, Δt, backend, workgroup,
+)
+    dr.plastic_history === nothing && return nothing
+    Nq = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
+    update_stokes_plastic_history!(
+        dr.plastic_history.γ, dr.plastic_history.θ,
+        dr.v.x, dr.v.y, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP,
+        geo_v, phases_v, τ_old, plastic, dr.η, G, Δt,
+        Nq, NqP, ∂N∂ξ_v, Val(length(element_v)), Val(length(element_P)),
+        backend, workgroup,
+    )
+    return nothing
+end
+
+@inline _update_stokes_plastic_history!(args...) = nothing
 
 """
     solve_stokes_dyrel!(velocity, pressure, mesh, cell_phase, η, ρ, g,

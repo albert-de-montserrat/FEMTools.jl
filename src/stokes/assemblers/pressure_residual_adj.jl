@@ -54,6 +54,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         Enzyme.Const(Val(NV)),
         Enzyme.Const(Val(NP)),
         Enzyme.Const(workgroup),
+        Enzyme.Const(nothing),
     )
     return nothing
 end

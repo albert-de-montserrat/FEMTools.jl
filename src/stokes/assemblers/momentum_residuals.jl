@@ -443,6 +443,46 @@ _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{3, <:AbstractMatrix}, iel) =
     IntegrationPointStressOutput(τ_store[1], τ_store[2], τ_store[3], Int(iel))
 
+function update_stokes_plastic_history!(
+    γ, θ, vx, vy, P, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
+    η, G, Δt, Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, backend, workgroup,
+) where {NV, NP}
+    update_stokes_plastic_history_kernel!(backend, workgroup)(
+        γ, θ, vx, vy, P, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
+        η, G, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
+        ndrange = size(γ, 2),
+    )
+    KA.synchronize(backend)
+    return nothing
+end
+
+@kernel function update_stokes_plastic_history_kernel!(
+    γ, θ, @Const(vx), @Const(vy), @Const(P), @Const(el2n_v), @Const(el2nP),
+    @Const(geo_v), @Const(phases), @Const(τ_old), @Const(plastic),
+    @Const(η), @Const(G), @Const(Δt), @Const(Nq), @Const(NqP),
+    @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP},
+) where {NV, NP}
+    iel = @index(Global)
+    nodes_v = local_nodes_of(el2n_v, iel, Val(NV))
+    nodes_P = local_nodes_of(el2nP, iel, Val(NP))
+    geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+    vxloc = _gather_local(vx, nodes_v, Val(NV))
+    vyloc = _gather_local(vy, nodes_v, Val(NV))
+    Ploc = _gather_local(P, nodes_P, Val(NP))
+    τ_old_loc = _gather_old_stress(τ_old, nodes_v, iel, Val(NV), quadrature_points_val(geo_el))
+    phase_loc = _gather_phase(phases, nodes_v, iel, Val(NV))
+    for q in eachindex(geo_el)
+        ∂N∂x, _ = geo_el[q]
+        Nv = Nq[q]
+        Pq = dot(NqP[q], Ploc)
+        τ_old_q = old_stress_at_ip(Nv, τ_old_loc, eltype(vx), q)
+        γdot, θdot = plastic_history_rates(
+            (vxloc, vyloc), ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+        γ[q, iel] += Δt * γdot
+        θ[q, iel] += Δt * θdot
+    end
+end
+
 """
     pressure_mode_table(element) -> NTuple
 
