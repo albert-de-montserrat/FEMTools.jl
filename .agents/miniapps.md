@@ -61,8 +61,70 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/miniapps/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl` | Gmsh T7/P1-disc | Discrete-adjoint sensitivities for the unstructured pure-shear model |
 | `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_adv/stokes_2D_pure_shear_triangle_adv.jl` | Gmsh T7/P1-disc | Pure shear with mesh advection |
 | `examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
+| `examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl` | Triangulate T7/P1-disc | Popov tensile-cap restrained-extension case in nondimensional paper units, with the release's weak seed; see below |
 | `examples/miniapps/stokes/solvi2D/Solvi2D_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/stokes/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
+
+### Popov extension driver: seeded from the authors' release
+
+The driver reproduces the setup of `MESH/tensile.py` and `CODE/tensile.py` in
+the archived GeoTech2D release (DOI 10.5281/zenodo.15496843), which is where
+the localization seed comes from. That seed is a semicircular weak inclusion on
+the middle of the bottom boundary: centre `(Lx/2, 0)`, radius `0.025`, nine arc
+points from `0` to `π`, closed through the centre point, meshed as its own
+Triangle region so the mesh conforms to it. At `max_area = 3e-4` it holds 16 of
+3748 elements. Its only difference from the bulk is a ten times smaller shear
+modulus, `G = 4e9` against `4e10`; `K`, density, friction, cohesion, softening,
+tensile strength, and the regularization viscosity are all equal.
+
+Without that seed the driver deformed uniformly and could not localize at any
+step count: a single phase plus fully prescribed boundary data made
+`vx = ε̇(x − Lx/2)`, `vy = 0` an exact solution, and the spread in accumulated
+volumetric plastic strain sat at `4e-18`, machine zero. With the seed the
+spread is `5.3e-3` after 25 steps, with the peak directly above the inclusion
+at `(0.506, 0.029)` and seed elements 62 percent above background. The lesson
+is that plasticity being active is not evidence that it can localize; check the
+spread, not whether the return map fires.
+
+The boundary conditions also had to be corrected against the release. `vy = 0`
+belongs on the top and bottom only. The side walls carry the horizontal
+velocity and must stay free to move vertically, otherwise the band cannot open
+where it meets them. In the release both side velocities are `1e-4 mm/yr`,
+which over `L = 1 m` gives exactly the `ε̇xx = 6.338e-15 s⁻¹` of Table 1 and
+confirms the domain is metres, not kilometres.
+
+An unstructured mesh is not a substitute for a seed. The driver meshes with
+`FEMTools.triangulate_t7_mesh` rather than a structured grid, which matches the
+paper's setup and takes its target triangle area directly, but switching to it
+reproduced the structured numbers bit for bit: trial pressure
+`-0.768046344188`, corrected `-0.146582038`, plastic strain spread `3e-18`. A
+linear velocity field is represented exactly by T7 elements, so every element
+sees the same uniform strain rate whatever its shape, and there is no
+mesh-induced perturbation to grow. Do not expect mesh irregularity to trigger
+localization in this class of problem.
+
+Both this driver and `ice_bridge_2D` call `FEMTools.triangulate_t7_mesh` from
+the Triangulate extension instead of driving `TriangulateIO` themselves. A new
+2-D miniapp that needs its own mesh should do the same and supply only the
+boundary polygon and `max_area`; pass `segments` and `regions` when the mesh
+must conform to an interior interface, as the seed does, and `ice_bridge_2D`
+shows the pattern for a non-rectangular domain, where boundary-node selection
+stays in the script.
+
+Two traps this driver already fell into, worth avoiding in any new cap example:
+
+- Refresh `τ_old` from `dr.τ` after `update_stokes_current_stress!`, the way
+  `solvi2D` does. Without it the stress history stays zero, every step restarts
+  from an unstressed state, and the deviatoric response silently freezes at the
+  one-step elastic predictor while the run still converges and reports success.
+- Read the corrected pressure from the four-matrix `τ_store`, never from
+  `dr.P .+ dr.Pnum`. `Pnum` is a solver relaxation term; the sum is not a
+  physical pressure and in this case pointed the wrong way from the cap.
+
+This driver is what exposed the inner-loop convergence defect described in the
+solver guide: it spent the full `iterMax` budget every step while reporting
+`err ≈ 5e-17`. After the fix it exits at the first check, 25 iterations instead
+of 501, with the physics unchanged to 11 significant figures.
 
 ## 2-D building-block miniapps
 

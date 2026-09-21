@@ -85,6 +85,7 @@ import FEMTools
         :straighten_t7_geometry!,
         :rectangle_boundary_nodes,
         :circle_boundary_nodes,
+        :triangulate_t7_mesh,
         :velocity,
         :stress,
         :pressure,

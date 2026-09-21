@@ -137,7 +137,7 @@ end
         Ablocks, ∂Rv_x∂vx, PC_vx, ∂Rv_y∂vy, PC_vy,
         @Const(vx), @Const(vy), @Const(P), @Const(P0), @Const(T), @Const(T0),
         @Const(el2n_v), @Const(el2nP), @Const(geo_v), @Const(geo_P),
-        @Const(phases_v), @Const(phases_P), τ_old, plastic,
+        @Const(phases_v), @Const(phases_P), τ_old, plastic, γ_history,
         η, G, α, ρ0, K, g, Tref, ηb, Δt, γ_eff, @Const(MP),
         Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP},
     ) where {NV, NP}
@@ -145,7 +145,7 @@ end
     local_nodes_v, Axx, Axy, Ayx, Ayy = element_augmented_momentum_jacobians(
         vx, vy, P, P0, T, T0, el2n_v, el2nP, geo_v, geo_P,
         phases_v, phases_P, η, G, α, ρ0, K, g, Tref, ηb, Δt,
-        γ_eff, MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP), τ_old, plastic,
+        γ_eff, MP, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP), τ_old, plastic, γ_history,
     )
     A = vcat(hcat(Axx, Axy), hcat(Ayx, Ayy))
     Ablocks[iel] = A
@@ -160,7 +160,8 @@ end
 function assemble_velocity_operator(
         dr, mesh_stokes, geo_v, geo_P,
         element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
-        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+        γ_history = nothing,
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
@@ -174,7 +175,7 @@ function assemble_velocity_operator(
         Ablocks, dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
         dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, phases_v, phases_P,
-        τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
+        τ_old, plastic, γ_history, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
         Δt, γP, dr.M_P, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = mesh_stokes.nels,
     )

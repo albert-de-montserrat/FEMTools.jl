@@ -253,7 +253,8 @@ function solve_stokes_dyrel!(
     velocity_op = if measure_λmax
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+            γ_history = _plastic_history_gamma(dr.plastic_history))
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
@@ -261,7 +262,8 @@ function solve_stokes_dyrel!(
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
-            backend, workgroup; τ_old, plastic)
+            backend, workgroup; τ_old, plastic,
+            γ_history = _plastic_history_gamma(dr.plastic_history))
         nothing
     end
     λmax_gershgorin = max(
@@ -331,6 +333,7 @@ function solve_stokes_dyrel!(
             phases_v, τ_old, plastic, nothing,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+            _plastic_history_gamma(dr.plastic_history),
         )
         apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
         apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
@@ -446,6 +449,7 @@ function solve_stokes_dyrel!(
                 phases_v, τ_old, plastic, nothing,
                 dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+                _plastic_history_gamma(dr.plastic_history),
             )
 
             apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
@@ -467,7 +471,13 @@ function solve_stokes_dyrel!(
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
-                err = max(err_v_inner / err_v00, err_v_inner)
+                # `err_v00` is the residual at the first check of the solve, so
+                # an inner solve that starts already converged has nothing left
+                # to drop: the relative term sits at ~1 and pins `err` there,
+                # and the exit test `err ≤ err_outer·rel_drop` can never be met.
+                # Below the solve tolerance the absolute residual decides alone.
+                err = err_v_inner ≤ ϵ ? err_v_inner :
+                    max(err_v_inner / err_v00, err_v_inner)
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
@@ -483,7 +493,8 @@ function solve_stokes_dyrel!(
                     velocity_op = if measure_λmax
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+                            γ_history = _plastic_history_gamma(dr.plastic_history))
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
                             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
@@ -491,7 +502,8 @@ function solve_stokes_dyrel!(
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic)
+                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
+                            γ_history = _plastic_history_gamma(dr.plastic_history))
                         nothing
                     end
 
@@ -626,7 +638,8 @@ function update_stokes_current_stress!(
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-        backend, workgroup,
+        backend, workgroup;
+        γ_history = _plastic_history_gamma(dr.plastic_history),
     )
     _update_stokes_plastic_history!(
         dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,
@@ -638,6 +651,9 @@ end
 @inline _stokes_spectral_safety(::Nothing, λmax_safety) = λmax_safety
 @inline _stokes_spectral_safety(::DruckerPrager, λmax_safety) = max(λmax_safety, 1.5)
 @inline _stokes_spectral_safety(::DruckerPragerCap, λmax_safety) = max(λmax_safety, 1.5)
+
+@inline _plastic_history_gamma(::Nothing) = nothing
+@inline _plastic_history_gamma(history::IntegrationPointPlasticHistory) = history.γ
 
 function _update_stokes_plastic_history!(
     dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,

@@ -39,16 +39,22 @@ struct IntegrationPointStress{TX, TY, TXY}
 end
 
 """
-    IntegrationPointStressOutput{TX, TY, TXY}
+    IntegrationPointStressOutput{TX, TY, TXY, TP}
 
 Scratch buffer for writing the *current* deviatoric stress to integration
 points during momentum-residual assembly. `iel` pins the buffer to a specific
 element so that `store_stress_at_ip!` can index `τxx[q, iel]` directly.
+
+`P` optionally receives the plastically corrected pressure returned by the
+tensile-cap return map, the value the momentum balance actually uses. It is
+`nothing` when the caller asks only for stress, and for yield models whose
+return map leaves pressure unchanged it simply records the trial pressure.
 """
-struct IntegrationPointStressOutput{TX, TY, TXY}
+struct IntegrationPointStressOutput{TX, TY, TXY, TP}
     τxx::TX
     τyy::TY
     τxy::TXY
+    P::TP
     iel::Int
 end
 @inline old_stress_at_ip(_, ::Nothing, ::Type{T}, _) where T = zero_old_stress(T)
@@ -61,11 +67,17 @@ end
 end
 @inline old_stress_at_ip(_, τ_old::IntegrationPointStress, ::Type, q) =
     (τ_old.τxx[q], τ_old.τyy[q], τ_old.τxy[q])
-@inline store_stress_at_ip!(::Nothing, _, _, _, _) = nothing
-@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy)
+@inline store_stress_at_ip!(::Nothing, _, _, _, _, _) = nothing
+@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy, P)
     τ_store.τxx[q, τ_store.iel] = τxx
     τ_store.τyy[q, τ_store.iel] = τyy
     τ_store.τxy[q, τ_store.iel] = τxy
+    _store_pressure_at_ip!(τ_store.P, q, τ_store.iel, P)
+    return nothing
+end
+@inline _store_pressure_at_ip!(::Nothing, _, _, _) = nothing
+@inline function _store_pressure_at_ip!(P_store, q, iel, P)
+    P_store[q, iel] = P
     return nothing
 end
 
@@ -132,6 +144,17 @@ end
 # Dispatch: no plasticity when plastic===nothing.
 @inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing) =
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+
+# Internal momentum path. Existing stress-only API stays unchanged.
+@inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing) =
+    (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)
+
+@inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic) =
+    deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, nothing)
+
+@inline deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing, ::Nothing,
+    ) = (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)
 
 """
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
@@ -204,6 +227,13 @@ denominator stays positive for any dilation angle.
         τij
 
     return τij
+end
+
+@inline function deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPrager, ::Nothing,
+    )
+    return deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic), Pq
 end
 
 
@@ -289,6 +319,11 @@ is responsible for parameters that satisfy it.
     p_q = p_d + kq * τ_d
     return (; a, b, p_y, R_y, p_d, τ_d, p_q)
 end
+
+"""Return cohesion after linear strain softening at one integration point."""
+@inline softened_cohesion(C, C_min, H_C, γ) = clamp(C + H_C * γ, C_min, C)
+@inline _cohesion_at_history(C, C_min, H_C, ::Nothing) = C
+@inline _cohesion_at_history(C, C_min, H_C, γ::Real) = softened_cohesion(C, C_min, H_C, γ)
 
 """
     cap_yield_function(τII, P, k, c, geom) -> F
@@ -461,6 +496,47 @@ cap's bounded local scalar solve and radial deviatoric return.
     scale = iszero(τII) ? zero(τII) : result.τII / τII
     return map(τ -> scale * τ, τ_trial)
 end
+
+@inline function deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPragerCap, γ::Union{Nothing, Real},
+    )
+    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+    k     = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
+    kq    = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
+    C     = interp2ip_phase(Nv, plastic.C, phase_loc)
+    C_min = interp2ip_phase(Nv, plastic.C_min, phase_loc)
+    H_C   = interp2ip_phase(Nv, plastic.H_C, phase_loc)
+    C     = _cohesion_at_history(C, C_min, H_C, γ)
+    c     = C *
+            interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
+    pT    = interp2ip_phase(Nv, plastic.pT, phase_loc)
+    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
+    Kb    = interp2ip_phase(Nv, plastic.Kb, phase_loc)
+    τII   = second_invariant(τ_trial)
+    geom  = cap_geometry(k, kq, c, pT)
+    F     = cap_yield_function(τII, Pq, k, c, geom)
+
+    F ≤ 0 && return τ_trial, Pq
+    if Pq + k * τII ≥ geom.p_y
+        λ = F / (ηve + η_reg + Kb * Δt * kq * k)
+        τ = _drucker_prager_return(
+            τ_trial, ηve, Δt, Pq,
+            interp2ip_phase(Nv, plastic.cosϕ, phase_loc), k, kq,
+            C, η_reg, Kb,
+        )
+        return τ, Pq + Kb * Δt * λ * kq
+    end
+
+    result = cap_return_map(
+        τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50),
+    )
+    @assert result.converged "Drucker-Prager cap local return map did not converge"
+    scale = iszero(τII) ? zero(τII) : result.τII / τII
+    return map(τ -> scale * τ, τ_trial), result.P
+end
+
 
 """
     cap_return_map(τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, Val(maxiter))

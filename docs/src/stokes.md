@@ -242,7 +242,37 @@ julia --project=examples examples/miniapps/stokes/sinking_block_adj/sinking_bloc
 julia --project=examples examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl
 julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl
 julia --project=examples examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl
+julia --project=examples examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl
 ```
+
+The Popov extension driver is a small unstructured T7/P1-discontinuous
+tensile-cap case using only the Table 1 / Figure 6b setup. It meshes the domain
+with `FEMTools.triangulate_t7_mesh` from a target triangle area, `max_area`, in
+the paper's range of `5e-6` to `3e-4`, so the script needs `using Triangulate`
+to load that extension. Inputs are nondimensionalised
+with `L0=1 m`, `S0=10 MPa`, and `t0=50 yr`; therefore `nsteps=2000` represents
+100 kyr and one solver step is one paper time increment. The returned `scales`
+named tuple converts dimensionless fields back to SI units.
+The returned fields distinguish trial pressure, corrected pressure, and
+integration-point accumulated volumetric plastic strain `χ` (the Figure 6b
+quantity), plus deviatoric plastic strain. Trial pressure is the nodal field the
+solver carries; corrected pressure is the tensile-cap return map's pressure at
+integration points, returned as an `nq × nels` array rather than a nodal field.
+Set `write_output=true` to write legacy ASCII VTK files with velocity and
+projected trial pressure as point data, plus cell fields for both pressure
+states, both plastic-strain measures, and the stress/strain-rate second
+invariants.
+
+The driver carries the weak seed of the authors' GeoTech2D release: a
+semicircular inclusion on the middle of the bottom boundary, centre `(Lx/2, 0)`
+and radius `0.025`, meshed as its own Triangle region so the mesh conforms to
+it, and given a ten times smaller shear modulus than the bulk. Every other
+property is shared. Without it the domain deforms homogeneously and cannot
+localise at any step count, because a single phase plus fully prescribed
+boundary velocities makes the uniform field an exact solution; an unstructured
+mesh does not change that on its own. `vy` is prescribed on the top and bottom
+only, so the side walls stay free to move vertically. The returned `phases`
+vector gives each element's region, and `phase` is written as a VTK cell field.
 
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 4 km-radius semicircular opening cut into its bottom, then applies gravity and

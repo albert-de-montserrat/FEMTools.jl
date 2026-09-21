@@ -131,7 +131,8 @@ The module currently marks the following categories `public`:
 - external-mesh ingestion helpers in `src/mesh/utils.jl`:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`,
-  `circle_boundary_nodes`;
+  `circle_boundary_nodes`, and the `triangulate_t7_mesh` stub whose method the
+  Triangulate extension supplies;
 - result accessors: `velocity`, `stress`, `pressure`, `temperature`.
 
 These names are callable as `FEMTools.name` but are deliberately not imported
@@ -221,6 +222,13 @@ those behaviors hide costly scientific errors.
 `TA(::CPU)` maps to `Array`. Optional package extensions in `ext/` add mappings
 for CUDA, AMDGPU, and Metal backends when those packages are loaded. Core code
 must remain loadable without any GPU dependency.
+
+Extensions also carry optional non-backend capability. `FEMToolsTriangulateExt`
+adds the only method of `triangulate_t7_mesh`, so 2-D mesh generation is
+available without making Triangulate a core dependency. A capability added this
+way needs three pieces: a stub in `src/` that owns the docstring and raises an
+error naming the package to load, the method in `ext/`, and the weak dependency
+listed in both `[weakdeps]` and `[extras]` so the test target can exercise it.
 
 Backend-generic API additions should:
 

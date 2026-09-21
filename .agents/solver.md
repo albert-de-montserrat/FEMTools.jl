@@ -309,6 +309,37 @@ one; do not mix them. Consequences to hold onto:
   The global value converges to the trial pressure and the local value is the
   true spherical stress. A diagnostic that compares them is measuring the
   dilation, not an error.
+- The cap constitutive dispatch now returns the locally corrected pressure to
+  the 2-D momentum residual. The global pressure field, pressure residual, and
+  density equation of state still use trial pressure; this split is deliberate.
+- The corrected pressure is now observable. Passing a four-matrix `τ_store`
+  to `update_stokes_current_stress!` — `(τxx, τyy, τxy, P)`, each `nq × nels` —
+  records the return map's pressure at integration points alongside stress. A
+  three-matrix store keeps the previous stress-only behavior, so every existing
+  caller is unchanged. Without this there was no way to read the physical
+  pressure back out: `dr.Pnum` is the Arrow-Hurwicz update `γP·RP/M_P`, not a
+  plastic correction, and using it as one is a mistake that reads plausible.
+- Under the trial-pressure scheme the global field is unbounded for sustained
+  volumetric loading, because each step seeds `P0` from the previous *trial*
+  pressure. In the homogeneous Popov extension driver the nodal field falls a
+  fixed `K·Δt·∇·v` per step with no saturation, while the corrected pressure
+  holds just past `pT` by the Perzyna overstress: after 12 steps, trial
+  `-0.768` against corrected `-0.147` for `pT = -0.1`. Whether `P0` should
+  instead be seeded from the corrected pressure is open, and it is the same
+  question the example plan records as "define how corrected pressure is
+  carried into the next physical timestep". Resolve it before reading any
+  absolute pressure from a multi-step cap run.
+- Evidence for that question, not a decision on it: the authors' GeoTech2D
+  release carries the *corrected* pressure into the next step. In
+  `CODE/src/update.py` the local update stores `svar['svp'] = pcor` and the
+  next step forms its trial pressure as `pstar = pn - dp` from that stored
+  value, so nothing accumulates an uncorrected trial field across steps. That
+  code solves the two-field system with Newton rather than Powell-Hestenes and
+  DYREL, so its handoff is not automatically ours; treat it as the reference
+  behaviour to argue for or against, and keep the decision explicit.
+- `DruckerPragerCap` accepts optional per-phase `C_min` and `H_C` tuples for
+  bounded linear cohesion softening. Residual and augmented Jacobian assembly
+  accept per-IP γ and apply the same local law.
 - The 2-D pressure residual now accepts an optional per-phase `K`; the solver
   selects it by plastic-model dispatch only for the experimental
   `DruckerPragerCap` path. Existing
@@ -354,6 +385,29 @@ Arrow-Hurwicz/Powell-Hestenes update is
 ```math
 P\leftarrow P+γ_P M_P^{-1}R^p.
 ```
+
+**The inner loop scores progress relatively, and that needs an absolute floor.**
+Its error is `max(err_v_inner / err_v00, err_v_inner)`, where `err_v00` is the
+velocity residual at the *first check of the solve*. When the velocity already
+satisfies the momentum balance at that first check, the ratio is ~1 and pins the
+error there however small the true residual is, so the exit test
+`err ≤ err_outer · rel_drop` can never be met and the solve spends its whole
+inner budget. The absolute term alone now decides once `err_v_inner ≤ ϵ`.
+
+Two things are easy to get wrong here:
+
+- The outer loop uses `min(err_abs, err_rel)` — converged when *either*
+  criterion holds. The inner `max` is the opposite, and needs the absolute
+  escape to stay satisfiable. Keep the two consistent in intent if either is
+  touched.
+- It wastes work rather than corrupting the answer. A block pulled at a constant
+  rate from its exact velocity solution reaches the right pressure either way,
+  but spends its entire inner budget on the first outer pass: 501 iterations
+  against 25. The Popov extension driver showed the same 501 per physical step.
+  Any step that starts near its own solution is exposed — small time steps,
+  restarts, steady continuation. The regression lives in
+  `test/test_solver_convergence_api.jl` and asserts the iteration count, since
+  the converged values alone do not distinguish the two.
 
 The coupled entry point uses this same loop. At each inner velocity iteration
 it first performs one standard thermal Chebyshev DR update, applies the thermal

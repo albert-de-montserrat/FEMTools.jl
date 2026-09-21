@@ -92,3 +92,42 @@ function circle_boundary_nodes(coords, cx, cy, r; atol = nothing)
     return Int32[i for i in eachindex(coords) if
         abs(hypot(coords[i][1] - cx, coords[i][2] - cy) - r) <= tol]
 end
+
+"""
+    triangulate_t7_mesh(points; max_area, min_angle = 30.0, segments = nothing,
+                        regions = ()) -> (coords, el2n, attributes)
+
+Mesh the planar straight-line graph `points` and return `Float64` coordinates,
+counter-clockwise `Int32` T7 connectivity, and one `Int32` region attribute per
+element.
+
+With `segments = nothing`, `points` lists the vertices of a simple polygon in
+order and the closing segment is added automatically. Pass `segments` as pairs
+of one-based indices into `points` to describe any other graph, such as an
+interior interface that the mesh must conform to. `max_area` bounds the area of
+every generated triangle and `min_angle` sets the minimum interior angle in
+degrees.
+
+`regions` marks the subdomains that the segments enclose, each entry being
+`(x, y, attribute)` or `(x, y, attribute, max_area)` where `(x, y)` is any point
+inside the subdomain. The returned `attributes` then hold each element's
+attribute, which is how a driver assigns phases to a conforming inclusion.
+Without `regions` every element belongs to one implied region and `attributes`
+is all ones.
+
+Edge and bubble nodes are placed by `add_t7_bubbles!`, so the result is ready
+for a `Mesh` built on `QuadraticElement{2, 7}`. Boundary-node selection is left
+to the caller, which knows the domain shape; see `rectangle_boundary_nodes` and
+`circle_boundary_nodes`.
+
+The method is supplied by a package extension. Call `using Triangulate` before
+using it.
+"""
+function triangulate_t7_mesh(args...; kwargs...)
+    return throw(
+        ArgumentError(
+            "triangulate_t7_mesh has no method for these arguments; if Triangulate is " *
+            "not loaded yet, run `using Triangulate` to enable the meshing extension"
+        )
+    )
+end

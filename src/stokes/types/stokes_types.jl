@@ -59,6 +59,19 @@ _zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
     new_array(), new_array(), new_empty(),
 )
 
+# Declared ahead of StokesDR so that its docstring stays adjacent to the struct
+# it documents; a definition placed between the two silently steals it.
+struct IntegrationPointPlasticHistory{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+end
+
+struct IntegrationPointPlasticHistoryOutput{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+    iel::Int
+end
+
 """
     StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
 
@@ -159,17 +172,6 @@ for a gravity-free three-dimensional problem — to obtain `VectorField3D`
 velocity fields and `SymmetricTensor3D` stresses. The two-dimensional
 mixed-mesh solvers accept only `StokesDR{<:Any, 2}`.
 """
-struct IntegrationPointPlasticHistory{Tγ, Tθ}
-    γ::Tγ
-    θ::Tθ
-end
-
-struct IntegrationPointPlasticHistoryOutput{Tγ, Tθ}
-    γ::Tγ
-    θ::Tθ
-    iel::Int
-end
-
 struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # velocity-node solution fields
     v::_TV
@@ -391,6 +393,8 @@ circular cap, after Popov, Berlie and Kaus (2025), Geosci. Model Dev. 18,
 | `pT`     | tensile strength [Pa], compression-positive so `pT ≤ 0` |
 | `η_reg`  | plastic regularization viscosity [Pa s]    |
 | `Kb`     | bulk modulus for volumetric correction [Pa]|
+| `C_min`  | lower cohesion bound [Pa]                |
+| `H_C`    | cohesion softening modulus [Pa]          |
 
 All fields are `NTuple{nphases, FP}`. The shear branch is identical to
 [`DruckerPrager`](@ref); the extra `pT` adds the cap. Unlike `DruckerPrager`,
@@ -405,15 +409,18 @@ struct DruckerPragerCap{nphases, FP}
     pT    :: NTuple{nphases, FP}
     η_reg :: NTuple{nphases, FP}
     Kb    :: NTuple{nphases, FP}
+    C_min :: NTuple{nphases, FP}
+    H_C   :: NTuple{nphases, FP}
 end
 
 """
-    DruckerPragerCap(ϕ, Ψ, C, pT, η_reg, Kb) -> DruckerPragerCap
+    DruckerPragerCap(ϕ, Ψ, C, pT, η_reg, Kb; C_min=C, H_C=zero) -> DruckerPragerCap
 
 Construct tensile-cap Drucker-Prager parameters from friction angle `ϕ`,
 dilation angle `Ψ`, cohesion `C`, tensile strength `pT`, regularization
-viscosity `η_reg`, and bulk modulus `Kb`. All arguments are
-`NTuple{nphases, FP}`.
+viscosity `η_reg`, and bulk modulus `Kb`. `C_min` and `H_C` configure optional
+linear cohesion softening against accumulated deviatoric plastic strain `γ`;
+defaults disable softening. All tuple arguments are `NTuple{nphases, FP}`.
 
 Validates, per phase, the conditions under which the cap exists at all:
 
@@ -441,7 +448,11 @@ function DruckerPragerCap(
     pT    :: Tuple{FP, Vararg{FP, N}},
     η_reg :: Tuple{FP, Vararg{FP, N}},
     Kb    :: Tuple{FP, Vararg{FP, N}},
+    ; C_min = C,
+      H_C = ntuple(_ -> zero(FP), Val(N + 1)),
 ) where {N, FP}
+    C_min = NTuple{N + 1, FP}(C_min)
+    H_C   = NTuple{N + 1, FP}(H_C)
     for i in 1:(N + 1)
         pT[i] > 0 && throw(
             ArgumentError(
@@ -465,9 +476,18 @@ function DruckerPragerCap(
         η_reg[i] ≥ 0 || throw(
             ArgumentError("phase $i: η_reg must be ≥ 0, got $(η_reg[i])")
         )
+        C_min[i] ≥ 0 || throw(
+            ArgumentError("phase $i: C_min must be ≥ 0, got $(C_min[i])")
+        )
+        C_min[i] ≤ C[i] || throw(
+            ArgumentError("phase $i: C_min must be ≤ C, got C_min=$(C_min[i]), C=$(C[i])")
+        )
+        H_C[i] ≤ 0 || throw(
+            ArgumentError("phase $i: H_C must be ≤ 0 for softening, got $(H_C[i])")
+        )
     end
     return DruckerPragerCap{N + 1, FP}(
-        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, pT, η_reg, Kb,
+        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, pT, η_reg, Kb, C_min, H_C,
     )
 end
 
