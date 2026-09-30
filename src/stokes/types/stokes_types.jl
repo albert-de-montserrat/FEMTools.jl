@@ -59,8 +59,21 @@ _zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
     new_array(), new_array(), new_empty(),
 )
 
+# Declared ahead of StokesDR so that its docstring stays adjacent to the struct
+# it documents; a definition placed between the two silently steals it.
+struct IntegrationPointPlasticHistory{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+end
+
+struct IntegrationPointPlasticHistoryOutput{Tγ, Tθ}
+    γ::Tγ
+    θ::Tθ
+    iel::Int
+end
+
 """
-    StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
+    StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
 
 Solver state for an incompressible Stokes flow solved with a pseudo-transient
 dynamic-relaxation (DR) scheme using mixed elements (separate velocity and
@@ -125,12 +138,12 @@ temperature for the linearised EOS, default 0).
 # Constructor
     StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial;
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
-             stress_size=nothing)
+             stress_size=nothing, plastic_history_size=nothing)
     StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
              ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
-             stress_size=nothing)
-    StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
+             stress_size=nothing, plastic_history_size=nothing)
+StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Individual components are reached through the field containers, e.g. `dr.v.x`
@@ -140,6 +153,9 @@ arrays, so they add no per-element storage and are not available as scratch.
 Stress components default to nodal storage of length `nnodes_v`; pass
 `stress_size=(nq, nels)` to store current and previous stress directly at
 integration points, or `stress_size=:none` to allocate no stress history at all.
+Pass `plastic_history_size=(nq, nels)` to allocate zeroed integration-point
+arrays `dr.plastic_history.γ` and `dr.plastic_history.θ` for the cap's future
+history update; it is independent of stress storage and defaults to `nothing`.
 `nnodes_v` and `nnodes_P` likewise accept a dimension tuple instead of a node
 count, which is how a cell-local pressure layout such as `(4, nels)` is
 expressed. `T` and `T0` should be filled via `copyto!` before calling the solver.
@@ -156,7 +172,7 @@ for a gravity-free three-dimensional problem — to obtain `VectorField3D`
 velocity fields and `SymmetricTensor3D` stresses. The two-dimensional
 mixed-mesh solvers accept only `StokesDR{<:Any, 2}`.
 """
-struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
+struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # velocity-node solution fields
     v::_TV
     ∂v∂τ::_TV
@@ -170,6 +186,8 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
     # deviatoric stress history
     τ::_TT
     τ_old::_TT
+    # optional cap plastic history at integration points
+    plastic_history::_TH
     # pressure-node solution fields
     P::_TP
     P0::_TP
@@ -209,6 +227,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         Tref = nothing,
         CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
         stress_size = nothing,
+        plastic_history_size = nothing,
     ) where {N, FP}
         nphases = N + 1
         _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
@@ -218,11 +237,15 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         _Tref = Tref === nothing ? FP(0)           : FP(Tref)
         stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
             "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
+        plastic_history_size isa Symbol && plastic_history_size !== :none && throw(ArgumentError(
+            "plastic_history_size must be `nothing`, `:none`, an integer, or a size tuple; got :$plastic_history_size"))
         dim = _spatial_dimension(_g)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
         stress_dims = stress_size === nothing ? v_dims :
             stress_size === :none ? nothing : _storage_dims(stress_size)
+        history_dims = plastic_history_size === nothing || plastic_history_size === :none ?
+            nothing : _storage_dims(plastic_history_size)
         newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
         newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
         newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
@@ -231,15 +254,20 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP}
         newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
         newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
+        newhistory() = history_dims === nothing ? nothing : IntegrationPointPlasticHistory(
+            KernelAbstractions.zeros(backend, FP, history_dims...),
+            KernelAbstractions.zeros(backend, FP, history_dims...),
+        )
         new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
-            typeof(newiv()), typeof(newP()), typeof(newip()), FP,
+            typeof(newiv()), typeof(newP()), typeof(newip()), FP, typeof(newhistory()),
         }(
             newvfield(), newvfield(),                 # v, ∂v∂τ
             newvfield(), newvfield(),                 # Rv, Rv0
             newvfield(), newvfield(),                 # ∂Rv∂v, PC_v
             newiv(),                                  # phases_v
             newτfield(), newτfield(),                 # τ, τ_old
+            newhistory(),                              # optional cap history
             newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
@@ -346,6 +374,127 @@ function DruckerPrager(
 ) where {N, FP}
     DruckerPrager{N + 1, FP}(
         map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
+    )
+end
+
+"""
+    DruckerPragerCap{nphases, FP}
+
+Drucker-Prager parameters closed on the tensile side by a globally continuous
+circular cap, after Popov, Berlie and Kaus (2025), Geosci. Model Dev. 18,
+7035-7058.
+
+| Field    | Description                                |
+|:-------- |:------------------------------------------ |
+| `cosϕ`   | cos(friction angle)                        |
+| `sinϕ`   | sin(friction angle)                        |
+| `sinΨ`   | sin(dilation angle)                        |
+| `C`      | cohesion [Pa]                              |
+| `pT`     | tensile strength [Pa], compression-positive so `pT ≤ 0` |
+| `η_reg`  | plastic regularization viscosity [Pa s]    |
+| `Kb`     | bulk modulus for volumetric correction [Pa]|
+| `C_min`  | lower cohesion bound [Pa]                |
+| `H_C`    | cohesion softening modulus [Pa]          |
+
+All fields are `NTuple{nphases, FP}`. The shear branch is identical to
+[`DruckerPrager`](@ref); the extra `pT` adds the cap. Unlike `DruckerPrager`,
+`Kb` **must be finite**: every dilatant plasticity model needs a finite elastic
+bulk modulus, so the cap cannot be used in the `K = Inf` incompressible gauge.
+"""
+struct DruckerPragerCap{nphases, FP}
+    cosϕ  :: NTuple{nphases, FP}
+    sinϕ  :: NTuple{nphases, FP}
+    sinΨ  :: NTuple{nphases, FP}
+    C     :: NTuple{nphases, FP}
+    pT    :: NTuple{nphases, FP}
+    η_reg :: NTuple{nphases, FP}
+    Kb    :: NTuple{nphases, FP}
+    C_min :: NTuple{nphases, FP}
+    H_C   :: NTuple{nphases, FP}
+end
+
+"""
+    DruckerPragerCap(ϕ, Ψ, C, pT, η_reg, Kb; C_min=C, H_C=zero) -> DruckerPragerCap
+
+Construct tensile-cap Drucker-Prager parameters from friction angle `ϕ`,
+dilation angle `Ψ`, cohesion `C`, tensile strength `pT`, regularization
+viscosity `η_reg`, and bulk modulus `Kb`. `C_min` and `H_C` configure optional
+linear cohesion softening against accumulated deviatoric plastic strain `γ`;
+defaults disable softening. Angles are in radians. All tuple arguments are
+`NTuple{nphases, FP}` and must be finite.
+
+Validates, per phase, the conditions under which the cap exists at all:
+
+  - `pT ≤ 0`, because pressure is compression-positive here;
+  - `C·cos(ϕ) + sin(ϕ)·pT > 0`, which is what makes the cap radius positive.
+    Cohesion must exceed `sin(ϕ)·|pT|`, so a rock cannot be given a tensile
+    strength that outruns its shear strength;
+  - positive cap radius also at `C_min`, so it survives the entire linear
+    cohesion-softening interval;
+  - `Kb > 0`, since dilatant plasticity needs positive finite bulk compliance;
+  - `η_reg ≥ 0`.
+
+Each is an `ArgumentError` naming the offending phase.
+
+# Examples
+```jldoctest
+julia> dp = DruckerPragerCap((deg2rad(30),), (deg2rad(10),), (1.0e6,), (-5.0e5,), (0.0,), (2.0e11,));
+
+julia> dp.pT[1] ≈ -5.0e5
+true
+```
+"""
+function DruckerPragerCap(
+    ϕ     :: Tuple{FP, Vararg{FP, N}},
+    Ψ     :: Tuple{FP, Vararg{FP, N}},
+    C     :: Tuple{FP, Vararg{FP, N}},
+    pT    :: Tuple{FP, Vararg{FP, N}},
+    η_reg :: Tuple{FP, Vararg{FP, N}},
+    Kb    :: Tuple{FP, Vararg{FP, N}},
+    ; C_min = C,
+      H_C = ntuple(_ -> zero(FP), Val(N + 1)),
+) where {N, FP}
+    C_min = NTuple{N + 1, FP}(C_min)
+    H_C   = NTuple{N + 1, FP}(H_C)
+    for i in 1:(N + 1)
+        all(isfinite, (ϕ[i], Ψ[i], C[i], pT[i], η_reg[i], Kb[i], C_min[i], H_C[i])) ||
+            throw(ArgumentError("phase $i: tensile-cap parameters must all be finite"))
+        pT[i] > 0 && throw(
+            ArgumentError(
+                "phase $i: tensile strength pT must be ≤ 0 with compression-positive \
+                 pressure, got $(pT[i])"
+            )
+        )
+        c = C[i] * cos(ϕ[i])
+        c + sin(ϕ[i]) * pT[i] > 0 || throw(
+            ArgumentError(
+                "phase $i: cap radius is not positive; need C·cos(ϕ) + sin(ϕ)·pT > 0, \
+                 got $(c + sin(ϕ[i]) * pT[i]). Cohesion must exceed sin(ϕ)·|pT|."
+            )
+        )
+        Kb[i] > 0 || throw(
+            ArgumentError(
+                "phase $i: dilatant plasticity requires a positive finite bulk modulus, got $(Kb[i])"
+            )
+        )
+        η_reg[i] ≥ 0 || throw(
+            ArgumentError("phase $i: η_reg must be ≥ 0, got $(η_reg[i])")
+        )
+        C_min[i] ≥ 0 || throw(
+            ArgumentError("phase $i: C_min must be ≥ 0, got $(C_min[i])")
+        )
+        C_min[i] ≤ C[i] || throw(
+            ArgumentError("phase $i: C_min must be ≤ C, got C_min=$(C_min[i]), C=$(C[i])")
+        )
+        H_C[i] ≤ 0 || throw(
+            ArgumentError("phase $i: H_C must be ≤ 0 for softening, got $(H_C[i])")
+        )
+        C_min[i] * cos(ϕ[i]) + sin(ϕ[i]) * pT[i] > 0 || throw(
+            ArgumentError("phase $i: softened cap radius must remain positive; need C_min·cos(ϕ) + sin(ϕ)·pT > 0")
+        )
+    end
+    return DruckerPragerCap{N + 1, FP}(
+        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, pT, η_reg, Kb, C_min, H_C,
     )
 end
 

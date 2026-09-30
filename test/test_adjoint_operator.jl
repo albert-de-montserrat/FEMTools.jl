@@ -237,4 +237,57 @@ using DomainSets: ×
         FEMTools.matrix_free_adjoint_operator(
             dr, mesh, geo_v, geo_P, element_v, element_P,
             phases, phases, τ_old, plastic, G, Δt, γP, backend, wg))
+
+    @testset "cap-state ForwardDiff blocks match the Enzyme transpose" begin
+        phases_cap = ones(Int, 1, mesh.nels)
+        cap = DruckerPragerCap(
+            (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,),
+            (1.0,), (100.0,))
+        dr_cap = StokesDR(
+            backend, mesh.nnodes, mesh.nnodesP, (1.0,), (Inf,), (0.0,);
+            ρ0 = (1.0,), K = (100.0,), g, Tref,
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7,
+            stress_size = (nq, mesh.nels))
+        dr_cap.v.x .= [10.0 * coords[n][1] for n in eachindex(coords)]
+        dr_cap.v.y .= 0.0
+        dr_cap.P .= -20.0
+        dr_cap.M_P .= 1.0
+        γP_cap = zeros(Float64, mesh.nnodesP)
+        τ_old_cap = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+
+        λvx_cap = [sin(0.7 * n) for n in 1:mesh.nnodes]
+        λvy_cap = [cos(0.4 * n) for n in 1:mesh.nnodes]
+        λP_cap = zeros(mesh.nnodesP)
+        dvx_cap = zeros(mesh.nnodes)
+        dvy_cap = zeros(mesh.nnodes)
+        dP_cap = zeros(mesh.nnodesP)
+        dPnum_cap = zeros(mesh.nnodesP)
+        Pnum_cap = zeros(mesh.nnodesP)
+        Rv_x_buf_cap = zeros(mesh.nnodes)
+        Rv_y_buf_cap = zeros(mesh.nnodes)
+        FEMTools.assemble_momentum_residual_matrices_atomix_adj!(
+            Rv_x_buf_cap, copy(λvx_cap), Rv_y_buf_cap, copy(λvy_cap),
+            dr_cap.v.x, dvx_cap, dr_cap.v.y, dvy_cap, dr_cap.P, dP_cap,
+            dr_cap.T, Pnum_cap, dPnum_cap,
+            mesh, geo_v, element_v, element_P,
+            phases_cap, τ_old_cap, cap,
+            dr_cap.η, (Inf,), dr_cap.α, dr_cap.ρ0, dr_cap.K, dr_cap.g,
+            dr_cap.Tref, Δt, wg)
+
+        op_cap = FEMTools.assemble_adjoint_operator(
+            dr_cap, mesh, geo_v, geo_P, element_v, element_P,
+            phases_cap, phases_cap, τ_old_cap, cap, (Inf,), Δt, γP_cap,
+            backend, wg)
+        out_vx_cap = zeros(mesh.nnodes)
+        out_vy_cap = zeros(mesh.nnodes)
+        out_P_cap = zeros(mesh.nnodesP)
+        FEMTools.apply_adjoint_operator!(
+            out_vx_cap, out_vy_cap, out_P_cap, op_cap,
+            λvx_cap, λvy_cap, λP_cap,
+            mesh, element_v, element_P, backend, wg)
+
+        @test maximum(abs, out_vx_cap .- dvx_cap) < 1.0e-10
+        @test maximum(abs, out_vy_cap .- dvy_cap) < 1.0e-10
+        @test maximum(abs, out_P_cap .- dP_cap) < 1.0e-10
+    end
 end

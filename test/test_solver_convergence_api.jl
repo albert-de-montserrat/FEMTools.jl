@@ -231,3 +231,72 @@ end
     @test Array(dr_power.v.x) ≈ Array(dr_bound.v.x) rtol = 1.0e-5
     @test any(!iszero, Array(dr_power.v.y))
 end
+
+@testset "solve_stokes_dyrel! converges from an exact initial velocity" begin
+    backend = CPU()
+    workgroup = 64
+    Lx, Ly = 1.0, 0.7
+    Δt = 1.0
+    ε̇ = 1.0e-5
+    ηb = 6.4e3
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. Lx) × (0.0 .. Ly), element_v, (6, 4))
+    mesh = MixedMesh(mesh_v, element_P)
+    nq = length(element_v.integration_points.ω)
+
+    # Bulk-viscous block pulled at a constant rate. `vx = ε̇(x − Lx/2)`, `vy = 0`
+    # already balances momentum — the deviatoric stress is uniform, so its
+    # divergence vanishes — which leaves the velocity residual at round-off from
+    # the first check while the pressure still has to relax to `−ηb Δt ∇·v`.
+    # `ηb` must stay finite: without a plastic model the pressure residual uses
+    # it rather than `K`, and `ηb → ∞` would impose incompressibility on a
+    # velocity field with `∇·v = ε̇ ≠ 0`, which has no solution.
+    material = StokesMaterial(; η = (1.0e30,), ηb = (ηb,), G = (4.0e3,),
+        α = (0.0,), ρ0 = (1.0,), K = (6.4e3,), g = (0.0, 0.0), Tref = 0.0)
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
+        stress_size = (nq, mesh.nels))
+    phases_v = ones(Int32, length(element_v), mesh.nels)
+    phases_P = ones(Int32, length(element_P), mesh.nels)
+    γP = zeros(Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 20.0, Δt;
+        workgroup, phases_v)
+
+    coords = Array(mesh.coords)
+    boundary = Array(mesh_v.Γnodes)
+    tol = 32eps(Float64)
+    left = Int32[n for n in boundary if abs(coords[n][1]) ≤ tol]
+    right = Int32[n for n in boundary if abs(coords[n][1] - Lx) ≤ tol]
+    bc_vx = DirichletBoundaryCondition(nothing, vcat(left, right),
+        vcat(fill(-0.5ε̇ * Lx, length(left)), fill(0.5ε̇ * Lx, length(right))))
+    bc_vy = DirichletBoundaryCondition(nothing, Int32[n for n in boundary],
+        zeros(length(boundary)))
+    dr.v.x .= [ε̇ * (c[1] - Lx / 2) for c in coords]
+    dr.v.y .= 0
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
+
+    stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
+        phases_v, phases_P, τ_old, workgroup, ncheck = 25, iterMax = 500,
+        total_iterMax = 50_000, verbose = false, verbose_inner = false)
+
+    post = compute_strain_rate_stress_postprocess(
+        Array(dr.v.x), Array(dr.v.y), Array(mesh.el2n),
+        Array(mesh.geometry.geo_v), (dr.τ.xx, dr.τ.yy, dr.τ.xy), element_v,
+    )
+
+    # The inner loop scores progress against the residual at its first check.
+    # With nothing left to drop that ratio sits at ~1, so it alone can never
+    # satisfy the exit test.
+    @test stats.converged
+    # The defect wastes work rather than breaking the answer: before the escape
+    # this same solve spent its whole 500-iteration inner budget on the first
+    # outer pass and finished at 501, against 25 once the absolute term decides.
+    @test stats.iter <= 4 * 25
+    # Check the answer, not just the flag: uniform extension against a bulk
+    # viscosity has the closed-form pressure `−ηb Δt ∇·v`.
+    @test all(≈(-ηb * Δt * ε̇; rtol = 1.0e-6), Array(dr.P))
+    @test all(≈(ε̇; rtol = 1.0e-6), post.εxx .+ post.εyy)
+    @test maximum(abs, Array(dr.v.y)) < 1.0e-12
+end

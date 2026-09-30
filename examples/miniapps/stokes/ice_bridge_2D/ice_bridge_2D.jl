@@ -38,17 +38,6 @@ function corner_max_speed(vx, vy, el2n)
     return vmax
 end
 
-function straighten_t7_geometry!(coords, el2n)
-    @inbounds for iel in axes(el2n, 2)
-        n1, n2, n3 = Int(el2n[1, iel]), Int(el2n[2, iel]), Int(el2n[3, iel])
-        coords[Int(el2n[4, iel])] = (coords[n1] + coords[n2]) / 2
-        coords[Int(el2n[5, iel])] = (coords[n2] + coords[n3]) / 2
-        coords[Int(el2n[6, iel])] = (coords[n3] + coords[n1]) / 2
-        coords[Int(el2n[7, iel])] = (coords[n1] + coords[n2] + coords[n3]) / 3
-    end
-    return coords
-end
-
 """
     build_arch_bridge_mesh(; Lx, Ly, radius, n_arch, max_area)
 
@@ -72,33 +61,9 @@ function build_arch_bridge_mesh(; Lx, Ly, radius, n_arch, max_area)
         [SVector{2, Float64}(x_right, 0.0), SVector{2, Float64}(Lx, 0.0),
          SVector{2, Float64}(Lx, Ly), SVector{2, Float64}(0.0, Ly)],
     )
-    points = Cdouble[hcat(getindex.(boundary_points, 1)...);
-                     hcat(getindex.(boundary_points, 2)...)]
-    n_points = length(boundary_points)
-    segments = Cint.(hcat(collect(1:n_points), vcat(collect(2:n_points), 1))')
 
-    tio = TriangulateIO()
-    tio.pointlist = points
-    tio.segmentlist = segments
-    flags = "pq30o2a$(max_area)Q"
-    result, _ = triangulate(flags, tio)
-
-    pts = result.pointlist
-    tris_t6 = Matrix{Int32}(result.trianglelist)
-    coords = [SVector{2, Float64}(pts[1, i], pts[2, i]) for i in axes(pts, 2)]
-    n_t6 = length(coords)
-    nels = size(tris_t6, 2)
-    el2n = Matrix{Int32}(undef, 7, nels)
-    el2n[1:3, :] .= tris_t6[1:3, :]
-    el2n[4, :] .= tris_t6[6, :]
-    el2n[5, :] .= tris_t6[4, :]
-    el2n[6, :] .= tris_t6[5, :]
-    sizehint!(coords, n_t6 + nels)
-    for iel in 1:nels
-        c1, c2, c3 = coords[tris_t6[1, iel]], coords[tris_t6[2, iel]], coords[tris_t6[3, iel]]
-        push!(coords, (c1 + c2 + c3) / 3)
-        el2n[7, iel] = Int32(n_t6 + iel)
-    end
+    coords, el2n, _ = FEMTools.triangulate_t7_mesh(boundary_points; max_area)
+    n_t6 = length(coords) - size(el2n, 2)
 
     tol = 100eps(Float64) * max(Lx, Ly)
     circle_tol = max(2.5 * radius * (1 - cos(π / n_arch)), tol)
@@ -273,7 +238,7 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
                     visited[n] = true
                 end
             end
-            straighten_t7_geometry!(coords, el2n_v)
+            FEMTools.straighten_t7_geometry!(coords, el2n_v)
             copyto!(mesh_v.coords, coords)
             copyto!(mesh_stokes.coords, coords)
             update_geometry!(mesh_stokes)
@@ -310,7 +275,7 @@ function foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element
         mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode])
     end
 
-    straighten_t7_geometry!(mesh_stokes.coords, mesh_stokes.el2n)
+    FEMTools.straighten_t7_geometry!(mesh_stokes.coords, mesh_stokes.el2n)
     copyto!(mesh_v.coords, mesh_stokes.coords)
     copyto!(mesh_stokes.coords, mesh_stokes.coords)
     return update_geometry!(mesh_stokes)

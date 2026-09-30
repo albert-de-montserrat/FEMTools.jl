@@ -156,6 +156,14 @@ arrays.
   power iteration on the symmetrically Jacobi-scaled velocity operator.
 - `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
   Jacobian instead of differentiating it at every convergence check.
+- `P_old = dr.P0`: accepted pressure of the previous step in the continuity
+  rate `(P - P_old)/(KΔt)`. A nodal vector is interpolated; an `nq × nels`
+  matrix is read directly at the velocity quadrature points. With
+  `DruckerPragerCap`, pass the accepted *corrected* integration-point pressure
+  (the fourth output of [`update_stokes_current_stress!`](@ref)): `dr.P` is the
+  trial pressure, so copying it into `dr.P0` drops the plastic pressure
+  correction from the next step. The augmented momentum Jacobian still reads
+  `dr.P0`; its derivative with respect to velocity does not depend on it.
 
 # Return value
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
@@ -226,12 +234,16 @@ function solve_stokes_dyrel!(
     λmax_power_rtol = 1.0e-2,
     λmax_safety = 1.1,
     freeze_jacobian = plastic === nothing,
+    P_old = dr.P0,
     _thermal = nothing,
 )
+    ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
+    P_old isa AbstractMatrix && size(P_old) != ip_size && throw(DimensionMismatch(
+        "integration-point P_old must be nq × nels = $ip_size, got $(size(P_old))"))
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
-    spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
+    spectral_safety = _stokes_spectral_safety(plastic, λmax_safety)
 
     M_P = dr.M_P
     nout = ncheck
@@ -253,7 +265,8 @@ function solve_stokes_dyrel!(
     velocity_op = if measure_λmax
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+            γ_history = _plastic_history_gamma(dr.plastic_history))
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
@@ -261,7 +274,8 @@ function solve_stokes_dyrel!(
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
-            backend, workgroup; τ_old, plastic)
+            backend, workgroup; τ_old, plastic,
+            γ_history = _plastic_history_gamma(dr.plastic_history))
         nothing
     end
     λmax_gershgorin = max(
@@ -317,10 +331,11 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_kernel!(
             dr.RP,
-            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
+            dr.v.x, dr.v.y, dr.P, P_old, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
             valNV, valNP, workgroup,
+            _pressure_bulk_modulus(plastic, dr.K),
         )
 
         assemble_momentum_residual_kernel!(
@@ -330,6 +345,7 @@ function solve_stokes_dyrel!(
             phases_v, τ_old, plastic, nothing,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+            _plastic_history_gamma(dr.plastic_history),
         )
         apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
         apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
@@ -429,10 +445,11 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_kernel!(
                 dr.RP,
-                dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
+                dr.v.x, dr.v.y, dr.P, P_old, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
                 valNV, valNP, workgroup,
+                _pressure_bulk_modulus(plastic, dr.K),
             )
 
             @. dr.Pnum = γP * dr.RP / M_P
@@ -444,6 +461,7 @@ function solve_stokes_dyrel!(
                 phases_v, τ_old, plastic, nothing,
                 dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+                _plastic_history_gamma(dr.plastic_history),
             )
 
             apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
@@ -465,7 +483,13 @@ function solve_stokes_dyrel!(
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
-                err = max(err_v_inner / err_v00, err_v_inner)
+                # `err_v00` is the residual at the first check of the solve, so
+                # an inner solve that starts already converged has nothing left
+                # to drop: the relative term sits at ~1 and pins `err` there,
+                # and the exit test `err ≤ err_outer·rel_drop` can never be met.
+                # Below the solve tolerance the absolute residual decides alone.
+                err = err_v_inner ≤ ϵ ? err_v_inner :
+                    max(err_v_inner / err_v00, err_v_inner)
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
@@ -481,7 +505,8 @@ function solve_stokes_dyrel!(
                     velocity_op = if measure_λmax
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup)
+                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+                            γ_history = _plastic_history_gamma(dr.plastic_history))
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
                             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
@@ -489,7 +514,8 @@ function solve_stokes_dyrel!(
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic)
+                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
+                            γ_history = _plastic_history_gamma(dr.plastic_history))
                         nothing
                     end
 
@@ -555,6 +581,10 @@ Refresh integration-point stresses using the elements in `mesh.geometry`, solver
 material and stress history, and optional phase-layout overrides. `τ` receives
 the in-plane components in Voigt order; the history defaults to the components
 of `dr.τ_old`. Two-dimensional states only.
+
+This is a read of the current state: it never advances accumulated plastic
+history, so it may be called any number of times. Use
+[`commit_stokes_plastic_history!`](@ref) once per accepted step for that.
 """
 function update_stokes_current_stress!(
     dr::StokesDR{<:Any, 2},
@@ -624,10 +654,72 @@ function update_stokes_current_stress!(
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-        backend, workgroup,
+        backend, workgroup;
+        γ_history = _plastic_history_gamma(dr.plastic_history),
     )
     return τ
 end
+
+"""
+    commit_stokes_plastic_history!(dr, mesh, Δt;
+                                   plastic, phases_v=dr.phases_v,
+                                   τ_old=(dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+                                   workgroup=256)
+
+Accept one physical step into the integration-point plastic history of a
+`DruckerPragerCap` solve: `γ += Δt·γdot` and `θ += Δt·θdot`, with the rates from
+the same local update the momentum balance uses at the current `dr.v` and `dr.P`,
+softened by the history accepted before this call.
+
+Call it exactly once per converged step, before overwriting `τ_old` with the new
+stress. A no-op without `dr.plastic_history` or for other yield models. Throws if
+any committed value is non-finite, which means a local return map failed.
+"""
+function commit_stokes_plastic_history!(
+    dr::StokesDR{<:Any, 2},
+    mesh::MixedMesh,
+    Δt;
+    plastic,
+    phases_v = dr.phases_v,
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+    workgroup = 256,
+)
+    cache = _mesh_geometry(mesh)
+    _update_stokes_plastic_history!(
+        dr, mesh, cache.geo_v, cache.element_v, cache.element_P, phases_v, τ_old,
+        plastic, dr.G, Δt, KA.get_backend(mesh.coords), workgroup,
+    )
+    return dr
+end
+
+@inline _stokes_spectral_safety(::Nothing, λmax_safety) = λmax_safety
+@inline _stokes_spectral_safety(::DruckerPrager, λmax_safety) = max(λmax_safety, 1.5)
+@inline _stokes_spectral_safety(::DruckerPragerCap, λmax_safety) = max(λmax_safety, 1.5)
+
+@inline _plastic_history_gamma(::Nothing) = nothing
+@inline _plastic_history_gamma(history::IntegrationPointPlasticHistory) = history.γ
+
+function _update_stokes_plastic_history!(
+    dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,
+    plastic::DruckerPragerCap, G, Δt, backend, workgroup,
+)
+    dr.plastic_history === nothing && return nothing
+    Nq = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
+    update_stokes_plastic_history!(
+        dr.plastic_history.γ, dr.plastic_history.θ,
+        dr.v.x, dr.v.y, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP,
+        geo_v, phases_v, τ_old, plastic, dr.η, G, Δt,
+        Nq, NqP, ∂N∂ξ_v, Val(length(element_v)), Val(length(element_P)),
+        backend, workgroup,
+    )
+    all(isfinite, dr.plastic_history.γ) && all(isfinite, dr.plastic_history.θ) ||
+        error("non-finite plastic history: a tensile-cap local return map failed")
+    return nothing
+end
+
+@inline _update_stokes_plastic_history!(args...) = nothing
 
 """
     solve_stokes_dyrel!(velocity, pressure, mesh, cell_phase, η, ρ, g,

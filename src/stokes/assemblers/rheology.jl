@@ -39,16 +39,22 @@ struct IntegrationPointStress{TX, TY, TXY}
 end
 
 """
-    IntegrationPointStressOutput{TX, TY, TXY}
+    IntegrationPointStressOutput{TX, TY, TXY, TP}
 
 Scratch buffer for writing the *current* deviatoric stress to integration
 points during momentum-residual assembly. `iel` pins the buffer to a specific
 element so that `store_stress_at_ip!` can index `τxx[q, iel]` directly.
+
+`P` optionally receives the plastically corrected pressure returned by the
+tensile-cap return map, the value the momentum balance actually uses. It is
+`nothing` when the caller asks only for stress, and for yield models whose
+return map leaves pressure unchanged it simply records the trial pressure.
 """
-struct IntegrationPointStressOutput{TX, TY, TXY}
+struct IntegrationPointStressOutput{TX, TY, TXY, TP}
     τxx::TX
     τyy::TY
     τxy::TXY
+    P::TP
     iel::Int
 end
 @inline old_stress_at_ip(_, ::Nothing, ::Type{T}, _) where T = zero_old_stress(T)
@@ -61,11 +67,17 @@ end
 end
 @inline old_stress_at_ip(_, τ_old::IntegrationPointStress, ::Type, q) =
     (τ_old.τxx[q], τ_old.τyy[q], τ_old.τxy[q])
-@inline store_stress_at_ip!(::Nothing, _, _, _, _) = nothing
-@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy)
+@inline store_stress_at_ip!(::Nothing, _, _, _, _, _) = nothing
+@inline function store_stress_at_ip!(τ_store::IntegrationPointStressOutput, q, τxx, τyy, τxy, P)
     τ_store.τxx[q, τ_store.iel] = τxx
     τ_store.τyy[q, τ_store.iel] = τyy
     τ_store.τxy[q, τ_store.iel] = τxy
+    _store_pressure_at_ip!(τ_store.P, q, τ_store.iel, P)
+    return nothing
+end
+@inline _store_pressure_at_ip!(::Nothing, _, _, _) = nothing
+@inline function _store_pressure_at_ip!(P_store, q, iel, P)
+    P_store[q, iel] = P
     return nothing
 end
 
@@ -132,6 +144,17 @@ end
 # Dispatch: no plasticity when plastic===nothing.
 @inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing) =
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+
+# Internal momentum path. Existing stress-only API stays unchanged.
+@inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing) =
+    (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)
+
+@inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic) =
+    deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, nothing)
+
+@inline deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing, ::Nothing,
+    ) = (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)
 
 """
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
@@ -206,3 +229,286 @@ denominator stays positive for any dilation angle.
     return τij
 end
 
+@inline function deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPrager, ::Nothing,
+    )
+    return deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic), Pq
+end
+
+
+# ---------------------------------------------------------------------------
+# Drucker-Prager tensile cap
+#
+# Popov, Berlie & Kaus (2025), "A dilatant visco-elasto-viscoplasticity model
+# with globally continuous tensile cap", Geosci. Model Dev. 18, 7035-7058,
+# doi:10.5194/gmd-18-7035-2025. Equation numbers below refer to that paper.
+#
+# Pressure is compression-positive here and there (their Sect. 2.1), so the
+# tensile strength `pT` is the pressure at which the rock fails in pure tension
+# and is therefore negative. The shear branch reproduces the Drucker-Prager
+# surface `deviatoric_stress` already uses, with `k = sinϕ` and `c = C cosϕ`.
+# ---------------------------------------------------------------------------
+
+"""
+    cap_geometry(k, kq, c, pT) -> (; a, b, p_y, R_y, p_d, τ_d, p_q)
+
+Derived geometry of the circular tensile cap that closes the Drucker-Prager
+shear envelope on the tensile side (Popov et al. 2025, Eqs. 13-17).
+
+Takes the *derived* Drucker-Prager coefficients rather than the raw angles:
+friction coefficient `k = sin(ϕ)`, dilation coefficient `kq = sin(Ψ)`,
+Drucker-Prager cohesion `c = C·cos(ϕ)`, and tensile strength `pT ≤ 0`.
+
+Returns the scaling coefficients `a`, `b` (Eq. 14), the cap centre `p_y` and
+radius `R_y` (Eq. 15), the delimiter point `(p_d, τ_d)` where the cap meets the
+shear line (Eq. 16), and the flow-potential centre `p_q` (Eq. 17).
+
+The cap is the circle of radius `R_y` centred at `(p_y, 0)` in the meridional
+`(P, τII)` plane. `p_y` is fixed by two conditions at once: the circle meets the
+pressure axis at `pT`, so `R_y = p_y − pT`, and it is tangent to the shear line
+`τII = k·P + c`, so `R_y = (k·p_y + c)/a`. Eliminating `R_y` gives the `p_y`
+below. Tangency is what makes the composite surface continuously
+differentiable, which Perzyna viscoplasticity requires because `λ̇ = ⟨F⟩/η_reg`
+reads `F` *away* from the surface, not only on it.
+
+Nothing here is cached per phase: strain softening moves `k` and `c`, and the
+whole geometry moves with them, so a precomputed cap would silently freeze
+while the shear branch softened.
+
+`R_y > 0` requires `c + k·pT > 0`, i.e. cohesion must exceed `k·|pT|`; the caller
+is responsible for parameters that satisfy it.
+"""
+@inline function cap_geometry(k, kq, c, pT)
+    a = √(one(k) + k * k)
+    b = √(one(kq) + kq * kq)
+    # Eq. 15 written as (pT + c/a)/(1 - k/a); the equivalent form below avoids
+    # the nested division.
+    p_y = (a * pT + c) / (a - k)
+    R_y = p_y - pT
+    p_d = p_y - R_y * k / a
+    # Eq. 16 gives τ_d = k·p_d + c; tangency makes that equal R_y/a exactly.
+    τ_d = R_y / a
+    p_q = p_d + kq * τ_d
+    return (; a, b, p_y, R_y, p_d, τ_d, p_q)
+end
+
+"""Return cohesion after linear strain softening at one integration point."""
+@inline softened_cohesion(C, C_min, H_C, γ) = clamp(C + H_C * γ, C_min, C)
+@inline _cohesion_at_history(C, C_min, H_C, ::Nothing) = C
+@inline _cohesion_at_history(C, C_min, H_C, γ::Real) = softened_cohesion(C, C_min, H_C, γ)
+
+"""
+    cap_yield_function(τII, P, k, c, geom) -> F
+
+Composite yield function of the smooth tensile cap (Popov et al. 2025, Eq. 18),
+where `geom` comes from [`cap_geometry`](@ref).
+
+    F = τII − k·P − c              in the shear domain
+    F = a·(R̂_y − R_y)              on the tensile cap,  R̂_y = √(τII² + (P − p_y)²)
+
+The cap branch carries the factor `a` so that `‖∇F‖ = a` on *both* branches:
+without it the two segments would agree on the surface but disagree everywhere
+outside it, and the overstress `⟨F⟩` that drives Perzyna viscoplasticity would
+jump across the delimiter.
+
+Eq. 18 selects the shear branch with `τII·(p_y − p_d) ≥ τ_d·(p_y − P)`.
+Substituting `p_y − p_d = R_y·k/a` and `τ_d = R_y/a` and cancelling the positive
+factor `R_y/a` reduces that to the half-plane test used below.
+"""
+@inline function cap_yield_function(τII, P, k, c, geom)
+    return if P + k * τII ≥ geom.p_y
+        τII - k * P - c
+    else
+        R̂y = √(τII * τII + (P - geom.p_y)^2 + eps(typeof(τII))^2)
+        geom.a * (R̂y - geom.R_y)
+    end
+end
+
+"""
+    cap_invariants(s, p, k, kq, c, pT) -> (F, Aτ, Ap)
+    cap_invariants(plastic::DruckerPragerCap, phase, s, p, γ) -> (F, Aτ, Ap)
+
+Scalar coefficients for the coupled tensile-cap return: `Aτ = (∂Q/∂s)/2`
+and `Ap = -∂Q/∂p`, matching JustRelax's invariant convention. Yield and
+potential branches are selected independently. The material overload applies
+bounded cohesion softening from accepted history `γ` (`nothing` means no history).
+All inputs are plain numeric values; angles in `DruckerPragerCap` are radians.
+"""
+@inline function cap_invariants(s, p, k, kq, c, pT)
+    geom = cap_geometry(k, kq, c, pT)
+    F = cap_yield_function(s, p, k, c, geom)
+    if p + kq * s ≥ geom.p_q
+        return F, one(s) / 2, kq
+    end
+    Rq = hypot(s, p - geom.p_q)
+    iszero(Rq) && return F, zero(s), zero(p)
+    return F, geom.b * s / (2 * Rq), -geom.b * (p - geom.p_q) / Rq
+end
+
+@inline function cap_invariants(plastic::DruckerPragerCap, phase, s, p, γ)
+    C = _cohesion_at_history(plastic.C[phase], plastic.C_min[phase], plastic.H_C[phase], γ)
+    return cap_invariants(s, p, plastic.sinϕ[phase], plastic.sinΨ[phase],
+        C * plastic.cosϕ[phase], plastic.pT[phase])
+end
+
+@inline function _cap_residual(x, s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    s, p, λ = x
+    F, Aτ, Ap = cap_invariants(s, p, k, kq, c, pT)
+    return SVector(s - s_trial + 2 * ηve * λ * Aτ, p - p_trial - KΔt * λ * Ap, F - η_reg * λ)
+end
+
+"""
+    cap_return_map(s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg; maxiter = 40)
+        -> (; τII, P, λ, Aτ, Ap, converged)
+
+Coupled local return of the tensile cap (Popov et al. 2025, Eq. 42), solving
+for `x = (s, p, λ)`:
+
+    s - s_trial + 2 ηve λ Aτ(s, p) = 0
+    p - p_trial - KΔt λ Ap(s, p)   = 0
+    F(s, p) - η_reg λ              = 0
+
+with `(F, Aτ, Ap)` from [`cap_invariants`](@ref). `KΔt` is `Kb * Δt`,
+`k = sin(ϕ)`, `kq = sin(Ψ)`, `c = C cos(ϕ)`, and `pT ≤ 0` is the tensile
+strength (compression-positive pressure). An elastic trial state (`F ≤ 0`)
+returns unchanged with `λ = 0`.
+
+Newton on residuals scaled by `max(|s_trial|, |p_trial|, |F_trial|, eps)` with a
+ForwardDiff 3×3 Jacobian, converging at a scaled infinity norm `≤ 100 eps`.
+Steps backtrack by halving (at most 24 times) until `s ≥ 0`, `λ ≥ 0`, the
+residual is finite, and its squared norm satisfies an Armijo decrease. Any
+failure — non-positive or non-finite `ηve`/`KΔt`, a non-finite step, a failed
+line search, or an exhausted budget — returns `converged = false`.
+
+A converged solve takes one final full Newton step, which leaves the value
+unchanged to round-off but makes derivatives of the result through dual
+numbers equal the implicit-function derivative.
+"""
+@inline function cap_return_map(
+        s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg; maxiter = 40,
+    )
+    T = promote_type(typeof(s_trial), typeof(p_trial))
+    F, Aτ, Ap = cap_invariants(s_trial, p_trial, k, kq, c, pT)
+    x = SVector{3, T}(s_trial, p_trial, zero(T))
+    F ≤ 0 && return (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged = true)
+    failed = (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged = false)
+    (isfinite(KΔt) && KΔt > 0 && isfinite(ηve) && ηve > 0) || return failed
+
+    scale = max(abs(s_trial), abs(p_trial), abs(F), eps(real(T)))
+    tol = 100 * eps(real(T))
+    residual = y -> _cap_residual(y, s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg) / scale
+    r = residual(x)
+    converged = maximum(abs, r) ≤ tol
+    for _ in 1:maxiter
+        converged && break
+        step = ForwardDiff.jacobian(residual, x) \ r
+        all(isfinite, step) || return failed
+        α = one(real(T))
+        accepted = false
+        for _ in 1:24
+            candidate = x - α * step
+            if candidate[1] ≥ 0 && candidate[3] ≥ 0
+                r_new = residual(candidate)
+                if all(isfinite, r_new) && sum(abs2, r_new) ≤ (1 - α / 10_000) * sum(abs2, r)
+                    x, r = candidate, r_new
+                    accepted = true
+                    break
+                end
+            end
+            α /= 2
+        end
+        accepted || return failed
+        converged = maximum(abs, r) ≤ tol
+    end
+    converged || return failed
+    x -= ForwardDiff.jacobian(residual, x) \ r
+    _, Aτ, Ap = cap_invariants(x[1], x[2], k, kq, c, pT)
+    return (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged)
+end
+
+"""
+    cap_local_update(τ_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+        -> (; τ, P, γdot, θdot)
+
+Physical tensile-cap update at one integration point: the corrected deviatoric
+stress tuple `τ`, corrected pressure `P`, and plastic history rates. With
+`(s, p, λ)` from [`cap_return_map`](@ref) and `s_trial = second_invariant(τ_trial)`,
+
+    εvp_ij = λ Aτ τ_trial_ij / s_trial      τ = τ_trial - 2 ηve εvp
+    θdot   = λ Ap                           P = P_trial + KΔt θdot
+    γdot   = λ Aτ = second_invariant(εvp)
+
+The deviatoric return is radial, so `second_invariant(τ) == s`. A failed local
+solve returns NaN everywhere so that the global solver's non-finite residual
+check stops the run; a failed iterate is never returned as physical stress.
+"""
+@inline function cap_local_update(τ_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    s_trial = second_invariant(τ_trial)
+    ret = cap_return_map(s_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    λ = ret.converged ? ret.λ : oftype(ret.λ, NaN)
+    γdot = λ * ret.Aτ
+    θdot = λ * ret.Ap
+    # second_invariant floors s_trial at eps, so the division is always defined.
+    τ = map(t -> t - 2 * ηve * γdot * t / s_trial, τ_trial)
+    return (; τ, P = P_trial + KΔt * θdot, γdot, θdot)
+end
+
+# Interpolate cap parameters and the (softened) cohesion to one quadrature point
+# and run the shared local update. Momentum, pressure, and history rates all use
+# this one result.
+@inline function _cap_ip_update(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap, γ,
+    )
+    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+    C = _cohesion_at_history(
+        interp2ip_phase(Nv, plastic.C, phase_loc),
+        interp2ip_phase(Nv, plastic.C_min, phase_loc),
+        interp2ip_phase(Nv, plastic.H_C, phase_loc), γ,
+    )
+    return cap_local_update(
+        τ_trial, Pq, ηve,
+        interp2ip_phase(Nv, plastic.Kb, phase_loc) * Δt,
+        interp2ip_phase(Nv, plastic.sinϕ, phase_loc),
+        interp2ip_phase(Nv, plastic.sinΨ, phase_loc),
+        C * interp2ip_phase(Nv, plastic.cosϕ, phase_loc),
+        interp2ip_phase(Nv, plastic.pT, phase_loc),
+        interp2ip_phase(Nv, plastic.η_reg, phase_loc),
+    )
+end
+
+"""
+    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+                      plastic::DruckerPragerCap) -> (τxx, τyy, τxy)
+
+Plane-strain elasto-viscoplastic stress with the globally continuous tensile
+cap, from `cap_local_update` without cohesion softening.
+"""
+@inline deviatoric_stress(
+    v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap,
+) = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, nothing).τ
+
+@inline function deviatoric_stress_and_pressure(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+        plastic::DruckerPragerCap, γ::Union{Nothing, Real},
+    )
+    result = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+    return result.τ, result.P
+end
+
+"""
+    plastic_history_rates(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+        -> (γdot, θdot)
+
+Deviatoric and volumetric plastic strain rates at one quadrature point, with
+cohesion softened by accepted history `γ`. Zero for non-cap yield models.
+"""
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::Nothing, _) = (0, 0)
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::DruckerPrager, _) = (0, 0)
+@inline function plastic_history_rates(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap, γ,
+    )
+    result = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+    return result.γdot, result.θdot
+end

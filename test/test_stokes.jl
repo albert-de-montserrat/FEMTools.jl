@@ -3,6 +3,7 @@ using Test
 using DomainSets
 using DomainSets: ×
 using FEMTools
+using ForwardDiff
 using FEMTools: assemble_momentum_residual_matrices_atomix!,
     assemble_viscosity_weighted_pressure_scaling!
 using KernelAbstractions: CPU, synchronize
@@ -184,6 +185,15 @@ end
         @test all(iszero, Array(dr.τ.xx))
         @test all(iszero, Array(dr.τ_old.xx))
         @test size(dr.τ.II) == size(dr.τ_old.II) == (0, 0)
+        @test dr.plastic_history === nothing
+
+        drh = StokesDR(CPU(), 10, 12, η, ηb, α;
+            plastic_history_size = (3, 4))
+        @test size(drh.plastic_history.γ) == (3, 4)
+        @test size(drh.plastic_history.θ) == (3, 4)
+        @test eltype(drh.plastic_history.γ) == FP
+        @test all(iszero, Array(drh.plastic_history.γ))
+        @test all(iszero, Array(drh.plastic_history.θ))
 
         dr3 = StokesDR(CPU(), 10, 12, η, ηb, α; g = (FP(0), FP(0), FP(0)), stress_size = (3, 4))
         @test size(dr3.τ.xy) == (3, 4)
@@ -310,6 +320,178 @@ end
     @test τxy ≈ τxy_trial - 2 * λ * ∂Q∂τxy
 end
 
+@testset "DruckerPragerCap updates integration-point plastic history" begin
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
+    nq = length(element_v.integration_points.ω)
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
+        K = (100.0,), G = (Inf,), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels))
+    dr.v.x .= [10.0 * c[1] for c in mesh.coords]
+    dr.v.y .= 0.0
+    dr.P .= -20.0
+    cap = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,), (1.0,), (100.0,))
+    τ = (dr.τ.xx, dr.τ.yy, dr.τ.xy)
+
+    # Stress refreshes are reads: they never advance history.
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
+    @test all(iszero, dr.plastic_history.γ)
+    @test all(iszero, dr.plastic_history.θ)
+
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = cap)
+    γ1 = copy(dr.plastic_history.γ)
+    θ1 = copy(dr.plastic_history.θ)
+    @test minimum(γ1) > 0
+    @test minimum(θ1) > 0   # tension opens
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
+    @test dr.plastic_history.γ == γ1
+
+    # A second commit uses the softened cohesion from the first, and the stress
+    # read sees the same softening.
+    soft = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,), (1.0,), (100.0,);
+        C_min = (6.0,), H_C = (-1.0e3,))
+    τ_hard = copy(dr.τ.xx)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = soft)
+    @test dr.τ.xx != τ_hard
+    dr.plastic_history.γ .= 0
+    dr.plastic_history.θ .= 0
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = soft)
+    @test dr.plastic_history.γ ≈ γ1
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = soft)
+    Δγ_soft = dr.plastic_history.γ .- γ1
+    @test all(Δγ_soft .> γ1)   # weaker rock flows faster
+end
+
+@testset "DruckerPragerCap carries corrected pressure across steps" begin
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
+    nq = length(element_v.integration_points.ω)
+    Δt, K, ε̇ = 1.0, 4.0, 0.1
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, (1.0,), (K,), (0.0,);
+        K = (K,), G = (1.0,), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels))
+    cap = DruckerPragerCap((deg2rad(30.0),), (deg2rad(5.0),), (1.0,), (-0.5,), (0.1,), (K,);
+        C_min = (0.5,), H_C = (-1.0,))
+    # Homogeneous uniaxial extension imposed on every boundary node.
+    coords = Array(mesh.coords)
+    nodes = Int32.(collect(mesh_v.Γnodes))
+    bc_vx = DirichletBoundaryCondition(nothing, nodes, [ε̇ * coords[n][1] for n in nodes])
+    bc_vy = DirichletBoundaryCondition(nothing, nodes, zeros(length(nodes)))
+    dr.v.x .= [ε̇ * c[1] for c in coords]
+    dr.v.y .= 0
+    γP = zeros(mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 20.0, Δt; workgroup = 1)
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
+    P_corrected = zeros(nq, mesh.nels)
+    P_old = zeros(nq, mesh.nels)
+
+    # Material-point recurrence: trial pressure starts from the accepted
+    # corrected pressure, and θ opens by the pressure correction over K.
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    v_mp = (SA[ε̇, 0.0, 0.0], SA[0.0, 0.0, 0.0])
+    τ_mp, P_mp, γ_mp, θ_mp = (0.0, 0.0, 0.0), 0.0, 0.0, 0.0
+    for step in 1:3
+        result = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
+            plastic = cap, τ_old, P_old, workgroup = 1, verbose = false, ϵ_tol = 1e-10)
+        @test result.converged
+        update_stokes_current_stress!(dr, mesh, (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected), Δt;
+            plastic = cap, τ_old, workgroup = 1)
+        commit_stokes_plastic_history!(dr, mesh, Δt; plastic = cap, τ_old, workgroup = 1)
+        copyto!(P_old, P_corrected)
+        foreach(copyto!, τ_old, (dr.τ.xx, dr.τ.yy, dr.τ.xy))
+
+        P_trial = P_mp - K * Δt * ε̇
+        args = (v_mp, dNdx, Nv, (1.0,), (1.0,), SA[1, 1, 1], Δt, τ_mp, P_trial, cap, γ_mp)
+        γdot, _ = FEMTools.plastic_history_rates(args...)
+        τ_mp, P_mp = FEMTools.deviatoric_stress_and_pressure(args...)
+        γ_mp += Δt * γdot
+        θ_mp += (P_mp - P_trial) / K
+
+        @test all(isapprox.(P_corrected, P_mp; atol = 1e-8))
+        @test all(isapprox.(dr.τ.xx, τ_mp[1]; atol = 1e-8))
+        @test all(isapprox.(dr.plastic_history.γ, γ_mp; atol = 1e-8))
+        @test all(isapprox.(dr.plastic_history.θ, θ_mp; atol = 1e-8))
+    end
+    # Elastic first step, then two tensile steps: the corrected pressure stays
+    # at the cap while the trial pressure does not.
+    @test θ_mp > 0
+    @test -0.51 < P_mp < -0.5
+    @test all(dr.P .< -0.9)
+
+    @test_throws DimensionMismatch solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
+        plastic = cap, τ_old, P_old = zeros(nq + 1, mesh.nels), verbose = false)
+end
+
+@testset "DruckerPragerCap is radial Drucker-Prager in the shear domain" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    vx = SA[2.0e6, 0.0, 0.0]
+    vy = SA[0.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    τ_old = (0.0, 0.0, 0.0)
+    ϕ = deg2rad(30)
+    Ψ = deg2rad(20)
+    C = 2.0e6
+    η_reg = 3.0
+    Kb = 2.0e2
+    Δt = 0.1
+
+    cap = DruckerPragerCap((ϕ,), (Ψ,), (C,), (-1.0e6,), (η_reg,), (Kb,))
+    τ_trial = FEMTools.deviatoric_stress(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, Δt, τ_old,
+    )
+    τ_cap, P_cap = FEMTools.deviatoric_stress_and_pressure(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, Δt, τ_old, 0.0, cap, nothing,
+    )
+    s = FEMTools.second_invariant(τ_trial)
+    λ = (s - C * cos(ϕ)) / (1.0 + η_reg + Kb * Δt * sin(ϕ) * sin(Ψ))
+    @test all(τ_cap .≈ τ_trial .* ((s - λ) / s))
+    @test P_cap ≈ Kb * Δt * sin(Ψ) * λ
+end
+
+@testset "DruckerPragerCap stress tangent differentiates through the cap" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    cap = DruckerPragerCap(
+        (deg2rad(30),), (deg2rad(10),), (10.0,), (-5.0,), (1.0,), (100.0,))
+    u0 = SVector(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    stress(u) = FEMTools.deviatoric_stress(
+        (SVector(u[1], u[2], u[3]), SVector(u[4], u[5], u[6])),
+        dNdx, Nv, (1.0,), (Inf,), phase_loc, 0.1, (0.0, 0.0, 0.0), -20.0, cap,
+    )
+    J = ForwardDiff.jacobian(u -> SVector(stress(u)...), u0)
+    h = 1.0e-5
+    J_fd = hcat(ntuple(j -> begin
+        ej = SVector{6}(ntuple(i -> i == j ? h : 0.0, Val(6)))
+        (SVector(stress(u0 + ej)...) - SVector(stress(u0 - ej)...)) / (2h)
+    end, Val(6))...)
+    @test J ≈ J_fd rtol = 1.0e-4 atol = 1.0e-6
+
+    # Non-associated flow has no symmetric constitutive tangent. Use work-
+    # conjugate components (εxx, εyy, εxy) and (σxx, σyy, 2τxy).
+    total_stress(ε) = begin
+        v = (SVector(ε[1], ε[3], 0.0), SVector(ε[3], ε[2], 0.0))
+        τ, P = FEMTools.deviatoric_stress_and_pressure(
+            v, dNdx, Nv, (1.0,), (Inf,), phase_loc, 0.1,
+            (0.0, 0.0, 0.0), -20.0, cap, nothing,
+        )
+        return SVector(τ[1] - P, τ[2] - P, 2τ[3])
+    end
+    J_nonassociated = ForwardDiff.jacobian(total_stress, SVector(10.0, 0.0, 0.0))
+    @test maximum(abs, J_nonassociated - transpose(J_nonassociated)) > 0.1
+end
+
 @testset "Dilation stiffens the plastic return for a stiff bulk modulus" begin
     dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
     Nv = SA[1.0, 0.0, 0.0]
@@ -372,6 +554,28 @@ let
                    α[1] * sum(Nv .* (T - T0)) / Δt
             @test residual ≈ Nv * rate * dΩ
         end
+    end
+
+    @testset "finite elastic bulk modulus replaces bulk viscosity" begin
+        Nv = SA[0.2, 0.3, 0.5]
+        P, P0 = SA[3.0, 5.0, 8.0], SA[1.0, 2.0, 3.0]
+        T = T0 = SA[0.0, 0.0, 0.0]
+        residual = FEMTools.integrate_PH_pressure_residual(
+            (zero(P), zero(P)), P, P0, T, T0,
+            _stokes_geo_el(@SMatrix(zeros(3, 2)), 0.5),
+            _stokes_geo_weights(0.5), SA[1, 1, 1], (0.0,), (4.0,), 2.0, (Nv,);
+            K = (8.0,),
+        )
+        expected = Nv * (-dot(Nv, P - P0) / (8.0 * 2.0) * 0.5)
+        @test residual ≈ expected
+
+        legacy = FEMTools.integrate_PH_pressure_residual(
+            (zero(P), zero(P)), P, P0, T, T0,
+            _stokes_geo_el(@SMatrix(zeros(3, 2)), 0.5),
+            _stokes_geo_weights(0.5), SA[1, 1, 1], (0.0,), (4.0,), 2.0, (Nv,),
+        )
+        @test legacy ≈ Nv * (-dot(Nv, P - P0) / (4.0 * 2.0) * 0.5)
+        @test !isapprox(residual, legacy)
     end
 
     @testset "integrate_momentum_residual — zero gravity vanishes" begin

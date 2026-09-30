@@ -19,6 +19,50 @@ The suite covers:
 - parsing of maintained example scripts;
 - sparse and finite-difference reference oracles for selected solver/adjoint
   behavior.
+- `test/test_triangulate_mesh_ext.jl` exercises the Triangulate meshing
+  extension. On a unit square: element orientation, the exact total area, the
+  area constraint, midside and bubble placement, refinement under a smaller
+  `max_area`, construction of a `Mesh` from the result, and the rejected
+  argument cases. On a square split by an interior segment: that the mesh
+  conforms to the interface, that each half carries its own attribute and
+  exactly half the area, and that a per-region `max_area` binds. The
+  conformity check is the one that matters, because a non-conforming mesh still
+  returns plausible attributes. `Triangulate` is in `[extras]` and the `test`
+  target, so the extension is loaded for the suite but not for users of the
+  package.
+- `test/test_drucker_prager_cap.jl` covers cap geometry, scalar coefficients,
+  the coupled return-map residuals and derivatives, hydrostatic tension,
+  radial shear/rotation, independent branch switches, failure paths, softened
+  geometry, and Float32/Float64 behavior. `test/test_stokes.jl` adds a
+  three-step homogeneous-extension recurrence on a `(2, 2)` T7 mesh for
+  pressure, `τxx`, `γ`, and `θ`; the old trial-pressure handoff misses step 3
+  by ~7e-2 in `θ`.
+  Nested ForwardDiff is checked against central differences, frozen cap-state
+  blocks against the Enzyme transpose, and a work-conjugate non-associated
+  constitutive tangent is checked to remain nonsymmetric.
+  Sixteen numeric fixtures pinned to JustRelax revision `14ffc40c` cover
+  corrected invariant, pressure, multiplier, and volumetric rate without a
+  JustRelax or GeoParams test dependency.
+- `test/test_solver_convergence_api.jl` ends with a bulk-viscous block pulled
+  from its exact velocity solution, guarding the inner-loop absolute escape
+  described in the solver guide. It checks the closed-form pressure *and* the
+  iteration count, because that defect wastes iterations without changing the
+  converged values. Two earlier versions of this test passed with the fix
+  reverted and had to be thrown away: one asserted an iteration bound on the
+  buoyancy case, which exits at the outer check before the inner loop is ever
+  entered, and one asserted convergence on a setup whose `ηb → ∞` imposed
+  incompressibility on a velocity field with `∇·v ≠ 0`, so its apparent
+  pre-fix failure was the ill-posedness, not the defect. Run any solver
+  regression test against the reverted fix before trusting it.
+- `test/test_popov_2d_material_point.jl` is the first paper-specific gate for
+  the planned 2-D Popov example: it checks elastic behavior, converged,
+  regularized tensile-cap pressure return, corrected pressure handoff to
+  momentum assembly, and the four-matrix `τ_store` path that records that
+  corrected pressure at integration points, using the paper's friction,
+  dilation, cohesion, and tensile-strength ratios. The spatial smoke driver is kept outside the unit
+  suite; its tiny `(2, 2)` mesh reaches the requested residual in two outer
+  pressure updates with
+  `iterMax=500` and `total_iterMax=50_000`.
 
 GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
@@ -26,8 +70,22 @@ given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
 executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
 
+Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
+environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in
+the adjoint test; Julia 1.11.9 cannot resolve the project's JET 0.11.5/0.12
+constraint. Focused constitutive tests and the docs build pass on Julia 1.13,
+but this is not full-suite coverage or proof of compatibility on that version.
+
 The 3-D sparse reference tests include the function-only
 `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` helper.
+They mesh through Gmsh, whose artifact can fail up front with "Gmsh has not
+been initialized" — seen on Windows, and reproducible on a clean checkout, so
+it is an environment fault and not a solver regression. `_gmsh_usable()` in
+`test/test_stokes_3d_reference.jl` probes initialize/finalize once and skips the
+testset when it fails, rather than erroring the whole suite. The probe is
+deliberately narrow: a Gmsh that initializes but then meshes wrongly still
+fails loudly. A run that reports this skip has *not* covered the 3-D sparse
+oracle; do not read it as a pass.
 `test/test_stokes_3d_boundary_values.jl` checks nonzero initial boundary values,
 agreement with an already constrained initial guess, and malformed values.
 `test/test_example_paths.jl` rejects syntax-error expressions and checks shared
