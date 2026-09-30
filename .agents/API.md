@@ -151,6 +151,13 @@ modulus `K` for the experimental `DruckerPragerCap` path. Its element-level inte
 helper retains the legacy bulk-viscosity behavior when `K` is omitted, and uses
 `K` when supplied for the trial-pressure formulation.
 
+The forward solver makes that choice explicit with `finite_K`: `true` selects
+finite positive `K` independently of plastic-model dispatch, while `false`
+keeps the legacy `ηb` storage coefficient. `Qq` can be supplied directly as a
+signed local source, or paired with nonnegative weights and signed `Q2D` to
+enforce the discrete area-rate identity `Σ Q dΩ = Q2D`. `P_old` accepts either
+a nodal pressure vector or accepted `nq × nels` integration-point pressure.
+
 ## Canonical user flows
 
 ### Single-field problem

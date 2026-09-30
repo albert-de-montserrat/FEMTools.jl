@@ -232,6 +232,33 @@ end
     @test any(!iszero, Array(dr_power.v.y))
 end
 
+@testset "solve_stokes_dyrel! applies finite-K source normalization" begin
+    (; backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    nq = length(element_v.integration_points.ω)
+    K = 10.0
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, (1.0, 1.0), (Inf, Inf), (0.0, 0.0);
+        ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels))
+    γP = zeros(Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 1.0, 1.0;
+        workgroup, phases_v = phases)
+    γP .= 10.0
+    τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+    Qq = ones(Float64, mesh.nnodesP)
+    bc = DirichletBoundaryCondition(nothing, Γ, zeros(length(Γ)))
+    stats = solve_stokes_dyrel!(
+        dr, mesh, bc, bc, 1.0, γP;
+        phases_v = phases, phases_P = phases, τ_old,
+        finite_K = true, Qq, Q2D = 1.0, ncheck = 1, iterMax = 1,
+        total_iterMax = 1, max_ph_iterations = 1, verbose = false,
+        verbose_inner = false,
+    )
+    @test stats.converged
+    @test Array(dr.Q) ≈ ones(mesh.nnodesP)
+    @test Array(dr.P) ≈ fill(K, mesh.nnodesP)
+end
+
 @testset "solve_stokes_dyrel! converges from an exact initial velocity" begin
     backend = CPU()
     workgroup = 64
