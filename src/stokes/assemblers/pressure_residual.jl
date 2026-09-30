@@ -310,11 +310,10 @@ function assemble_pressure_residual_kernel!(
 end
 
 function assemble_pressure_residual_kernel!(
-    RP, vx::AbstractVector, vy::AbstractVector, P, P0, T, T0, Q,
-    args...; K = nothing,
+    RP, vx::AbstractVector, vy::AbstractVector, P, P0, T, T0, Q, args...,
 )
     return assemble_pressure_residual_kernel!(
-        RP, vx, vy, P, P0, T, T0, args...; Q, K,
+        RP, vx, vy, P, P0, T, T0, args...; Q,
     )
 end
 
