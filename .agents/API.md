@@ -10,23 +10,6 @@ API tests, and method implementations remain the source of truth.
 Read [solver.md](solver.md) for the mathematical contract behind solver entry
 points and [meshing.md](meshing.md) for topology/layout invariants.
 
-The Stokes assembler has an internal `IntegrationPointPlasticHistory`
-container for `(λ, εpl, D)` arrays indexed by quadrature point and element,
-plus a backend-neutral `update_plastic_history!` once-per-step update helper.
-`update_stokes_current_stress!` accepts this bundle through the optional
-`plastic_history=` keyword during its post-convergence diagnostic pass. These
-names remain unexported while the flow-direction and damage contracts are
-completed; the internal `plastic_strain_rate_invariant` helper pins the
-plane-strain `J₂` convention used by the diagnostic history write.
-
-The internal `DamageLaw`, `weakened_drucker_prager_parameters`, and
-`update_damage!` provide the validated lagged damage foundation; the
-2-D diagnostic constitutive path accepts optional per-IP `damage_old`; the
-state remains lagged and ordinary calls without it are unchanged. The same
-post-convergence hook accepts `damage_update=(εc, th)` for accepted-step
-damage evolution, and `damage_update_parameters` derives matching arrays from
-per-IP phase indices.
-
 ## API tiers
 
 FEMTools uses three tiers:
@@ -67,7 +50,6 @@ implementation; unsupported combinations must fail explicitly.
 - Types: `AbstractMesh`, `Mesh`, `MixedMesh`, `MixedMeshCache`,
   `AbstractBoundaryCondition`, `DirichletBoundaryCondition`.
 - Mesh producers: `generate_element2node`, `generate_node2element`,
-  `generate_element_adjacency`,
   `generate_boundary_elements`, `generate_coordinates`, `generate_dofs`,
   `generate_discontinuous_linear_mesh`.
 - Derived data: `precompute_geometry`, `update_geometry!`, `QuadraturePointGeometry`,
@@ -81,14 +63,12 @@ precomputes solver geometry; omitting it produces a topology-only mesh.
 `MixedMesh` owns distinct velocity and pressure layouts and, when built from an
 element-aware velocity mesh, a `MixedMeshCache` in `mesh.geometry` holding their
 precomputed geometry and reference elements. `update_geometry!(mesh)` recomputes
-it in place after the coordinates move, for a `MixedMesh` and for an
-element-aware `Mesh` alike (a topology-only `Mesh` throws).
+it in place after the coordinates move.
 
 Precomputed geometry holds one `QuadraturePointGeometry` per element and
 quadrature point: the inverse isoparametric Jacobian and the weighted volume.
 `MixedMeshCache.geo_P` instead holds the weighted volume alone, since no consumer
-takes pressure-field gradients; it is read with the two-argument
-`element_geometry(geo_P, iel)`.
+takes pressure-field gradients.
 Physical shape-function gradients are formed on access by pairing it with the
 reference-element gradients through `element_geometry`, so an assembler that
 consumes geometry also takes `shape_function_gradients(element)` alongside
@@ -104,15 +84,25 @@ reference elements and rebuild tuples.
 
 Import `FEMTools.VectorField2D/3D` and `FEMTools.SymmetricTensor2D/3D`
 explicitly. Vector components use `.x`, `.y`, and `.z`; stress components
-include the invariant II. Tuple uses Voigt order; stress(dr) and stress_old(dr)
-use assembler order (xx, yy, zz, xy, xz, yz) in 3-D. StokesDR owns v, Rv,
-PC_v, τ, and τ_old containers; its spatial dimension follows the length of g.
+include the invariant `II`. `Tuple` unpacks independent components for
+assemblers. `StokesDR` owns `v`, `Rv`, `PC_v`, `τ`, and `τ_old`
+containers; its spatial dimension follows the length of `g`. Passing
+`plastic_history_size=(nq, nels)` additionally allocates zeroed integration-
+point `dr.plastic_history.γ` and `.θ` arrays for the experimental cap path;
+the default remains `nothing`.
+The revised cap plan targets a once-per-accepted-step commit of corrected
+pressure and plastic history, matching JustRelax without GeoParams. This is
+pending API/lifecycle work: `update_stokes_current_stress!` currently advances
+history on each call, so it is not yet a read-only diagnostic operation.
+The `DruckerPragerCap` constructor takes radians, rejects nonfinite material
+parameters and nonpositive `Kb`, and requires positive cap radius at both
+`C` and `C_min`. The new scalar `cap_invariants` evaluator is internal API.
 
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
   `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
-  `StokesAdjointWorkspace`, `DruckerPrager`.
+  `StokesAdjointWorkspace`, `DruckerPrager`, `DruckerPragerCap`.
 - Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
 - Stokes entry points: `solve_stokes_dyrel!`,
   `solve_coupled_dyrel!`,
@@ -142,19 +132,24 @@ The module currently marks the following categories `public`:
 
 - backend and interpolation: `TA`, `interp2ip`, `interp2ip_phase`;
 - low-level Dirichlet application: `apply_dirichlet!`;
-- pointwise 2-D plastic diagnostic: `plastic_multiplier`;
 - thermal, lithostatic, momentum, pressure, Jacobian, and adjoint assemblers;
 - raw KA update/geometry kernels and their Stokes launch wrappers;
 - coloring/pressure utilities: `color_mesh_greedy`, `remove_pressure_mean!`;
 - external-mesh ingestion helpers in `src/mesh/utils.jl`:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`,
-  `circle_boundary_nodes`;
-- result accessors: `velocity`, `stress`, `stress_old`, `pressure`, `temperature`.
+  `circle_boundary_nodes`, and the `triangulate_t7_mesh` stub whose method the
+  Triangulate extension supplies;
+- result accessors: `velocity`, `stress`, `pressure`, `temperature`.
 
 These names are callable as `FEMTools.name` but are deliberately not imported
 by `using FEMTools`. Before adding another public low-level method, confirm that
 an extension, maintained miniapp, or downstream package genuinely needs it.
+
+The 2-D pressure residual assembler uses the solver state's finite elastic bulk
+modulus `K` for the experimental `DruckerPragerCap` path. Its element-level integration
+helper retains the legacy bulk-viscosity behavior when `K` is omitted, and uses
+`K` when supplied for the trial-pressure formulation.
 
 ## Canonical user flows
 
@@ -186,29 +181,16 @@ stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP)
 stats.converged || error("Stokes solve did not converge")
 ```
 
-The legacy pressure storage term uses `ηb`. Pass `finite_K=true` to select
-finite positive material `K` independently of plasticity; the finite-`K`
-pressure mean remains physical. `Qq` plus signed plane-strain `Q2D` (m²/s)
-supplies a nonnegative source weight normalized by the shared residual so
-`sum(Q dΩ) = Q2D`; omitting `Q2D` keeps `Qq` as a direct s⁻¹ source. `P_old`
-may be nodal or an `nq × nels` quadrature-pressure matrix.
-
-`stats.converged` is true only when the outer test `min(err_abs, err_rel) < ϵ_tol`
-passed, so a run that ends on `total_iterMax` is never converged; `stats.err` is
-the inner velocity residual in that case, so read `err_abs` and `err_rel`.
-
-`solve_coupled_dyrel!` accepts thermal and 2-D or 3-D Stokes states plus their
-meshes and boundary conditions. It advances one thermal DR step per inner velocity
+`solve_coupled_dyrel!` accepts thermal and 2-D Stokes states plus their meshes
+and boundary conditions. It advances one thermal DR step per inner velocity
 iteration and transfers continuous thermal-node values to the discontinuous
 Stokes pressure DoFs. Its statistics add `err_T` and `thermal_iterations`.
 
 The expanded positional methods remain available for adjoints and specialized
 workflows, but new normal-user examples should start from the high-level forms.
-The same `StokesDR`/`MixedMesh` flow accepts three velocity boundary conditions
-for T11 or Hex27 velocity with four cell-local linear pressure DoFs. Repeated
-2-D adjoint solves can also reuse a `StokesAdjointWorkspace`; its reverse-mode
-scratch is opt-in through `enzyme=true`, matching `operator = :enzyme` without
-charging the default block path for unused arrays.
+Repeated 2-D adjoint solves can pass a `StokesAdjointWorkspace`; its
+reverse-mode scratch is opt-in through `enzyme=true`, matching
+`operator = :enzyme` without charging the default block path for unused arrays.
 
 ## Mutation and ownership contract
 
@@ -218,7 +200,8 @@ charging the default block path for unused arrays.
 - Convert once with `Array(field)` for host-only plotting/output logic.
 - Caller-owned previous-time fields (`T0`, `P0`, old stress) must be updated at
   the physical-time boundary documented by the solver; a solver must not guess
-  that lifecycle.
+  that lifecycle. Under `DruckerPragerCap` the pressure memory is the accepted
+  corrected IP pressure, passed as `solve_stokes_dyrel!(...; P_old)`.
 - Returned convergence statistics describe the final in-place state. Never use
   a state as converged without checking the documented return/exception path.
 - Connectivity, geometry, phases, fields, BC indices/values, and scratch arrays
@@ -247,6 +230,13 @@ those behaviors hide costly scientific errors.
 `TA(::CPU)` maps to `Array`. Optional package extensions in `ext/` add mappings
 for CUDA, AMDGPU, and Metal backends when those packages are loaded. Core code
 must remain loadable without any GPU dependency.
+
+Extensions also carry optional non-backend capability. `FEMToolsTriangulateExt`
+adds the only method of `triangulate_t7_mesh`, so 2-D mesh generation is
+available without making Triangulate a core dependency. A capability added this
+way needs three pieces: a stub in `src/` that owns the docstring and raises an
+error naming the package to load, the method in `ext/`, and the weak dependency
+listed in both `[weakdeps]` and `[extras]` so the test target can exercise it.
 
 Backend-generic API additions should:
 

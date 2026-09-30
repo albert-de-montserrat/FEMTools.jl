@@ -16,103 +16,53 @@ The suite covers:
 - constructor, export/public API, helper, and verbosity contracts;
 - `Float32`/`Float64`, type inference, JET optimization checks, Aqua quality
   checks, and selected zero-allocation hot paths;
-- parsing of maintained example scripts, including the volcano drivers;
-- field-container constructor inference, continuity-source storage, and the
-  distinct 3-D Voigt versus Stokes assembler stress orders;
-- chamber-interface conformance and phase separation for the unstructured 3-D volcano mesh,
-  and interface conformance, area partition and boundary groups of the 2-D sill
-  meshes from Gmsh and Triangle;
-- exact face-versus-node element adjacency, including a 3-D tetrahedral case,
-  in `test/test_mesh_producer_api.jl`;
-- a one-element 3-D mixed pressure-scaling check and component-wise AD through
-  the 3-D plastic momentum residual;
+- parsing of maintained example scripts;
 - sparse and finite-difference reference oracles for selected solver/adjoint
-  behavior;
-- the 2-D end-to-end adjoint gradient oracle currently uses incompressible,
-  purely viscous material (`ηb = K = G = Inf`); plastic operator comparisons
-  do not establish a finite-compressibility gradient. `REYKJANES_PLAN.md`
-  GAP-25 defines the missing full-system transpose and gradient acceptance gate;
-- a closed-form oracle for the compressible elastic solver, source `Q` and soft inclusion:
-  `test/test_elliptical_cavity.jl` checks Muskhelishvili's pressurised elliptical hole
-  (circle and crack limits, area change, wall traction) and solves one step on a coarse mesh
-  against it;
-- the source normalisation oracle in the same file: `uniform_pressure_source` and
-  `pressure_source_integral` are checked against the shoelace area of the reservoir, against the
-  sum of the assembled continuity residual at rest (`Σᵢ ∫ Nᵢ Q dΩ = ∫ Q dΩ`), and for exact
-  cancellation of a dike band source by the sink;
-- the shared pressure residual checks legacy `ηb` storage, explicit finite-`K`
-  storage, and accepted quadrature-point `P_old`;
-- the forward solver checks a finite-`K` normalized source step (`ΔP = K Qq Δt`)
-  and the residual tests cover nonuniform area-rate integration and invalid support;
-- `test/test_state_snapshot.jl` guards the in-memory snapshot: every array field of `StokesDR` and
-  `ThermalDiffusionDR` must be classified as state or scratch (a new field fails until it is), the
-  round trip is exact and alias-free in both directions, structural changes throw, and a replay
-  after a discarded trial that committed `P0` and `τ_old` reproduces a clean solve. The replay
-  omission was checked by hand: dropping `P0`, `τ_old` or `Q` from the state breaks it;
-- `test/test_event_stepping.jl` guards the transaction built on that snapshot: an accepted step
-  keeps what it wrote; a step that reports `converged = false`, leaves a non-finite state or throws
-  a `StepRejection` is rolled back to the exact pre-step state; the retries shrink the step and stop
-  at the attempt or the step-size budget; and a trial forced to fail after it solved and committed a
-  doubled source leaves the two accepted steps that follow equal to a clean run;
-- the same file guards the crossing search: on a trial whose state is its own step size, the bracket
-  contains the known crossing and is shorter than the tolerance, a detector that switches back off
-  is reported as several crossings with the earliest one still resolved, and an absent crossing, an
-  exhausted trial budget and a failed trial each report themselves; on the cavity, bracketing a
-  pressure threshold leaves exactly the state one step of `hi` reaches from the left state. The
-  cavity trial rebuilds `γP` and `dr.M_P` per step size, because with the scaling of another step
-  the relaxation does not converge at all;
-- and the amplitude solve: on a response of known shape it lands on the root, tries the zero
-  amplitude first, doubles before it bisects, and reports a saturating response as
-  `no_arrest_bracket` after trying `amplitude_max` itself rather than doubling away. Its oracle is
-  the linearity of one elastic step: on the cavity, a target of 1.5 times the pressure of a unit
-  injection is reached at amplitude 1.5, and the committed state is the one the reported amplitude
-  describes;
-- `test/test_event_protocol.jl` guards the rules rather than a run: the protocol validates every
-  field and keeps the two defaults that make the detector usable (a nonzero tensile strength and a
-  magmastatic head), each Boolean criterion reduces integration-point flags to elements as named
-  (`:both` is one point failing twice, not one element failing in two ways), the path averages weigh
-  by element area, and the deviatoric normal stress follows a normalised dike normal. The cycle
-  itself is a miniapp, not a test: it costs minutes;
-- the transfer sink in `test/test_elliptical_cavity.jl`: `balance_dike_source!` reproduces the
-  source plus sink built by hand, leaves the band's own source untouched, integrates to zero to
-  1e-13 of the injection, and refuses a sink that overlaps its source;
-- the dike eigenstrain helper regression in `test/test_dike_functions.jl` checks the
-  plane-strain deviatoric split, selected integration-point history updates, and
-  invalid opening/normal inputs;
-- the same dike helper testset checks plane-strain `s3`, Drucker--Prager `F`,
-  hydraulic margin, principal orientation normalization, and degeneracy flags
-  on analytic stress states;
-- the dike helper testset also checks deterministic active-component and
-  shortest-path behavior across an inactive barrier;
-- the corridor detector of Gate G1, in the same file: the fixed strip bins only what is inside it
-  and tiles it exactly on a uniform mesh, `eligible` keeps the reservoir out, a corridor finer than
-  the mesh reports `under_resolved` and refuses to trip however much has failed, and an element is
-  weighed by the fraction of its quadrature that failed rather than by a Boolean. The property the
-  rule exists for is tested directly: the same failure field on meshes whose element size differs by
-  a factor of four gives identical bin fractions, an identical corridor fraction, the same verdict
-  under both corridor rules, and a band of identical area. The column and area-fraction rules are
-  pinned as *different questions* — half a corridor trips the second and not the first;
-- `test/test_event_protocol.jl` also pins that the default detector is not the graph rule, that
-  `:graph_path` is still available to compare against, and that the corridor's geometry validates;
-- the eigenstrain band is checked against the pressurised crack in the same file, on a coarse mesh:
-  the opening profile is within the plan's 2 % gate, the closure traction `P − τ_yy` is the crack
-  pressure within 2 %, a band half as thick gives the same traction within 1 %, and the band's
-  continuity identity `ΔA/A + P/K` closes to 1e-5. It also pins that the band's *mean* pressure is
-  not the dike pressure (`P/p < 0.9`), so that a later change cannot quietly start reading it as one;
-- the 2-D Drucker--Prager return test checks the exposed pointwise
-  `plastic_multiplier` against the hand-computed simple-shear return;
-- `test_plastic_history.jl` checks Float32 per-integration-point history
-  updates, shape validation, and element-pinned output writes; the update is
-  intentionally exercised as a once-per-step helper rather than inside DR.
-- The same test pins the plane-strain `J₂`-equivalent plastic strain-rate
-  conversion for a simple-shear flow direction.
-- `test_damage_law.jl` checks damage-law validation, lagged weakening,
-  implicit healing/update, accepted-history differencing, pure healing,
-  no-healing saturation, phase-to-IP parameter mapping, clamping bounds, and
-  Float32-compatible parameters; it also exercises the 3-D damaged return.
-- the 2-D Stokes `converged` flag implies the outer stopping test passed:
-  `test/test_solver_convergence_api.jl` sweeps `total_iterMax` on a small buoyancy case, where
-  the inner-loop residual once made a capped run read as converged.
+  behavior.
+- `test/test_triangulate_mesh_ext.jl` exercises the Triangulate meshing
+  extension. On a unit square: element orientation, the exact total area, the
+  area constraint, midside and bubble placement, refinement under a smaller
+  `max_area`, construction of a `Mesh` from the result, and the rejected
+  argument cases. On a square split by an interior segment: that the mesh
+  conforms to the interface, that each half carries its own attribute and
+  exactly half the area, and that a per-region `max_area` binds. The
+  conformity check is the one that matters, because a non-conforming mesh still
+  returns plausible attributes. `Triangulate` is in `[extras]` and the `test`
+  target, so the extension is loaded for the suite but not for users of the
+  package.
+- `test/test_drucker_prager_cap.jl` covers cap geometry, scalar coefficients,
+  the coupled return-map residuals and derivatives, hydrostatic tension,
+  radial shear/rotation, independent branch switches, failure paths, softened
+  geometry, and Float32/Float64 behavior. `test/test_stokes.jl` adds a
+  three-step homogeneous-extension recurrence on a `(2, 2)` T7 mesh for
+  pressure, `τxx`, `γ`, and `θ`; the old trial-pressure handoff misses step 3
+  by ~7e-2 in `θ`.
+  Nested ForwardDiff is checked against central differences, frozen cap-state
+  blocks against the Enzyme transpose, and a work-conjugate non-associated
+  constitutive tangent is checked to remain nonsymmetric.
+  Sixteen numeric fixtures pinned to JustRelax revision `14ffc40c` cover
+  corrected invariant, pressure, multiplier, and volumetric rate without a
+  JustRelax or GeoParams test dependency.
+- `test/test_solver_convergence_api.jl` ends with a bulk-viscous block pulled
+  from its exact velocity solution, guarding the inner-loop absolute escape
+  described in the solver guide. It checks the closed-form pressure *and* the
+  iteration count, because that defect wastes iterations without changing the
+  converged values. Two earlier versions of this test passed with the fix
+  reverted and had to be thrown away: one asserted an iteration bound on the
+  buoyancy case, which exits at the outer check before the inner loop is ever
+  entered, and one asserted convergence on a setup whose `ηb → ∞` imposed
+  incompressibility on a velocity field with `∇·v ≠ 0`, so its apparent
+  pre-fix failure was the ill-posedness, not the defect. Run any solver
+  regression test against the reverted fix before trusting it.
+- `test/test_popov_2d_material_point.jl` is the first paper-specific gate for
+  the planned 2-D Popov example: it checks elastic behavior, converged,
+  regularized tensile-cap pressure return, corrected pressure handoff to
+  momentum assembly, and the four-matrix `τ_store` path that records that
+  corrected pressure at integration points, using the paper's friction,
+  dilation, cohesion, and tensile-strength ratios. The spatial smoke driver is kept outside the unit
+  suite; its tiny `(2, 2)` mesh reaches the requested residual in two outer
+  pressure updates with
+  `iterMax=500` and `total_iterMax=50_000`.
 
 GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
@@ -120,8 +70,22 @@ given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
 executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
 
+Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
+environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in
+the adjoint test; Julia 1.11.9 cannot resolve the project's JET 0.11.5/0.12
+constraint. Focused constitutive tests and the docs build pass on Julia 1.13,
+but this is not full-suite coverage or proof of compatibility on that version.
+
 The 3-D sparse reference tests include the function-only
 `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` helper.
+They mesh through Gmsh, whose artifact can fail up front with "Gmsh has not
+been initialized" — seen on Windows, and reproducible on a clean checkout, so
+it is an environment fault and not a solver regression. `_gmsh_usable()` in
+`test/test_stokes_3d_reference.jl` probes initialize/finalize once and skips the
+testset when it fails, rather than erroring the whole suite. The probe is
+deliberately narrow: a Gmsh that initializes but then meshes wrongly still
+fails loudly. A run that reports this skip has *not* covered the 3-D sparse
+oracle; do not read it as a pass.
 `test/test_stokes_3d_boundary_values.jl` checks nonzero initial boundary values,
 agreement with an already constrained initial guess, and malformed values.
 `test/test_example_paths.jl` rejects syntax-error expressions and checks shared

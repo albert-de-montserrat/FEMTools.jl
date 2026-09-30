@@ -56,7 +56,6 @@ generate_dofs
 ```@docs
 generate_element2node
 generate_node2element
-generate_element_adjacency
 generate_boundary_elements
 FEMTools.element_coordinate_matrix
 FEMTools._unstructured_boundary_nodes
@@ -95,6 +94,40 @@ FEMTools.circle_boundary_nodes
 Both default `atol` to `sqrt(eps(Float64))` scaled by the largest supplied
 coordinate. `examples/gmsh_meshing.jl` chains these helpers into a complete
 Gmsh-to-FEMTools triangle pipeline.
+
+### Generating a 2-D triangle mesh in package code
+
+For a two-dimensional domain described by a polygon, the package can produce
+the mesh itself rather than convert one. `triangulate_t7_mesh` meshes the
+polygon under an area constraint and returns the same layout the helpers above
+produce, so only boundary-node selection is left to the caller.
+
+```@docs
+FEMTools.triangulate_t7_mesh
+```
+
+The method lives in a package extension, so `Triangulate` must be loaded for it
+to exist:
+
+```julia
+using FEMTools, StaticArrays, Triangulate
+
+square = [SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(1.0, 1.0), SVector(0.0, 1.0)]
+coords, el2n, attributes = FEMTools.triangulate_t7_mesh(square; max_area = 5.0e-3)
+boundary = FEMTools.rectangle_boundary_nodes(coords, 0.0, 1.0, 0.0, 1.0)
+```
+
+Passing `segments` and `regions` describes a graph richer than one polygon: an
+interior interface the mesh must conform to, and the subdomains it encloses.
+The returned `attributes` then say which subdomain each element belongs to,
+which is how a driver gives an inclusion its own phase. Note that a per-region
+`max_area` is a Triangle region constraint, so quality refinement still carries
+some of it across the interface into the neighbouring region.
+
+Keeping it in an extension means `Triangle_jll` is only installed by users who
+ask for it; the core package still has no mesh-generator dependency. Gmsh
+remains the route for 3-D meshes and for reading mesh files, which stays in
+`examples/gmsh_meshing.jl`.
 
 ## Sparsity and Coloring
 

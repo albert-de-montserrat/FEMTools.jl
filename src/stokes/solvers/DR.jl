@@ -1,16 +1,3 @@
-# Apply one Dirichlet node set and value set per spatial direction.
-@inline function _apply_dirichlet_all!(fields::NTuple{D}, nodes, vals, backend, workgroup) where {D}
-    ntuple(Val(D)) do c
-        apply_dirichlet!(fields[c], nodes[c], vals[c], backend, workgroup)
-        nothing
-    end
-    return nothing
-end
-
-# Preconditioner-diagnostic labels reported by `_checked_λmax`, indexed by
-# spatial direction.
-const _VELOCITY_LABELS = ("stokes vx", "stokes vy", "stokes vz")
-
 """
     _stokes_λmin(step, rate, R, R0, PC) -> λmin
 
@@ -47,141 +34,107 @@ end
 
 """
     solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh,
-                         bc_T, bc_v, Δt, γP; Tref=273, workgroup=256, kwargs...)
-    solve_coupled_dyrel!(thermal, stokes, thermal_mesh, stokes_mesh,
-                         bc_T, bc_vx, bc_vy, Δt, γP; kwargs...)
+                         bc_T, bc_vx, bc_vy, Δt, γP;
+                         Tref=273, workgroup=256, kwargs...)
 
 Solve one coupled thermal--Stokes time step. Each inner Stokes velocity
 iteration advances one thermal dynamic-relaxation iteration, then gathers the
 continuous thermal field at `stokes_mesh.el2nP` onto the discontinuous pressure
 DoFs used by the Stokes residuals.
 
-`bc_v` holds one velocity boundary condition per spatial direction; the second
-form takes the two plane-strain components separately. `thermal_mesh` must use
-the same node numbering and backend as the primary field of `stokes_mesh`. The previous-time fields `thermal.T0`, `stokes.P0`, and
+`thermal_mesh` must use the same node numbering and backend as the primary
+field of `stokes_mesh`. The previous-time fields `thermal.T0`, `stokes.P0`, and
 the Stokes stress history remain caller-owned. Remaining keywords are forwarded
 to [`solve_stokes_dyrel!`](@ref); `ncheck` controls convergence checks for both
 relaxation updates. Returns the Stokes statistics with additional `err_T` and
 `thermal_iterations` fields.
 """
 function solve_coupled_dyrel!(
-        thermal::ThermalDiffusionDR,
-        stokes::StokesDR,
-        thermal_mesh::Mesh,
-        stokes_mesh::MixedMesh,
-        bc_T::DirichletBoundaryCondition,
-        bc_v::NTuple{D, DirichletBoundaryCondition},
-        Δt,
-        γP;
-        Tref = eltype(thermal.T)(273),
-        workgroup = 256,
-        kwargs...,
-    ) where {D}
-    isnothing(thermal_mesh.geometry) && throw(
-        ArgumentError(
-            "thermal mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"
-        )
-    )
-    thermal_mesh.nnodes == stokes_mesh.nnodes || throw(
-        DimensionMismatch(
-            "thermal mesh nodes must match the Stokes velocity-node layout"
-        )
-    )
-    length(thermal.T) == thermal_mesh.nnodes || throw(
-        DimensionMismatch(
-            "thermal state size must match thermal mesh nodes"
-        )
-    )
-    length(stokes.T) == stokes_mesh.nnodesP || throw(
-        DimensionMismatch(
-            "Stokes temperature size must match pressure DoFs"
-        )
-    )
+    thermal::ThermalDiffusionDR,
+    stokes::StokesDR,
+    thermal_mesh::Mesh,
+    stokes_mesh::MixedMesh,
+    bc_T::DirichletBoundaryCondition,
+    bc_vx::DirichletBoundaryCondition,
+    bc_vy::DirichletBoundaryCondition,
+    Δt,
+    γP;
+    Tref = eltype(thermal.T)(273),
+    workgroup = 256,
+    kwargs...,
+)
+    isnothing(thermal_mesh.geometry) && throw(ArgumentError(
+        "thermal mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
+    thermal_mesh.nnodes == stokes_mesh.nnodes || throw(DimensionMismatch(
+        "thermal mesh nodes must match the Stokes velocity-node layout"))
+    length(thermal.T) == thermal_mesh.nnodes || throw(DimensionMismatch(
+        "thermal state size must match thermal mesh nodes"))
+    length(stokes.T) == stokes_mesh.nnodesP || throw(DimensionMismatch(
+        "Stokes temperature size must match pressure DoFs"))
 
     backend = KA.get_backend(stokes_mesh.coords)
-    typeof(KA.get_backend(thermal_mesh.coords)) === typeof(backend) || throw(
-        ArgumentError(
-            "thermal and Stokes meshes must use the same backend"
-        )
-    )
+    typeof(KA.get_backend(thermal_mesh.coords)) === typeof(backend) || throw(ArgumentError(
+        "thermal and Stokes meshes must use the same backend"))
     _transfer_temperature!(stokes.T, thermal.T, stokes_mesh, backend, workgroup)
     _transfer_temperature!(stokes.T0, thermal.T0, stokes_mesh, backend, workgroup)
 
     coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref)
     return solve_stokes_dyrel!(
-        stokes, stokes_mesh, bc_v, Δt, γP;
+        stokes, stokes_mesh, bc_vx, bc_vy, Δt, γP;
         workgroup, _thermal = coupled, kwargs...,
     )
 end
 
-solve_coupled_dyrel!(
-    thermal::ThermalDiffusionDR, stokes::StokesDR, thermal_mesh::Mesh,
-    stokes_mesh::MixedMesh,
-    bc_T::DirichletBoundaryCondition,
-    bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition,
-    Δt, γP; kwargs...
-) =
-    solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh,
-    bc_T, (bc_vx, bc_vy), Δt, γP; kwargs...
-)
-
 """
-    solve_stokes_dyrel!(dr, mesh, bc_v, Δt, γP;
+    solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
                         plastic=nothing, workgroup=256, kwargs...)
-    solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; kwargs...)
 
 Solve the Stokes system using geometry and elements from `mesh.geometry`, material and
 stress history from `dr`, and one Dirichlet boundary-condition object per
 velocity component. Phase layouts and stress history may be overridden with
 the `phases_v`, `phases_P`, and `τ_old` keywords.
 
-The state, mesh, and velocity boundary conditions must have the same spatial dimension.
+This mixed-mesh method is two-dimensional and takes `StokesDR{<:Any, 2}`; a
+three-dimensional state is a `MethodError` rather than a solve that ignores the
+third component.
 """
 function solve_stokes_dyrel!(
-        dr::StokesDR{<:Any, D},
-        mesh::MixedMesh{D},
-        bc_v::NTuple{D, DirichletBoundaryCondition},
-        Δt,
-        γP;
-        plastic = nothing,
-        phases_v = dr.phases_v,
-        phases_P = dr.phases_P,
-        τ_old = stress_old(dr),
-        workgroup = 256,
-        kwargs...,
-    ) where {D}
+    dr::StokesDR{<:Any, 2},
+    mesh::MixedMesh,
+    bc_vx::DirichletBoundaryCondition,
+    bc_vy::DirichletBoundaryCondition,
+    Δt,
+    γP;
+    plastic = nothing,
+    phases_v = dr.phases_v,
+    phases_P = dr.phases_P,
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+    workgroup = 256,
+    kwargs...,
+)
     cache = _mesh_geometry(mesh)
     backend = KA.get_backend(mesh.coords)
     return solve_stokes_dyrel!(
         dr, mesh, cache, cache.element_v, cache.element_P,
         phases_v, phases_P, τ_old, plastic, dr.G, Δt, γP,
-        first(bc_v).DoFs, map(bc -> bc.vals, bc_v), backend, workgroup;
-        v_nodes = map(bc -> bc.DoFs, bc_v), kwargs...,
+        bc_vx.DoFs, bc_vx.vals, bc_vy.vals, backend, workgroup;
+        vx_nodes = bc_vx.DoFs, vy_nodes = bc_vy.DoFs, kwargs...,
     )
 end
-
-solve_stokes_dyrel!(
-    dr::StokesDR{<:Any, 2}, mesh::MixedMesh,
-    bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition,
-    Δt, γP; kwargs...
-) =
-    solve_stokes_dyrel!(dr, mesh, (bc_vx, bc_vy), Δt, γP; kwargs...)
 
 """
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
                         phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                        Γnodes, bc_vals, backend, workgroup;
+                        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
                         kwargs...) -> NamedTuple
     solve_stokes_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
                         ...)
 
 Run the Powell-Hestenes / DYREL-style velocity-pressure iteration for a Stokes
 state with Dirichlet velocity boundary conditions on `Γnodes`. `dr.M_P` must be
-filled before calling. `bc_vals` holds one Dirichlet value array per spatial
-direction; the plane-strain form takes `bc_vx_vals` and `bc_vy_vals`
-separately. The element geometry is supplied either as a `MixedMeshCache` or as
-the raw `geo_v`, `geo_P` arrays.
+filled before calling. The two forms differ only in how the precomputed element
+geometry is supplied: as a `MixedMeshCache` or as the raw `geo_v`, `geo_P`
+arrays.
 
 # Keyword arguments
 - `ncheck = 50`: recompute spectral estimates and convergence every `ncheck`
@@ -194,9 +147,8 @@ the raw `geo_v`, `geo_P` arrays.
 - `max_ph_iterations = 1000`: maximum outer Powell-Hestenes iterations.
 - `rel_drop0 = 1e-2`: initial relative residual drop demanded of each inner
   solve; tightened automatically as the outer iteration proceeds.
-- `v_nodes = ntuple(_ -> Γnodes, D)`: per-direction Dirichlet node sets, for
-  when the velocity components are constrained on different boundaries. The
-  plane-strain form takes these as `vx_nodes` and `vy_nodes`.
+- `vx_nodes = Γnodes`, `vy_nodes = Γnodes`: per-component Dirichlet node sets,
+  for when the two velocity components are constrained on different boundaries.
 - `verbose = true`: outer Powell-Hestenes progress; `verbose_inner = false`:
   inner dynamic-relaxation trace.
 - `collect_history = false`: record `(iter, err_v, err_P)` at every check.
@@ -204,120 +156,121 @@ the raw `geo_v`, `geo_P` arrays.
   power iteration on the symmetrically Jacobi-scaled velocity operator.
 - `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
   Jacobian instead of differentiating it at every convergence check.
-- `finite_K = false`: use the finite positive material bulk modulus `K` in the
-  pressure storage term, independently of plasticity. The default preserves
-  the historical `ηb` form.
-- `P_old = dr.P0`: accepted previous pressure; a nodal vector is interpolated,
-  while an `nq × nels` matrix supplies accepted quadrature-point pressure.
+- `finite_K = plastic isa DruckerPragerCap`: use finite positive material `K`
+  in pressure storage independently of plastic dispatch. `false` preserves
+  the legacy `ηb` choice.
 - `Qq`, `Q2D`: optional nonnegative pressure-node source weights and signed
   plane-strain area rate. The solver normalizes them so `∑ Q dΩ = Q2D`.
+- `P_old = dr.P0`: accepted pressure of the previous step in the continuity
+  rate `(P - P_old)/(KΔt)`. A nodal vector is interpolated; an `nq × nels`
+  matrix is read directly at the velocity quadrature points. With
+  `DruckerPragerCap`, pass the accepted *corrected* integration-point pressure
+  (the fourth output of [`update_stokes_current_stress!`](@ref)): `dr.P` is the
+  trial pressure, so copying it into `dr.P0` drops the plastic pressure
+  correction from the next step. The augmented momentum Jacobian still reads
+  `dr.P0`; its derivative with respect to velocity does not depend on it.
 
 # Return value
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
 iterations), `err`, `err_abs`, `err_rel`, `err_v`, `err_P`,
 `converged::Bool`, `reached_total_iter::Bool`, and `history` (empty unless
-`collect_history`). `converged` is true only when the outer test
-`min(err_abs, err_rel) < ϵ_tol` passed (and, when coupled, the thermal state
-converged), so a run that ends on `total_iterMax` or `max_ph_iterations` is
-never converged. `err` is the last outer error on convergence but the inner
-velocity residual when a cap ends the run, so read `err_abs` and `err_rel` for
-the outer error.
+`collect_history`).
 """
-solve_stokes_dyrel!(
-    dr, mesh_stokes, cache::MixedMeshCache, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP, args...; kwargs...
-) =
-    solve_stokes_dyrel!(
-    dr, mesh_stokes, cache.geo_v, cache.geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP, args...; kwargs...
+function solve_stokes_dyrel!(
+    dr,
+    mesh_stokes,
+    cache::MixedMeshCache,
+    element_v,
+    element_P,
+    phases_v,
+    phases_P,
+    τ_old,
+    plastic,
+    G,
+    Δt,
+    γP,
+    Γnodes,
+    bc_vx_vals,
+    bc_vy_vals,
+    backend,
+    workgroup;
+    kwargs...,
 )
-
-solve_stokes_dyrel!(
-    dr, mesh_stokes, geo_v::AbstractVector, geo_P::AbstractVector,
-    element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP, Γnodes,
-    bc_vx_vals::AbstractVector, bc_vy_vals::AbstractVector, backend, workgroup;
-    vx_nodes = Γnodes, vy_nodes = Γnodes, kwargs...
-) =
-    solve_stokes_dyrel!(
-    dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP, Γnodes,
-    (bc_vx_vals, bc_vy_vals), backend, workgroup;
-    v_nodes = (vx_nodes, vy_nodes), kwargs...
-)
+    return solve_stokes_dyrel!(
+        dr, mesh_stokes, cache.geo_v, cache.geo_P, element_v, element_P,
+        phases_v, phases_P, τ_old, plastic, G, Δt, γP,
+        Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
+        kwargs...,
+    )
+end
 
 function solve_stokes_dyrel!(
-        dr,
-        mesh_stokes,
-        geo_v::AbstractVector,
-        geo_P::AbstractVector,
-        element_v,
-        element_P,
-        phases_v,
-        phases_P,
-        τ_old,
-        plastic,
-        G,
-        Δt,
-        γP,
-        Γnodes,
-        bc_vals::NTuple{D, <:AbstractVector},
-        backend,
-        workgroup;
-        v_nodes = ntuple(_ -> Γnodes, Val(D)),
-        ncheck = 50,
-        ϵ_tol = 1.0e-6,
-        iterMax = 50_000,
-        total_iterMax = 50_000,
-        max_ph_iterations = 1000,
-        rel_drop0 = 1.0e-2,
-        verbose = true,
-        verbose_inner = false,
-        collect_history = false,
-        measure_λmax = false,
-        λmax_power_iterations = 12,
-        λmax_power_rtol = 1.0e-2,
-        λmax_safety = 1.1,
-        freeze_jacobian = plastic === nothing,
-        P_old = dr.P0,
-        finite_K = false,
-        Q2D = nothing,
-        Qq = nothing,
-        _thermal = nothing,
-    ) where {D}
-    verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
-    finite_K isa Bool || throw(ArgumentError("finite_K must be a Bool"))
+    dr,
+    mesh_stokes,
+    geo_v,
+    geo_P,
+    element_v,
+    element_P,
+    phases_v,
+    phases_P,
+    τ_old,
+    plastic,
+    G,
+    Δt,
+    γP,
+    Γnodes,
+    bc_vx_vals,
+    bc_vy_vals,
+    backend,
+    workgroup;
+    ncheck = 50,
+    ϵ_tol = 1.0e-6,
+    iterMax = 50_000,
+    total_iterMax = 50_000,
+    max_ph_iterations = 1000,
+    rel_drop0 = 1.0e-2,
+    verbose = true,
+    verbose_inner = false,
+    vx_nodes = Γnodes,
+    vy_nodes = Γnodes,
+    collect_history = false,
+    measure_λmax = false,
+    λmax_power_iterations = 12,
+    λmax_power_rtol = 1.0e-2,
+    λmax_safety = 1.1,
+    freeze_jacobian = plastic === nothing,
+    P_old = dr.P0,
+    finite_K = plastic isa DruckerPragerCap,
+    Q2D = nothing,
+    Qq = nothing,
+    _thermal = nothing,
+)
     ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
     P_old isa AbstractMatrix && size(P_old) != ip_size && throw(DimensionMismatch(
         "integration-point P_old must be nq × nels = $ip_size, got $(size(P_old))"))
+    finite_K isa Bool || throw(ArgumentError("finite_K must be a Bool"))
     P_old isa AbstractArray || throw(ArgumentError("P_old must be an array"))
     P_old isa AbstractVector && length(P_old) != length(dr.P) && throw(
         DimensionMismatch("nodal P_old must match the pressure field shape"))
     typeof(KA.get_backend(P_old)) === typeof(backend) ||
         throw(ArgumentError("P_old and Stokes state must use the same backend"))
     pressure_bulk = finite_K ? dr.K : dr.ηb
-    if finite_K
-        all(isfinite, dr.K) && all(>(zero(eltype(dr.K))), dr.K) ||
-            throw(ArgumentError("finite_K requires finite positive material K"))
-    end
-    measure_λmax && D != 2 &&
-        throw(ArgumentError("measure_λmax is currently supported only in plane strain"))
+    finite_K && (all(isfinite, dr.K) && all(>(zero(eltype(dr.K))), dr.K) ||
+        throw(ArgumentError("finite_K requires finite positive material K")))
+    verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
-    spectral_safety = isnothing(plastic) ? λmax_safety : max(λmax_safety, 1.5)
+    spectral_safety = _stokes_spectral_safety(plastic, λmax_safety)
 
     M_P = dr.M_P
     nout = ncheck
-    zero_bc = map(zero, bc_vals)
-    v = velocity(dr)
-    rate = Tuple(getfield(dr, :∂v∂τ))
-    Rv = Tuple(getfield(dr, :Rv))
-    Rv0 = Tuple(getfield(dr, :Rv0))
-    ∂Rv∂v = Tuple(getfield(dr, :∂Rv∂v))
-    PC_v = Tuple(getfield(dr, :PC_v))
+    zero_vx_bc = zero(bc_vx_vals)
+    zero_vy_bc = zero(bc_vy_vals)
 
-    foreach(a -> fill!(a, 0), rate)
-    foreach(a -> fill!(a, 0), Rv0)
+    fill!(dr.∂v∂τ.x, 0)
+    fill!(dr.∂v∂τ.y, 0)
+    fill!(dr.Rv0.x, 0)
+    fill!(dr.Rv0.y, 0)
 
     # Shared by every element, so the residual kernels read them from the backend
     # rather than carry them in the argument pack of each of their launches.
@@ -346,40 +299,42 @@ function solve_stokes_dyrel!(
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-            pressure_bulk,
-        )
+            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk)
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
-            ∂Rv∂v, PC_v,
-            v, dr.P, dr.P0, dr.T, dr.T0,
+            dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
-            backend, workgroup; τ_old, plastic
-        )
+            backend, workgroup; τ_old, plastic,
+            γ_history = _plastic_history_gamma(dr.plastic_history))
         nothing
     end
-    λmax_gershgorin = maximum(ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D)))
+    λmax_gershgorin = max(
+        _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx"),
+        _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy"))
     λmax_iterations = 0
     jacobian_assemblies = 1
     power_x = power_y = nothing
     if measure_λmax
         λmax_measured, λmax_iterations, power_x, power_y = estimate_velocity_λmax(
-            velocity_op, mesh_stokes, element_v, PC_v[1], PC_v[2],
-            v_nodes[1], v_nodes[2], backend, workgroup;
-            max_iterations = λmax_power_iterations, rtol = λmax_power_rtol
-        )
-        λmax_v = ntuple(_ -> min(λmax_gershgorin, spectral_safety * λmax_measured), Val(D))
+            velocity_op, mesh_stokes, element_v, dr.PC_v.x, dr.PC_v.y,
+            vx_nodes, vy_nodes, backend, workgroup;
+            max_iterations = λmax_power_iterations, rtol = λmax_power_rtol)
+        λmax_vx = λmax_vy = min(λmax_gershgorin, spectral_safety * λmax_measured)
     else
-        λmax_v = ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D))
+        λmax_vx = _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx")
+        λmax_vy = _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy")
     end
-    Δτ_v = map(λ -> 2 / sqrt(λ) * dr.CFL_v, λmax_v)
-    cheb = map(Δτ -> _stokes_cheb(Δτ, zero(Δτ), dr.c_fact), Δτ_v)
-    α_v, β_v = map(first, cheb), map(last, cheb)
-    verbose && @info "Initial momentum preconditioner" λmax_v Δτ_v
+    Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
+    Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
+    α_vx, β_vx = _stokes_cheb(Δτ_vx, zero(λmax_vx), dr.c_fact)
+    α_vy, β_vy = _stokes_cheb(Δτ_vy, zero(λmax_vy), dr.c_fact)
+    verbose && @info "Initial momentum preconditioner" λmax_vx λmax_vy Δτ_vx Δτ_vy
 
     err_min = Inf
-    ϵ = eltype(first(Rv))(ϵ_tol)
+    ϵ = eltype(dr.Rv.x)(ϵ_tol)
     err = 2 * ϵ
     err_abs = Inf
     err_rel = Inf
@@ -392,14 +347,13 @@ function solve_stokes_dyrel!(
     err_P_rel = Inf
     iter = 0
     itPH_done = 0
-    converged = false
     rel_drop = rel_drop0
     history = NamedTuple[]
 
     thermal_iter = 0
     err_T = isnothing(_thermal) ? nothing : Inf
     thermal_converged = isnothing(_thermal)
-    α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(first(Rv)))
+    α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(dr.Rv.x))
     if !isnothing(_thermal)
         fill!(_thermal.dr.∂T∂τ, 0)
         fill!(_thermal.dr.R0, 0)
@@ -410,24 +364,27 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_kernel!(
             dr.RP,
-            v, dr.P, P_old, dr.T, dr.T0, dr.Q,
+            dr.v.x, dr.v.y, dr.P, P_old, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
-            valNV, valNP, workgroup, pressure_bulk,
+            valNV, valNP, workgroup,
+            pressure_bulk; Q = dr.Q,
         )
 
         assemble_momentum_residual_kernel!(
-            Rv,
-            v, dr.P, dr.T, nothing,
+            dr.Rv.x, dr.Rv.y,
+            dr.v.x, dr.v.y, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             phases_v, τ_old, plastic, nothing,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+            _plastic_history_gamma(dr.plastic_history),
         )
-        _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
+        apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
+        apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
 
         err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
-        err_v = maximum(norm, Rv) / (2 * sqrt(mesh_stokes.nnodes))
+        err_v = max(norm(dr.Rv.x), norm(dr.Rv.y)) / (2 * sqrt(mesh_stokes.nnodes))
         if itPH == 1
             err_P0 = err_P + eps(err_P)
             err_v0 = err_v + eps(err_v)
@@ -441,22 +398,16 @@ function solve_stokes_dyrel!(
         err = min(err_abs, err_rel)
 
         isnan(err) && error("NaN detected in outer loop at PH=$itPH")
-        err > 1.0e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
+        err > 1e10 && error("Kaboom! Error > 1e10 in outer loop at PH=$itPH")
 
         if verbose
-            @printf(
-                "itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
-                itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel
-            )
+            @printf("itPH = %02d iter = %06d err = %.3e abs = %.3e rel = %.3e - norm[Rv=%.3e %.3e, Rp=%.3e %.3e]\n",
+                itPH, iter, err, err_abs, err_rel, err_v, err_v_rel, err_P, err_P_rel)
         end
-        # The inner loop overwrites `err`, so convergence is recorded here, where the outer test passes.
-        if err < ϵ && thermal_converged
-            converged = true
-            break
-        end
+        err < ϵ && thermal_converged && break
 
         if err > err_min * 1.05
-            rel_drop = max(rel_drop * 0.1, 1.0e-3)
+            rel_drop = max(rel_drop * 0.1, 1e-3)
         end
         err_min = min(err_min, err)
 
@@ -468,7 +419,10 @@ function solve_stokes_dyrel!(
             iter += 1
             do_check = iszero(iter % nout)
 
-            do_check && foreach(copyto!, Rv0, Rv)
+            if do_check
+                copyto!(dr.Rv0.x, dr.Rv.x)
+                copyto!(dr.Rv0.y, dr.Rv.y)
+            end
 
             if !isnothing(_thermal)
                 thermal_iter += 1
@@ -487,11 +441,8 @@ function solve_stokes_dyrel!(
                     _thermal.dr.∂T∂τ, _thermal.bc.DoFs, _thermal.bc.zero_vals,
                     backend, workgroup,
                 )
-                thermal_check && (
-                    λmax_T = _checked_λmax(
-                        _thermal.dr.∂R∂T, _thermal.dr.PC, "thermal diffusion"
-                    )
-                )
+                thermal_check && (λmax_T = _checked_λmax(
+                    _thermal.dr.∂R∂T, _thermal.dr.PC, "thermal diffusion"))
                 update_rate_kernel!(backend, workgroup)(
                     _thermal.dr.∂T∂τ, _thermal.dr.R, _thermal.dr.PC, β_T;
                     ndrange = _thermal.mesh.nnodes,
@@ -511,18 +462,15 @@ function solve_stokes_dyrel!(
                     thermal_iter == 1 && (thermal_nr0 = max(nr_T, eps(nr_T)))
                     err_T = nr_T / thermal_nr0
                     isfinite(err_T) || error(
-                        "non-finite thermal residual at coupled iteration $thermal_iter"
-                    )
+                        "non-finite thermal residual at coupled iteration $thermal_iter")
                     Δτ_T = 2 / sqrt(λmax_T) * _thermal.dr.CFL
                     denom_T = fused_sum(r -> (Δτ_T * r)^2, _thermal.dr.∂T∂τ)
                     λmin_T = (thermal_iter == 1 || iszero(denom_T)) ?
                         zero(eltype(_thermal.dr.R)) :
-                        abs(
-                            fused_sum(
-                                (r, x, x0, pc) -> (Δτ_T * r) * ((x - x0) / pc),
-                                _thermal.dr.∂T∂τ, _thermal.dr.R, _thermal.dr.R0, _thermal.dr.PC,
-                            )
-                        ) / denom_T
+                        abs(fused_sum(
+                            (r, x, x0, pc) -> (Δτ_T * r) * ((x - x0) / pc),
+                            _thermal.dr.∂T∂τ, _thermal.dr.R, _thermal.dr.R0, _thermal.dr.PC,
+                        )) / denom_T
                     α_T, β_T = _stokes_cheb(Δτ_T, λmin_T, _thermal.dr.c_fact)
                     thermal_converged = err_T < _thermal.dr.ϵ
                 end
@@ -530,51 +478,60 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_kernel!(
                 dr.RP,
-                v, dr.P, P_old, dr.T, dr.T0, dr.Q,
+                dr.v.x, dr.v.y, dr.P, P_old, dr.T, dr.T0,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
-                valNV, valNP, workgroup, pressure_bulk,
+                valNV, valNP, workgroup,
+                pressure_bulk; Q = dr.Q,
             )
 
             @. dr.Pnum = γP * dr.RP / M_P
 
             assemble_momentum_residual_kernel!(
-                Rv,
-                v, dr.P, dr.T, dr.Pnum,
+                dr.Rv.x, dr.Rv.y,
+                dr.v.x, dr.v.y, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 phases_v, τ_old, plastic, nothing,
                 dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
+                _plastic_history_gamma(dr.plastic_history),
             )
 
-            _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
-            _apply_dirichlet_all!(rate, v_nodes, zero_bc, backend, workgroup)
+            apply_dirichlet!(dr.Rv.x, vx_nodes, zero_vx_bc, backend, workgroup)
+            apply_dirichlet!(dr.∂v∂τ.x, vx_nodes, zero_vx_bc, backend, workgroup)
+            apply_dirichlet!(dr.Rv.y, vy_nodes, zero_vy_bc, backend, workgroup)
+            apply_dirichlet!(dr.∂v∂τ.y, vy_nodes, zero_vy_bc, backend, workgroup)
 
-            # The momentum residual carries the opposite sign to the field
-            # update, hence the negated Chebyshev step.
             update_stokes_velocity!(
-                rate, v, Rv, PC_v, β_v, map(-, α_v),
-                mesh_stokes.nnodes, backend, workgroup
-            )
+                dr.∂v∂τ.x, dr.∂v∂τ.y, dr.v.x, dr.v.y,
+                dr.Rv.x, dr.Rv.y, dr.PC_v.x, dr.PC_v.y,
+                β_vx, β_vy, -α_vx, -α_vy,
+                mesh_stokes.nnodes, backend, workgroup)
 
-            _apply_dirichlet_all!(v, v_nodes, bc_vals, backend, workgroup)
+            apply_dirichlet!(dr.v.x, vx_nodes, bc_vx_vals, backend, workgroup)
+            apply_dirichlet!(dr.v.y, vy_nodes, bc_vy_vals, backend, workgroup)
 
             if do_check
-                err_v_inner = maximum(norm, Rv) / (2 * sqrt(mesh_stokes.nnodes))
+                err_v_inner = max(norm(dr.Rv.x), norm(dr.Rv.y)) / (2 * sqrt(mesh_stokes.nnodes))
                 if iter == nout
                     err_v00 = err_v_inner + eps(err_v_inner)
                 end
-                err = max(err_v_inner / err_v00, err_v_inner)
+                # `err_v00` is the residual at the first check of the solve, so
+                # an inner solve that starts already converged has nothing left
+                # to drop: the relative term sits at ~1 and pins `err` there,
+                # and the exit test `err ≤ err_outer·rel_drop` can never be met.
+                # Below the solve tolerance the absolute residual decides alone.
+                err = err_v_inner ≤ ϵ ? err_v_inner :
+                    max(err_v_inner / err_v00, err_v_inner)
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
-                err > 1.0e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
+                err > 1e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
                 collect_history && push!(history, (; iter, err_v = err_v_inner, err_P))
 
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
-                λmin_v = ntuple(
-                    c -> _stokes_λmin(α_v[c], rate[c], Rv[c], Rv0[c], PC_v[c]), Val(D)
-                )
+                λmin_vx = _stokes_λmin(α_vx, dr.∂v∂τ.x, dr.Rv.x, dr.Rv0.x, dr.PC_v.x)
+                λmin_vy = _stokes_λmin(α_vy, dr.∂v∂τ.y, dr.Rv.y, dr.Rv0.y, dr.PC_v.y)
 
                 if !freeze_jacobian
                     jacobian_assemblies += 1
@@ -582,44 +539,42 @@ function solve_stokes_dyrel!(
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
                             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-                            pressure_bulk,
-                        )
+                            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk)
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
-                            ∂Rv∂v, PC_v,
-                            v, dr.P, dr.P0, dr.T, dr.T0,
+                            dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
+                            dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic
-                        )
+                            pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
+                            γ_history = _plastic_history_gamma(dr.plastic_history))
                         nothing
                     end
 
-                    λmax_gershgorin = maximum(
-                        ntuple(c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D))
-                    )
+                    λmax_gershgorin = max(
+                        _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx"),
+                        _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy"))
                     if measure_λmax
                         λmax_measured, power_iterations, power_x, power_y =
                             estimate_velocity_λmax(
-                            velocity_op, mesh_stokes, element_v, PC_v[1], PC_v[2],
-                            v_nodes[1], v_nodes[2], backend, workgroup;
+                            velocity_op, mesh_stokes, element_v, dr.PC_v.x, dr.PC_v.y,
+                            vx_nodes, vy_nodes, backend, workgroup;
                             max_iterations = λmax_power_iterations, rtol = λmax_power_rtol,
-                            x = power_x, y = power_y
-                        )
+                            x = power_x, y = power_y)
                         λmax_iterations += power_iterations
-                        λmax_v = ntuple(
-                            _ -> min(λmax_gershgorin, spectral_safety * λmax_measured), Val(D)
-                        )
+                        λmax_vx = λmax_vy =
+                            min(λmax_gershgorin, spectral_safety * λmax_measured)
                     else
-                        λmax_v = ntuple(
-                            c -> _checked_λmax(∂Rv∂v[c], PC_v[c], _VELOCITY_LABELS[c]), Val(D)
-                        )
+                        λmax_vx = _checked_λmax(dr.∂Rv∂v.x, dr.PC_v.x, "stokes vx")
+                        λmax_vy = _checked_λmax(dr.∂Rv∂v.y, dr.PC_v.y, "stokes vy")
                     end
                 end
-                Δτ_v = map(λ -> 2 / sqrt(λ) * dr.CFL_v, λmax_v)
-                cheb = map((Δτ, λmin) -> _stokes_cheb(Δτ, λmin, dr.c_fact), Δτ_v, λmin_v)
-                α_v, β_v = map(first, cheb), map(last, cheb)
+                Δτ_vx = 2 / sqrt(λmax_vx) * dr.CFL_v
+                Δτ_vy = 2 / sqrt(λmax_vy) * dr.CFL_v
+
+                α_vx, β_vx = _stokes_cheb(Δτ_vx, λmin_vx, dr.c_fact)
+                α_vy, β_vy = _stokes_cheb(Δτ_vy, λmin_vy, dr.c_fact)
             end
 
             itPT == iterMax && @printf("  inner: max iters (%d) reached at PH=%d\n", iterMax, itPH)
@@ -640,9 +595,9 @@ function solve_stokes_dyrel!(
         err_rel,
         err_v,
         err_P,
-        converged,
+        converged = err < ϵ && thermal_converged,
         reached_total_iter = iter > total_iterMax,
-        λmax = maximum(λmax_v),
+        λmax = max(λmax_vx, λmax_vy),
         λmax_gershgorin,
         λmax_iterations,
         jacobian_assemblies,
@@ -657,32 +612,28 @@ end
 
 Refresh integration-point stresses using the elements in `mesh.geometry`, solver-owned
 material and stress history, and optional phase-layout overrides. `τ` receives
-components in the assembler order returned by `stress(dr)`; the history
-defaults to `stress_old(dr)`.
-Pass `plastic_history=` to capture multiplier and accumulated plastic strain;
-its `D` field is used as optional lagged damage input unless `damage_old=` is
-provided explicitly. Pass `damage_update=(εc, th)` with matching per-IP arrays
-to update `D` once from the accepted plastic-strain increment.
+the in-plane components in Voigt order; the history defaults to the components
+of `dr.τ_old`. Two-dimensional states only.
+
+This is a read of the current state: it never advances accumulated plastic
+history, so it may be called any number of times. Use
+[`commit_stokes_plastic_history!`](@ref) once per accepted step for that.
 """
 function update_stokes_current_stress!(
-        dr::StokesDR{<:Any, D},
-        mesh::MixedMesh{D},
-        cache::MixedMeshCache,
-        τ,
-        Δt;
-        plastic = nothing,
-        phases_v = dr.phases_v,
-        τ_old = stress_old(dr),
-        plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
-        workgroup = 256,
-    ) where {D}
+    dr::StokesDR{<:Any, 2},
+    mesh::MixedMesh,
+    τ,
+    Δt;
+    plastic = nothing,
+    phases_v = dr.phases_v,
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+    workgroup = 256,
+)
+    cache = _mesh_geometry(mesh)
     backend = KA.get_backend(mesh.coords)
     return update_stokes_current_stress!(
         dr, mesh, cache, cache.element_v, cache.element_P,
-        phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup, plastic_history,
-        damage_old, damage_update,
+        phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup,
     )
 end
 
@@ -695,65 +646,113 @@ Refresh the current integration-point stress tuple `τ` by running the momentum
 residual assembly with stress storage enabled.
 """
 function update_stokes_current_stress!(
-        dr,
-        mesh_stokes,
-        cache::MixedMeshCache,
-        element_v,
-        element_P,
-        phases_v,
-        τ_old,
-        plastic,
-        τ,
-        G,
-        Δt,
-        backend,
-        workgroup,
-        plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
-    )
+    dr,
+    mesh_stokes,
+    cache::MixedMeshCache,
+    element_v,
+    element_P,
+    phases_v,
+    τ_old,
+    plastic,
+    τ,
+    G,
+    Δt,
+    backend,
+    workgroup,
+)
     return update_stokes_current_stress!(
         dr, mesh_stokes, cache.geo_v, element_v, element_P,
-        phases_v, τ_old, plastic, τ, G, Δt, backend, workgroup, plastic_history,
-        damage_old, damage_update,
+        phases_v, τ_old, plastic, τ, G, Δt, backend, workgroup,
     )
 end
 
 function update_stokes_current_stress!(
-        dr,
-        mesh_stokes,
-        geo_v,
-        element_v,
-        element_P,
-        phases_v,
-        τ_old,
-        plastic,
-        τ,
-        G,
-        Δt,
-        backend,
-        workgroup,
-        plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
-    )
-    εpl_old = isnothing(damage_update) || isnothing(plastic_history) ? nothing : copy(plastic_history.εpl)
+    dr,
+    mesh_stokes,
+    geo_v,
+    element_v,
+    element_P,
+    phases_v,
+    τ_old,
+    plastic,
+    τ,
+    G,
+    Δt,
+    backend,
+    workgroup,
+)
     assemble_momentum_residual_matrices_atomix!(
-        Tuple(getfield(dr, :Rv)),
-        velocity(dr), dr.P, dr.T, nothing,
+        dr.Rv.x, dr.Rv.y,
+        dr.v.x, dr.v.y, dr.P, dr.T, nothing,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
         element_v, element_P,
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
         backend, workgroup;
-        plastic_multiplier_store = plastic_history,
-        damage_old = isnothing(damage_old) && !isnothing(plastic_history) ? plastic_history.D : damage_old,
+        γ_history = _plastic_history_gamma(dr.plastic_history),
     )
-    if !isnothing(damage_update) && !isnothing(plastic_history)
-        εc, th = damage_update
-        update_damage_from_history!(plastic_history, εpl_old, εc, th, Δt; workgroup)
-    end
     return τ
 end
+
+"""
+    commit_stokes_plastic_history!(dr, mesh, Δt;
+                                   plastic, phases_v=dr.phases_v,
+                                   τ_old=(dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+                                   workgroup=256)
+
+Accept one physical step into the integration-point plastic history of a
+`DruckerPragerCap` solve: `γ += Δt·γdot` and `θ += Δt·θdot`, with the rates from
+the same local update the momentum balance uses at the current `dr.v` and `dr.P`,
+softened by the history accepted before this call.
+
+Call it exactly once per converged step, before overwriting `τ_old` with the new
+stress. A no-op without `dr.plastic_history` or for other yield models. Throws if
+any committed value is non-finite, which means a local return map failed.
+"""
+function commit_stokes_plastic_history!(
+    dr::StokesDR{<:Any, 2},
+    mesh::MixedMesh,
+    Δt;
+    plastic,
+    phases_v = dr.phases_v,
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+    workgroup = 256,
+)
+    cache = _mesh_geometry(mesh)
+    _update_stokes_plastic_history!(
+        dr, mesh, cache.geo_v, cache.element_v, cache.element_P, phases_v, τ_old,
+        plastic, dr.G, Δt, KA.get_backend(mesh.coords), workgroup,
+    )
+    return dr
+end
+
+@inline _stokes_spectral_safety(::Nothing, λmax_safety) = λmax_safety
+@inline _stokes_spectral_safety(::DruckerPrager, λmax_safety) = max(λmax_safety, 1.5)
+@inline _stokes_spectral_safety(::DruckerPragerCap, λmax_safety) = max(λmax_safety, 1.5)
+
+@inline _plastic_history_gamma(::Nothing) = nothing
+@inline _plastic_history_gamma(history::IntegrationPointPlasticHistory) = history.γ
+
+function _update_stokes_plastic_history!(
+    dr, mesh_stokes, geo_v, element_v, element_P, phases_v, τ_old,
+    plastic::DruckerPragerCap, G, Δt, backend, workgroup,
+)
+    dr.plastic_history === nothing && return nothing
+    Nq = shape_function_values(element_v)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
+    update_stokes_plastic_history!(
+        dr.plastic_history.γ, dr.plastic_history.θ,
+        dr.v.x, dr.v.y, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP,
+        geo_v, phases_v, τ_old, plastic, dr.η, G, Δt,
+        Nq, NqP, ∂N∂ξ_v, Val(length(element_v)), Val(length(element_P)),
+        backend, workgroup,
+    )
+    all(isfinite, dr.plastic_history.γ) && all(isfinite, dr.plastic_history.θ) ||
+        error("non-finite plastic history: a tensile-cap local return map failed")
+    return nothing
+end
+
+@inline _update_stokes_plastic_history!(args...) = nothing
 
 """
     solve_stokes_dyrel!(velocity, pressure, mesh, cell_phase, η, ρ, g,
@@ -777,20 +776,17 @@ Returns convergence statistics including `iter`, `err`, `err_v`, `err_P`,
 `converged`, and `reached_total_iter`.
 """
 function solve_stokes_dyrel!(
-        velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
-        η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
-        ncheck = 100, ϵ_tol = 1.0e-5, iterMax = 3000, total_iterMax = iterMax,
-        velocity_step = 0.6, γP = 0.2, bc_values = nothing, load = nothing,
-        workgroup = 256, verbose = true,
-        workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
-    )
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
+    η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
+    ncheck = 100, ϵ_tol = 1e-5, iterMax = 3000, total_iterMax = iterMax,
+    velocity_step = 0.6, γP = 0.2, bc_values = nothing, load = nothing,
+    workgroup = 256, verbose = true,
+    workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
+)
     all(length(workspace.zero_bc[i]) == length(fixed_nodes[i]) for i in 1:3) ||
-        throw(
-        DimensionMismatch(
+        throw(DimensionMismatch(
             "workspace was built for a different set of constrained nodes: " *
-                "$(map(length, workspace.zero_bc)) vs $(map(length, fixed_nodes))"
-        )
-    )
+            "$(map(length, workspace.zero_bc)) vs $(map(length, fixed_nodes))"))
     residual_v, residual_p = workspace.residual_v, workspace.residual_p
     diagonal, pressure_mass = workspace.diagonal, workspace.pressure_mass
     zero_bc, tables = workspace.zero_bc, workspace.tables
@@ -818,7 +814,7 @@ function solve_stokes_dyrel!(
         assemble_stokes_pressure_residual_3d!(residual_p, velocity, mesh; workgroup, tables)
         @. pressure += γP * residual_p / pressure_mass
         pmean = fused_sum(*, @view(pressure[1, :]), @view(pressure_mass[1, :])) /
-            sum(@view pressure_mass[1, :])
+                sum(@view pressure_mass[1, :])
         @views pressure[1, :] .-= pmean
         assemble_stokes_momentum_residual_3d!(
             residual_v, velocity, pressure, mesh, cell_phase, η, ρ, g; workgroup, tables,
@@ -838,16 +834,12 @@ function solve_stokes_dyrel!(
         err_P = norm(residual_p)
         err = max(err_v, err_P)
         isfinite(err) || error("non-finite residual in 3D DYREL solve")
-        verbose && @printf(
-            "iter = %06d err = %.3e - norm[Rv=%.3e, Rp=%.3e]\n",
-            iter, err, err_v, err_P
-        )
+        verbose && @printf("iter = %06d err = %.3e - norm[Rv=%.3e, Rp=%.3e]\n",
+            iter, err, err_v, err_P)
         err < ϵ_tol && break
     end
-    return (;
-        itPH = 1, iter, iterations = iter, err, err_v, err_P, err_p = err_P,
-        converged = err < ϵ_tol, reached_total_iter = iter >= total_iterMax && err >= ϵ_tol,
-    )
+    return (; itPH = 1, iter, iterations = iter, err, err_v, err_P, err_p = err_P,
+        converged = err < ϵ_tol, reached_total_iter = iter >= total_iterMax && err >= ϵ_tol)
 end
 
 """
@@ -860,10 +852,10 @@ Compatibility wrapper for the 3-D [`solve_stokes_dyrel!`](@ref) method.
 and `γP`, respectively.
 """
 function solve_stokes_3d!(
-        velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
-        η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
-        maxiter = 3000, tolerance = 1.0e-5, pressure_step = 0.2, kwargs...,
-    )
+    velocity::NTuple{3}, pressure::AbstractMatrix, mesh::Mesh, cell_phase,
+    η, ρ, g::NTuple{3}, fixed_nodes::NTuple{3};
+    maxiter = 3000, tolerance = 1e-5, pressure_step = 0.2, kwargs...,
+)
     return solve_stokes_dyrel!(
         velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
         iterMax = maxiter, total_iterMax = maxiter, ϵ_tol = tolerance,
@@ -882,10 +874,10 @@ symmetric, so this compatibility wrapper forwards to the 3-D
 The compatibility keywords map to `total_iterMax`, `adjoint_tol`, and `γP`.
 """
 function solve_stokes_adjoint_3d!(
-        velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-        mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
-        maxiter = 3000, tolerance = 1.0e-5, pressure_step = 0.2, kwargs...,
-    )
+    velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
+    mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
+    maxiter = 3000, tolerance = 1e-5, pressure_step = 0.2, kwargs...,
+)
     return solve_stokes_adjoint_dyrel!(
         velocity, pressure, objective_load, mesh, cell_phase, η, fixed_nodes;
         iterMax = maxiter, total_iterMax = maxiter, adjoint_tol = tolerance,

@@ -12,16 +12,12 @@ The solver finds a velocity `v` and pressure `P` satisfying the momentum and
 continuity balances
 
 ```math
-\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_p}\frac{\partial P}{\partial t}
-- \alpha\frac{\partial T}{\partial t} = Q,
+\begin{aligned}
+&\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \\
+&\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+- \alpha\frac{\partial T}{\partial t} = 0,
+\end{aligned}
 ```
-
-`Q` is the backend-resident volumetric source/sink array on the Stokes
-pressure nodes. Positive values produce volume and negative values remove it;
-the default is zero. By default `ηp = ηb`; pass `finite_K=true` to use the
-finite positive material `K` instead, independently of plasticity. The
-finite-`K` pressure mean is not removed.
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
@@ -32,10 +28,8 @@ with a Maxwell viscoelastic deviatoric stress that carries stress history
 The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
 mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
-3-D T11/P1-discontinuous and Hex27/Q2--P1 discretisations are available through
-a `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic problems. The
-original Hex27 viscous interface with three caller-owned velocity arrays and a
-`4 × nels` pressure array remains available.
+3-D Hex27/Q2--P1 method uses three caller-owned velocity arrays and a `4 × nels`
+cell-local pressure array with diagonally preconditioned residual updates.
 
 The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
@@ -49,12 +43,19 @@ StokesDR
 Stokes3DWorkspace
 StokesAdjointWorkspace
 DruckerPrager
+DruckerPragerCap
 pressure_mass
 FEMTools.velocity
 FEMTools.stress
 FEMTools.pressure
 FEMTools.temperature
 ```
+
+`DruckerPragerCap` takes angles in radians and finite numeric material
+parameters. Its bulk modulus `Kb` must be positive, and both the initial
+cohesion `C` and softening floor `C_min` must satisfy
+`C*cos(ϕ) + sin(ϕ)*pT > 0` (substitute `C_min` for `C` at the floor).
+This keeps the tensile-cap radius positive throughout cohesion softening.
 
 The velocity and pressure fields live on separate node sets described by a
 [`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
@@ -115,21 +116,20 @@ assemble_viscosity_weighted_pressure_scaling!(
 solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 ```
 
-For area-rate injection, pass nonnegative pressure-node weights `Qq` and a
-signed plane-strain rate `Q2D` in m²/s:
-
-```julia
-solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
-                    finite_K=true, Qq, Q2D)
-```
-
-The solver normalizes the weights so `∑ Q dΩ = Q2D`. Omitting `Q2D` treats
-`Qq` as a direct s⁻¹ source. `P_old` defaults to `dr.P0`; use an `nq × nels`
-array when accepted pressure is stored at quadrature points.
-
 `mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
+For the experimental Drucker--Prager cap, add
+`plastic_history_size=(nq, mesh.nels)` to allocate per-integration-point `γ`
+and `θ` history arrays; they are zeroed and are not allocated by default.
+Call `commit_stokes_plastic_history!` once per converged step, before
+overwriting `τ_old`, to accumulate that step into those arrays. Residual
+iterations and `update_stokes_current_stress!` never update history.
+`dr.P` is the trial pressure under the cap, so do not copy it into `dr.P0`:
+record the corrected pressure with a four-matrix store
+`(τxx, τyy, τxy, P_corrected)` in `update_stokes_current_stress!`, copy it into
+an `nq × nels` array after the commit, and pass that array as
+`solve_stokes_dyrel!(...; P_old)` on the next step.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
@@ -142,28 +142,22 @@ gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 
 ```julia
 stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh, bc_T,
-    (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
+    thermal, stokes, thermal_mesh, stokes_mesh,
+    bc_T, bc_vx, bc_vy, Δt, γP; workgroup,
 )
 stats.converged || error("coupled solve did not converge")
 ```
 
 The returned Stokes statistics additionally contain `err_T` and
-`thermal_iterations`. On the 2-D path `converged` is true only when the outer
-test `min(err_abs, err_rel) < ϵ_tol` passed (and the thermal state converged), so
-a run that ends on `total_iterMax` reports `false` and `reached_total_iter` says
-why; `err` is then the inner velocity residual, and `err_abs` and `err_rel` carry
-the outer error. The caller still owns physical-time history: set
+`thermal_iterations`. The caller still owns physical-time history: set
 `thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
 solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
 
-In 2-D, pass `bc_vx` and `bc_vy` positionally as before. In 3-D, pass the tuple
-shown above. The 3-D signed pressure basis uses a positive Jacobi modal mass
-instead of direct lumping.
+### Three-dimensional array layout
 
-### Three-dimensional viscous array layout
-
-The original viscous Hex27/Q2--P1 method keeps caller-owned arrays:
+The Hex27/Q2--P1 method uses multiple dispatch rather than `StokesDR`, because
+its four pressure modes are cell-local rather than stored on a pressure-node
+mesh:
 
 ```julia
 velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
@@ -259,58 +253,50 @@ julia --project=examples examples/miniapps/stokes/sinking_block_adj/sinking_bloc
 julia --project=examples examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl
 julia --project=examples examples/miniapps/stokes/sinking_block_3D_adj/sinking_block_3D_adj.jl
 julia --project=examples examples/miniapps/stokes/ice_bridge_2D/ice_bridge_2D.jl
-julia --project=examples examples/stokes/volcano/volcano_thermal_stokes.jl
-julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
-julia --project=examples examples/reykjanes/reykjanes_thermal_stokes.jl
-julia --project=examples examples/reykjanes/elliptical_cavity.jl
+julia --project=examples examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl
 ```
+
+The Popov extension driver is a small unstructured T7/P1-discontinuous
+tensile-cap case using only the Table 1 / Figure 6b setup. It meshes the domain
+with `FEMTools.triangulate_t7_mesh` from a target triangle area, `max_area`, in
+the paper's range of `5e-6` to `3e-4`, so the script needs `using Triangulate`
+to load that extension. Inputs are nondimensionalised
+with `L0=1 m`, `S0=10 MPa`, and `t0=50 yr`; therefore `nsteps=2000` represents
+100 kyr and one solver step is one paper time increment. The returned `scales`
+named tuple converts dimensionless fields back to SI units.
+The returned fields distinguish trial pressure, corrected pressure, and
+integration-point accumulated volumetric plastic strain `χ` (the Figure 6b
+quantity), plus deviatoric plastic strain. Trial pressure is the nodal field the
+solver carries, formed each step from the previous step's corrected pressure,
+which the driver carries at integration points; corrected pressure is the tensile-cap return map's pressure at
+integration points, returned as an `nq × nels` array rather than a nodal field.
+Set `write_output=true` to write legacy ASCII VTK files with velocity and
+projected trial pressure as point data, plus cell fields for both pressure
+states, both plastic-strain measures, and the stress/strain-rate second
+invariants.
+The returned `cross_section` contains the piecewise-constant cell profile
+`(; x, values, y)` through `χ`; `section_y=0.25` matches Figure 6b's `A–A′`
+line and can be changed for diagnostics.
+
+The driver carries the weak seed of the authors' GeoTech2D release: a
+semicircular inclusion on the middle of the bottom boundary, centre `(Lx/2, 0)`
+and radius `0.025`, meshed as its own Triangle region so the mesh conforms to
+it, and given a ten times smaller shear modulus than the bulk. Every other
+property is shared. Without it the domain deforms homogeneously and cannot
+localise at any step count, because a single phase plus fully prescribed
+boundary velocities makes the uniform field an exact solution; an unstructured
+mesh does not change that on its own. `vy` is prescribed on the top and bottom
+only, so the side walls stay free to move vertically. The returned `phases`
+vector gives each element's region, and `phase` is written as a VTK cell field.
 
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 4 km-radius semicircular opening cut into its bottom, then applies gravity and
 linear visco-elastic ice rheology. Mesh advection is enabled by default and
 recomputes the mesh geometry in place after each Lagrangian update.
 
-The Reykjanes miniapp is the 2-D volcano driver without the cone: a 40 km by
-20 km cross-rift section with a flat surface and a thin elliptical magma sill,
-extended at the walls, on the same coupled thermal--Stokes solver and T7/P1-disc
-mesh, which it generates with Triangulate.jl instead of Gmsh. It runs on the CPU
-by default; set the top-level `isCUDA` flag to `true` to run the solve on an
-NVIDIA GPU, with meshing and output staying on the host. Its geometry, geotherm,
-and material values are illustrative placeholders, not calibrated Reykjanes
-values. With `advect_mesh = true` the mesh moves with the material: each step
-advects the corner nodes, re-straightens the T7 nodes, refreshes the geometry
-with [`update_geometry!`](@ref) and rotates the stress history with the local
-vorticity, and it stops if a step changes an element edge by more than
-`max_step_strain`. There is no remeshing, so this suits total strains of a few
-tens of percent.
-
-The same driver has an opt-in first-step dike injection path for development:
-pass a positive `dike_opening`, a physical `dike_band_width`, and selected
-1-based `dike_band_elements`; the helper updates `τ_old` and the discontinuous
-pressure source `Q`, then clears the transient source after the solve. The default
-driver invocation leaves this path disabled. It is a testing ground for the
-event protocol, not yet a validated intrusion workflow.
-
-The cavity miniapp `examples/reykjanes/elliptical_cavity.jl` is the elastic
-verification of the same solver. A soft, compressible elliptical inclusion is
-injected through the volumetric source `Q` inside a Maxwell host, one step with
-`Δt` far below the Maxwell time, on a disc whose outer circle carries the
-infinite-plane displacement. The cavity pressure, area change and opening are
-compared with the closed-form plane-strain solution for a pressurised elliptical
-hole (Muskhelishvili) in `examples/reykjanes/cavity_analytic.jl`; they agree to
-0.3 % on a 2 500-element mesh, the remainder being the inclusion's own shear
-stiffness. The solve runs in characteristic units chosen so that the solution
-is of order one, because the dynamic-relaxation stopping test takes the smaller
-of an absolute and a relative residual. The sweeps over mesh, shear-modulus
-contrast, time step, tolerance, inner-solve settings and stress scale are in
-`examples/benchmarks/stokes/elliptical_cavity/elliptical_cavity.jl`.
-
-The current Stokes example tree includes the 2-D sinking-block, pure-shear,
-volcano, and cross-rift drivers. See [Sinking block](sinking_block.md) and
-[Sinking block (3-D)](sinking_block_3d.md) for the discretisations, physical
-setup, output, figure, and material-gradient checks of each. The broader
-legacy dike/adjoint notes remain in the example-specific documentation and are
-not a current default driver in this tree.
+See [Sinking block](sinking_block.md) and [Sinking block (3-D)](sinking_block_3d.md)
+for the discretisations, physical setup, output, figure, and material-gradient
+checks of each.
 
 The 2-D adjoint sinking-block example accepts an explicit backend. It builds the
 Gmsh mesh on the host, then uploads mesh arrays, mixed connectivity,
@@ -340,6 +326,7 @@ stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
+commit_stokes_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities

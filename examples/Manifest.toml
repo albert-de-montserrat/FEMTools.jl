@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "1ffb2bd9fcfaf0522a6edf42a1bc236a66005d0a"
+project_hash = "0d077b9c9a86ef72ea90b3d5592347465586df15"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -546,11 +546,13 @@ version = "0.2.0"
     FEMToolsAMDGPUExt = "AMDGPU"
     FEMToolsCUDAExt = "CUDA"
     FEMToolsMetalExt = "Metal"
+    FEMToolsTriangulateExt = "Triangulate"
 
     [deps.FEMTools.weakdeps]
     AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
     CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
     Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+    Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [[deps.FFMPEG_jll]]
 deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "JLLWrappers", "LAME_jll", "Libdl", "Ogg_jll", "OpenSSL_jll", "Opus_jll", "PCRE2_jll", "Zlib_jll", "libaom_jll", "libass_jll", "libfdk_aac_jll", "libva_jll", "libvorbis_jll", "x264_jll", "x265_jll"]
@@ -1962,6 +1964,18 @@ version = "0.1.6"
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 version = "0.11.3"
+
+[[deps.Triangle_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "dc78dce9d23d180020f25d3c10b0f552f5f8b7b5"
+uuid = "5639c1d2-226c-5e70-8d55-b3095415a16a"
+version = "1.6.3+2"
+
+[[deps.Triangulate]]
+deps = ["DocStringExtensions", "Triangle_jll"]
+git-tree-sha1 = "fd348d50587253dff8efb7a34b997effccf44427"
+uuid = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
+version = "3.0.1"
 
 [[deps.TriplotBase]]
 git-tree-sha1 = "4d4ed7f294cda19382ff7de4c137d24d16adc89b"
