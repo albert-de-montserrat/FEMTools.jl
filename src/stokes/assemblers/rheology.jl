@@ -237,33 +237,6 @@ end
 end
 
 
-@inline function _drucker_prager_return(τij, ηve, Δt, Pq, cosϕ, sinϕ, sinΨ, C, η_reg, Kb)
-    τxx, τyy, τxy = τij
-    # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂).
-    τII      = second_invariant(τij)
-    τII_safe = τII + eps(typeof(τII))^2
-    F        = τII - cosϕ * C - sinϕ * Pq
-    ∂F∂P     = -sinϕ
-
-    # Plane-strain invariant gradient with τzz = -τxx - τyy.
-    ∂Q∂τxx = (2 * τxx + τyy) / (2 * τII_safe)
-    ∂Q∂τyy = (τxx + 2 * τyy) / (2 * τII_safe)
-    ∂Q∂τxy = τxy / τII_safe
-    ∂Q∂τ  = ∂Q∂τxx, ∂Q∂τyy, ∂Q∂τxy
-    ∂Q∂P  = -sinΨ
-
-    λ = if F > 0
-        F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P)
-    else
-        zero(F)
-    end
-
-    return λ > 0 ?
-        map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) :
-        τij
-end
-
-
 # ---------------------------------------------------------------------------
 # Drucker-Prager tensile cap
 #
@@ -353,301 +326,189 @@ factor `R_y/a` reduces that to the half-plane test used below.
 end
 
 """
-    cap_flow_direction(τII, P, kq, geom) -> (Bτ, Bp)
+    cap_invariants(s, p, k, kq, c, pT) -> (F, Aτ, Ap)
+    cap_invariants(plastic::DruckerPragerCap, phase, s, p, γ) -> (F, Aτ, Ap)
 
-Prefactors of the flow-potential gradient `∂Q/∂σᵢⱼ = Bτ·τᵢⱼ + Bp·δᵢⱼ`
-(Popov et al. 2025, Eqs. 21-22), where `geom` comes from [`cap_geometry`](@ref).
-
-    Bτ, Bp = 1/(2τII),  kq/3                      in the shear domain
-    Bτ, Bp = b/(2R̂_q), −b(P − p_q)/(3R̂_q)         on the tensile cap
-
-with `R̂_q = √(τII² + (P − p_q)²)`. The domain test is the same reduction as in
-[`cap_yield_function`](@ref), applied to Eq. 19 with the potential's own centre
-`p_q`: `τII·(p_q − p_d) ≥ τ_d·(p_q − P)` becomes `P + kq·τII ≥ p_q`.
-
-The potential is non-associated whenever `Ψ ≠ ϕ`, and `p_q` is placed so that its
-own shear/tensile transition passes through the *same* delimiter as the yield
-surface. That is what makes the return direction single-valued at every point
-above the surface, so no active-surface search is needed.
-
-Sign convention: the volumetric viscoplastic strain rate is
-`ε̇_vol = λ·tr(∂Q/∂σ) = 3λ·Bp`, since `tr(τ) = 0`. In the shear domain this is
-`λ·kq = λ·sin(Ψ)`, matching the existing `∂Q∂P = −sinΨ` of the Drucker-Prager
-return map, where the pressure correction enters as `P ← P − Kb·Δt·λ·∂Q∂P`.
+Scalar coefficients for the coupled tensile-cap return: `Aτ = (∂Q/∂s)/2`
+and `Ap = -∂Q/∂p`, matching JustRelax's invariant convention. Yield and
+potential branches are selected independently. The material overload applies
+bounded cohesion softening from accepted history `γ` (`nothing` means no history).
+All inputs are plain numeric values; angles in `DruckerPragerCap` are radians.
 """
-@inline function cap_flow_direction(τII, P, kq, geom)
-    ϵ² = eps(typeof(τII))^2
-    return if P + kq * τII ≥ geom.p_q
-        inv(2 * √(τII * τII + ϵ²)), kq / 3
-    else
-        R̂q = √(τII * τII + (P - geom.p_q)^2 + ϵ²)
-        geom.b / (2 * R̂q), -geom.b * (P - geom.p_q) / (3 * R̂q)
+@inline function cap_invariants(s, p, k, kq, c, pT)
+    geom = cap_geometry(k, kq, c, pT)
+    F = cap_yield_function(s, p, k, c, geom)
+    if p + kq * s ≥ geom.p_q
+        return F, one(s) / 2, kq
     end
+    Rq = hypot(s, p - geom.p_q)
+    iszero(Rq) && return F, zero(s), zero(p)
+    return F, geom.b * s / (2 * Rq), -geom.b * (p - geom.p_q) / Rq
 end
 
-# ---------------------------------------------------------------------------
-# Local return map for the tensile cap.
-#
-# The paper solves a 3-unknown system (τII, p, λ̇) because it carries diffusion
-# and dislocation creep, so even its deviatoric relation is nonlinear. Here `ηve`
-# is given and that relation is linear, so the system collapses to one scalar
-# equation — but only in the right variable. Parametrising by
-#
-#     μ = 2 λ Bτ
-#
-# rather than by `λ` makes *both* returns explicit on *both* branches:
-#
-#     τII(μ) = τII_trial / (1 + ηve μ)                         radial, either branch
-#     P(μ)   = P_trial + Kb Δt kq μ τII(μ)                     shear potential
-#     P(μ)   = (P_trial + Kb Δt μ p_q) / (1 + Kb Δt μ)         cap potential
-#
-# so no inner iteration is needed to evaluate the residual. The multiplier comes
-# back out as `λ = μ τII` on the shear branch and `λ = μ R̂_q / b` on the cap.
-# ---------------------------------------------------------------------------
+@inline function cap_invariants(plastic::DruckerPragerCap, phase, s, p, γ)
+    C = _cohesion_at_history(plastic.C[phase], plastic.C_min[phase], plastic.H_C[phase], γ)
+    return cap_invariants(s, p, plastic.sinϕ[phase], plastic.sinΨ[phase],
+        C * plastic.cosϕ[phase], plastic.pT[phase])
+end
+
+@inline function _cap_residual(x, s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    s, p, λ = x
+    F, Aτ, Ap = cap_invariants(s, p, k, kq, c, pT)
+    return SVector(s - s_trial + 2 * ηve * λ * Aτ, p - p_trial - KΔt * λ * Ap, F - η_reg * λ)
+end
 
 """
-    cap_residual_and_slope(μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
-        -> (r, dr, τII, P, λ)
+    cap_return_map(s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg; maxiter = 40)
+        -> (; τII, P, λ, Aτ, Ap, converged)
 
-Perzyna consistency residual `r(μ) = F(τII(μ), P(μ)) − η_reg λ(μ)` and its exact
-derivative, together with the state it implies. `geom` comes from
-[`cap_geometry`](@ref) and `KΔt` is `Kb * Δt`.
+Coupled local return of the tensile cap (Popov et al. 2025, Eq. 42), solving
+for `x = (s, p, λ)`:
 
-The yield branch and the flow-potential branch are selected independently: `F`
-switches on `P + k τII ≥ p_y`, the flow direction on `P + kq τII ≥ p_q`. They are
-different rays and a point can sit on the shear side of one and the tensile side
-of the other, which is exactly the mode-I/mode-II transition region.
+    s - s_trial + 2 ηve λ Aτ(s, p) = 0
+    p - p_trial - KΔt λ Ap(s, p)   = 0
+    F(s, p) - η_reg λ              = 0
+
+with `(F, Aτ, Ap)` from [`cap_invariants`](@ref). `KΔt` is `Kb * Δt`,
+`k = sin(ϕ)`, `kq = sin(Ψ)`, `c = C cos(ϕ)`, and `pT ≤ 0` is the tensile
+strength (compression-positive pressure). An elastic trial state (`F ≤ 0`)
+returns unchanged with `λ = 0`.
+
+Newton on residuals scaled by `max(|s_trial|, |p_trial|, |F_trial|, eps)` with a
+ForwardDiff 3×3 Jacobian, converging at a scaled infinity norm `≤ 100 eps`.
+Steps backtrack by halving (at most 24 times) until `s ≥ 0`, `λ ≥ 0`, the
+residual is finite, and its squared norm satisfies an Armijo decrease. Any
+failure — non-positive or non-finite `ηve`/`KΔt`, a non-finite step, a failed
+line search, or an exhausted budget — returns `converged = false`.
+
+A converged solve takes one final full Newton step, which leaves the value
+unchanged to round-off but makes derivatives of the result through dual
+numbers equal the implicit-function derivative.
 """
-@inline function cap_residual_and_slope(μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
-    ϵ²  = eps(typeof(μ))^2
-    s   = inv(one(μ) + ηve * μ)
-    τII = τII_trial * s
-    dτII = -ηve * τII * s
+@inline function cap_return_map(
+        s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg; maxiter = 40,
+    )
+    T = promote_type(typeof(s_trial), typeof(p_trial))
+    F, Aτ, Ap = cap_invariants(s_trial, p_trial, k, kq, c, pT)
+    x = SVector{3, T}(s_trial, p_trial, zero(T))
+    F ≤ 0 && return (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged = true)
+    failed = (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged = false)
+    (isfinite(KΔt) && KΔt > 0 && isfinite(ηve) && ηve > 0) || return failed
 
-    # Flow-potential branch fixes how the pressure returns.
-    P_s = P_trial + KΔt * kq * μ * τII
-    shear_Q = P_s + kq * τII ≥ geom.p_q
-    P, dP = if shear_Q
-        P_s, KΔt * kq * τII * s
-    else
-        den = one(μ) + KΔt * μ
-        (P_trial + KΔt * μ * geom.p_q) / den, KΔt * (geom.p_q - P_trial) / (den * den)
+    scale = max(abs(s_trial), abs(p_trial), abs(F), eps(real(T)))
+    tol = 100 * eps(real(T))
+    residual = y -> _cap_residual(y, s_trial, p_trial, ηve, KΔt, k, kq, c, pT, η_reg) / scale
+    r = residual(x)
+    converged = maximum(abs, r) ≤ tol
+    for _ in 1:maxiter
+        converged && break
+        step = ForwardDiff.jacobian(residual, x) \ r
+        all(isfinite, step) || return failed
+        α = one(real(T))
+        accepted = false
+        for _ in 1:24
+            candidate = x - α * step
+            if candidate[1] ≥ 0 && candidate[3] ≥ 0
+                r_new = residual(candidate)
+                if all(isfinite, r_new) && sum(abs2, r_new) ≤ (1 - α / 10_000) * sum(abs2, r)
+                    x, r = candidate, r_new
+                    accepted = true
+                    break
+                end
+            end
+            α /= 2
+        end
+        accepted || return failed
+        converged = maximum(abs, r) ≤ tol
     end
+    converged || return failed
+    x -= ForwardDiff.jacobian(residual, x) \ r
+    _, Aτ, Ap = cap_invariants(x[1], x[2], k, kq, c, pT)
+    return (; τII = x[1], P = x[2], λ = x[3], Aτ, Ap, converged)
+end
 
-    # Yield branch fixes the residual.
-    F, dF = if P + k * τII ≥ geom.p_y
-        τII - k * P - c, dτII - k * dP
-    else
-        R̂y = √(τII * τII + (P - geom.p_y)^2 + ϵ²)
-        geom.a * (R̂y - geom.R_y), geom.a * (τII * dτII + (P - geom.p_y) * dP) / R̂y
-    end
+"""
+    cap_local_update(τ_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+        -> (; τ, P, γdot, θdot)
 
-    λ, dλ = if shear_Q
-        μ * τII, τII * s
-    else
-        R̂q  = √(τII * τII + (P - geom.p_q)^2 + ϵ²)
-        dR̂q = (τII * dτII + (P - geom.p_q) * dP) / R̂q
-        μ * R̂q / geom.b, (R̂q + μ * dR̂q) / geom.b
-    end
+Physical tensile-cap update at one integration point: the corrected deviatoric
+stress tuple `τ`, corrected pressure `P`, and plastic history rates. With
+`(s, p, λ)` from [`cap_return_map`](@ref) and `s_trial = second_invariant(τ_trial)`,
 
-    return F - η_reg * λ, dF - η_reg * dλ, τII, P, λ
+    εvp_ij = λ Aτ τ_trial_ij / s_trial      τ = τ_trial - 2 ηve εvp
+    θdot   = λ Ap                           P = P_trial + KΔt θdot
+    γdot   = λ Aτ = second_invariant(εvp)
+
+The deviatoric return is radial, so `second_invariant(τ) == s`. A failed local
+solve returns NaN everywhere so that the global solver's non-finite residual
+check stops the run; a failed iterate is never returned as physical stress.
+"""
+@inline function cap_local_update(τ_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    s_trial = second_invariant(τ_trial)
+    ret = cap_return_map(s_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg)
+    λ = ret.converged ? ret.λ : oftype(ret.λ, NaN)
+    γdot = λ * ret.Aτ
+    θdot = λ * ret.Ap
+    # second_invariant floors s_trial at eps, so the division is always defined.
+    τ = map(t -> t - 2 * ηve * γdot * t / s_trial, τ_trial)
+    return (; τ, P = P_trial + KΔt * θdot, γdot, θdot)
+end
+
+# Interpolate cap parameters and the (softened) cohesion to one quadrature point
+# and run the shared local update. Momentum, pressure, and history rates all use
+# this one result.
+@inline function _cap_ip_update(
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap, γ,
+    )
+    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
+    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
+    C = _cohesion_at_history(
+        interp2ip_phase(Nv, plastic.C, phase_loc),
+        interp2ip_phase(Nv, plastic.C_min, phase_loc),
+        interp2ip_phase(Nv, plastic.H_C, phase_loc), γ,
+    )
+    return cap_local_update(
+        τ_trial, Pq, ηve,
+        interp2ip_phase(Nv, plastic.Kb, phase_loc) * Δt,
+        interp2ip_phase(Nv, plastic.sinϕ, phase_loc),
+        interp2ip_phase(Nv, plastic.sinΨ, phase_loc),
+        C * interp2ip_phase(Nv, plastic.cosϕ, phase_loc),
+        interp2ip_phase(Nv, plastic.pT, phase_loc),
+        interp2ip_phase(Nv, plastic.η_reg, phase_loc),
+    )
 end
 
 """
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
                       plastic::DruckerPragerCap) -> (τxx, τyy, τxy)
 
-Compute the plane-strain elasto-viscoplastic stress with the globally
-continuous tensile cap. Points in the shear domain intentionally reuse the
-existing Drucker-Prager return map exactly; points below the delimiter use the
-cap's bounded local scalar solve and radial deviatoric return.
+Plane-strain elasto-viscoplastic stress with the globally continuous tensile
+cap, from `cap_local_update` without cohesion softening.
 """
-@inline function deviatoric_stress(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
-        plastic::DruckerPragerCap,
-    )
-    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
-    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
-
-    k     = interp2ip_phase(Nv, plastic.sinϕ,  phase_loc)
-    kq    = interp2ip_phase(Nv, plastic.sinΨ,  phase_loc)
-    c     = interp2ip_phase(Nv, plastic.C,      phase_loc) *
-            interp2ip_phase(Nv, plastic.cosϕ,  phase_loc)
-    pT    = interp2ip_phase(Nv, plastic.pT,     phase_loc)
-    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
-    Kb    = interp2ip_phase(Nv, plastic.Kb,    phase_loc)
-    τII   = second_invariant(τ_trial)
-    geom  = cap_geometry(k, kq, c, pT)
-    F     = cap_yield_function(τII, Pq, k, c, geom)
-
-    F ≤ 0 && return τ_trial
-    if Pq + k * τII ≥ geom.p_y
-        return _drucker_prager_return(
-            τ_trial, ηve, Δt, Pq,
-            interp2ip_phase(Nv, plastic.cosϕ, phase_loc), k, kq,
-            interp2ip_phase(Nv, plastic.C, phase_loc), η_reg, Kb,
-        )
-    end
-
-    result = cap_return_map(
-        τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50),
-    )
-    @assert result.converged "Drucker-Prager cap local return map did not converge"
-    scale = iszero(τII) ? zero(τII) : result.τII / τII
-    return map(τ -> scale * τ, τ_trial)
-end
+@inline deviatoric_stress(
+    v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap,
+) = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, nothing).τ
 
 @inline function deviatoric_stress_and_pressure(
         v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
         plastic::DruckerPragerCap, γ::Union{Nothing, Real},
     )
-    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
-    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
-    k     = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
-    kq    = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
-    C     = interp2ip_phase(Nv, plastic.C, phase_loc)
-    C_min = interp2ip_phase(Nv, plastic.C_min, phase_loc)
-    H_C   = interp2ip_phase(Nv, plastic.H_C, phase_loc)
-    C     = _cohesion_at_history(C, C_min, H_C, γ)
-    c     = C *
-            interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
-    pT    = interp2ip_phase(Nv, plastic.pT, phase_loc)
-    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
-    Kb    = interp2ip_phase(Nv, plastic.Kb, phase_loc)
-    τII   = second_invariant(τ_trial)
-    geom  = cap_geometry(k, kq, c, pT)
-    F     = cap_yield_function(τII, Pq, k, c, geom)
-
-    F ≤ 0 && return τ_trial, Pq
-    if Pq + k * τII ≥ geom.p_y
-        λ = F / (ηve + η_reg + Kb * Δt * kq * k)
-        τ = _drucker_prager_return(
-            τ_trial, ηve, Δt, Pq,
-            interp2ip_phase(Nv, plastic.cosϕ, phase_loc), k, kq,
-            C, η_reg, Kb,
-        )
-        return τ, Pq + Kb * Δt * λ * kq
-    end
-
-    result = cap_return_map(
-        τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50),
-    )
-    @assert result.converged "Drucker-Prager cap local return map did not converge"
-    scale = iszero(τII) ? zero(τII) : result.τII / τII
-    return map(τ -> scale * τ, τ_trial), result.P
+    result = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+    return result.τ, result.P
 end
 
-
 """
-    cap_return_map(τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, Val(maxiter))
-        -> (; τII, P, λ, iters, converged)
+    plastic_history_rates(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+        -> (γdot, θdot)
 
-Return-map the trial state onto the tensile-cap yield surface, solving the
-Perzyna consistency condition for the return parameter `μ = 2λBτ`.
-
-`KΔt` is `Kb * Δt`. `k = sin(ϕ)`, `kq = sin(Ψ)`, `c = C cos(ϕ)`, and `pT ≤ 0` is
-the tensile strength. Returns the returned invariant and pressure, the
-multiplier `λ`, and whether the local solve converged. The deviatoric return is
-radial, so a caller rescales the trial tensor by `τII / τII_trial`.
-
-An elastic trial state returns unchanged with `λ = 0`.
-
-Uses a bracketed Newton iteration with bisection fallback rather than the
-paper's Armijo line search. Both guard the same failure — the paper reports that
-unguarded local iterations cycle in stress space and never converge even though
-the surface is smooth — but a sign-change bracket is strictly more robust for a
-scalar unknown and needs no tuning constants. The bracket is `[0, μ_hi]`:
-`r(0) = F_trial > 0` whenever the trial state yields, and `μ_hi` is found by
-doubling from the scale `1/(ηve + KΔt)`.
-
-Both loops are fixed-trip with a guard rather than `while` on a residual test, so
-the iteration count does not depend on the data. That keeps it launchable inside
-a KernelAbstractions kernel without warp divergence, at the cost of always paying
-the full trip count; a kernel-side version should revisit that trade.
+Deviatoric and volumetric plastic strain rates at one quadrature point, with
+cohesion softened by accepted history `γ`. Zero for non-cap yield models.
 """
-@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::Nothing) = (0, 0)
-@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::DruckerPrager) = (0, 0)
-
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::Nothing, _) = (0, 0)
+@inline plastic_history_rates(_, _, _, _, _, _, _, _, _, ::DruckerPrager, _) = (0, 0)
 @inline function plastic_history_rates(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
-        plastic::DruckerPragerCap,
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap, γ,
     )
-    τ_trial = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
-    ηve, = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
-    k = interp2ip_phase(Nv, plastic.sinϕ, phase_loc)
-    kq = interp2ip_phase(Nv, plastic.sinΨ, phase_loc)
-    c = interp2ip_phase(Nv, plastic.C, phase_loc) *
-        interp2ip_phase(Nv, plastic.cosϕ, phase_loc)
-    pT = interp2ip_phase(Nv, plastic.pT, phase_loc)
-    η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
-    Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
-    τII = second_invariant(τ_trial)
-    geom = cap_geometry(k, kq, c, pT)
-    F = cap_yield_function(τII, Pq, k, c, geom)
-    F ≤ 0 && return zero(F), zero(F)
-
-    if Pq + k * τII ≥ geom.p_y
-        λ = F / (ηve + η_reg + Kb * Δt * kq * k)
-        return λ / 2, λ * kq
-    end
-
-    result = cap_return_map(τII, Pq, ηve, Kb * Δt, k, kq, c, pT, η_reg, Val(50))
-    @assert result.converged "Drucker-Prager cap local return map did not converge"
-    Bτ, Bp = cap_flow_direction(result.τII, result.P, kq, geom)
-    return result.λ * Bτ * result.τII, 3 * result.λ * Bp
-end
-
-@inline function cap_return_map(
-        τII_trial, P_trial, ηve, KΔt, k, kq, c, pT, η_reg, ::Val{maxiter} = Val(50)
-    ) where {maxiter}
-    FP   = typeof(τII_trial)
-    geom = cap_geometry(k, kq, c, pT)
-    F0   = cap_yield_function(τII_trial, P_trial, k, c, geom)
-
-    if F0 ≤ 0
-        return (; τII = τII_trial, P = P_trial, λ = zero(FP), iters = 0, converged = true)
-    end
-
-    scale = c + τII_trial + abs(P_trial)
-    tol   = √(eps(FP)) * scale
-
-    # Bracket: r(0) = F0 > 0, expand μ_hi by doubling until the residual changes
-    # sign.  32 doublings span 10 orders of magnitude from the initial scale.
-    μ_lo, r_lo = zero(FP), F0
-    μ_hi = inv(ηve + KΔt)
-    r_hi = first(cap_residual_and_slope(μ_hi, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom))
-    bracketed = r_hi ≤ 0
-    for _ in 1:32
-        if !bracketed
-            μ_lo, r_lo = μ_hi, r_hi
-            μ_hi *= 2
-            r_hi = first(
-                cap_residual_and_slope(μ_hi, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom)
-            )
-            bracketed = r_hi ≤ 0
-        end
-    end
-
-    μ    = (μ_lo + μ_hi) / 2
-    τII  = τII_trial
-    P    = P_trial
-    λ    = zero(FP)
-    done = false
-    iters = 0
-    for it in 1:maxiter
-        if !done
-            r, dr, τII, P, λ = cap_residual_and_slope(
-                μ, τII_trial, P_trial, ηve, KΔt, k, c, kq, η_reg, geom
-            )
-            r > 0 ? (μ_lo = μ) : (μ_hi = μ)
-            μ_newton = μ - r / dr
-            # Take Newton only where it stays inside the bracket; bisect otherwise.
-            μ = (isfinite(μ_newton) && μ_lo < μ_newton < μ_hi) ?
-                μ_newton : (μ_lo + μ_hi) / 2
-            done = abs(r) ≤ tol
-            iters = it
-        end
-    end
-
-    return (; τII, P, λ, iters, converged = done && bracketed)
+    result = _cap_ip_update(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
+    return result.γdot, result.θdot
 end

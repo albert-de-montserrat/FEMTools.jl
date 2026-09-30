@@ -30,6 +30,26 @@ function to unroll all loops at compile time.
 end
 
 """
+    IntegrationPointPressure{TP}
+
+Previous-step pressure held at the `NQ` quadrature points of one element, as
+gathered from an `NQ × nels` matrix. The pressure rate then reads the old
+pressure directly at each point instead of interpolating a nodal field.
+"""
+struct IntegrationPointPressure{TP}
+    P::TP
+end
+
+@inline pressure_increment_at_ip(Nv, P_loc, P0loc::SVector, _) = dot(Nv, P_loc - P0loc)
+@inline pressure_increment_at_ip(Nv, P_loc, P0::IntegrationPointPressure, q) =
+    dot(Nv, P_loc) - P0.P[q]
+
+@inline _gather_old_pressure(P0::AbstractVector, nodes, _, ::Val{NP}, ::Val) where NP =
+    _gather_local(P0, nodes, Val(NP))
+@inline _gather_old_pressure(P0::AbstractMatrix, _, iel, ::Val, ::Val{NQ}) where NQ =
+    IntegrationPointPressure(SVector{NQ}(ntuple(q -> P0[q, iel], Val(NQ))))
+
+"""
     integrate_PH_pressure_residual(v, P_loc, P0loc, Tloc, T0loc,
                                    geo_v_el, geo_P_el, phase_loc, α, ηb, Δt, Nq) -> RP_e
 
@@ -42,9 +62,8 @@ are per-phase thermal expansion and bulk viscosity `NTuple`s; `Δt` is the time
 step. `Nq` contains pressure shape-function values at pressure quadrature
 points.
 
-The optional `K` keyword selects the trial-pressure formulation's elastic
-compressibility term: when supplied, `K` replaces `ηb` in the pressure-rate
-denominator. Omitting it preserves the historical bulk-viscosity form.
+`P0loc` may instead be an `IntegrationPointPressure`, which supplies the old
+pressure at each quadrature point.
 
 The optional `K` keyword selects the trial-pressure formulation's elastic
 compressibility term: when supplied, `K` replaces `ηb` in the pressure-rate
@@ -72,7 +91,7 @@ material factors are applied.
         bulk = _select_pressure_bulk(ηb, K)
         ηbq = interp2ip_phase(Nv, bulk, phase_loc)
         αq  = interp2ip_phase(Nv, α, phase_loc)
-        ∂P∂t = dot(Nv, P_loc - P0loc) / (ηbq * Δt)
+        ∂P∂t = pressure_increment_at_ip(Nv, P_loc, P0loc, q) / (ηbq * Δt)
         ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt
         # project divergence to integration point
         ∇V = compute_velocity_divergence(v, ∂N∂x_v)
@@ -95,7 +114,9 @@ Assemble the Stokes pressure residual `RP` using Atomix-backed atomic scatter.
 
 `RP` is indexed over pressure DoFs (connectivity `el2nP`). Velocity fields
 `vx`, `vy` are indexed over velocity DoFs (`el2n_v`). `P`, `P0`, `T`, `T0`
-are current and previous pressure and temperature fields on pressure nodes.
+are current and previous pressure and temperature fields on pressure nodes;
+`P0` may instead be an `NQ × nels` matrix of previous pressure at the velocity
+quadrature points.
 `phases` is a nodal integer array (pressure-node indexed) selecting the phase
 for material interpolation. `α` and `ηb` are per-phase thermal expansion and
 bulk viscosity `NTuple`s.
@@ -202,7 +223,7 @@ Returns `(local_nodes_P, Re)` ready for global scatter into `RP`.
     vxloc     = _gather_local(vx, local_nodes_v, Val(NV))
     vyloc     = _gather_local(vy, local_nodes_v, Val(NV))
     P_loc     = _gather_local(P,  local_nodes_P, Val(NP))
-    P0loc     = _gather_local(P0, local_nodes_P, Val(NP))
+    P0loc     = _gather_old_pressure(P0, local_nodes_P, iel, Val(NP), quadrature_points_val(geo_v_el))
     Tloc      = _gather_local(T,  local_nodes_P, Val(NP))
     T0loc     = _gather_local(T0, local_nodes_P, Val(NP))
     phase_loc = _gather_phase(phases, local_nodes_P, iel, Val(NP))

@@ -30,9 +30,19 @@ The suite covers:
   returns plausible attributes. `Triangulate` is in `[extras]` and the `test`
   target, so the extension is loaded for the suite but not for users of the
   package.
-- `test/test_drucker_prager_cap.jl` covers cap geometry, local return-map
-  derivatives, and the Drucker--Prager shear reduction; the adjoint regression
-  also compares cap-state ForwardDiff blocks with the Enzyme transpose path.
+- `test/test_drucker_prager_cap.jl` covers cap geometry, scalar coefficients,
+  the coupled return-map residuals and derivatives, hydrostatic tension,
+  radial shear/rotation, independent branch switches, failure paths, softened
+  geometry, and Float32/Float64 behavior. `test/test_stokes.jl` adds a
+  three-step homogeneous-extension recurrence on a `(2, 2)` T7 mesh for
+  pressure, `τxx`, `γ`, and `θ`; the old trial-pressure handoff misses step 3
+  by ~7e-2 in `θ`.
+  Nested ForwardDiff is checked against central differences, frozen cap-state
+  blocks against the Enzyme transpose, and a work-conjugate non-associated
+  constitutive tangent is checked to remain nonsymmetric.
+  Sixteen numeric fixtures pinned to JustRelax revision `14ffc40c` cover
+  corrected invariant, pressure, multiplier, and volumetric rate without a
+  JustRelax or GeoParams test dependency.
 - `test/test_solver_convergence_api.jl` ends with a bulk-viscous block pulled
   from its exact velocity solution, guarding the inner-loop absolute escape
   described in the solver guide. It checks the closed-form pressure *and* the
@@ -59,6 +69,12 @@ The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
 executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
+
+Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
+environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in
+the adjoint test; Julia 1.11.9 cannot resolve the project's JET 0.11.5/0.12
+constraint. Focused constitutive tests and the docs build pass on Julia 1.13,
+but this is not full-suite coverage or proof of compatibility on that version.
 
 The 3-D sparse reference tests include the function-only
 `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` helper.

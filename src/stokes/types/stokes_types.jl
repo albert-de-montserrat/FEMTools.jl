@@ -420,7 +420,8 @@ Construct tensile-cap Drucker-Prager parameters from friction angle `ϕ`,
 dilation angle `Ψ`, cohesion `C`, tensile strength `pT`, regularization
 viscosity `η_reg`, and bulk modulus `Kb`. `C_min` and `H_C` configure optional
 linear cohesion softening against accumulated deviatoric plastic strain `γ`;
-defaults disable softening. All tuple arguments are `NTuple{nphases, FP}`.
+defaults disable softening. Angles are in radians. All tuple arguments are
+`NTuple{nphases, FP}` and must be finite.
 
 Validates, per phase, the conditions under which the cap exists at all:
 
@@ -428,7 +429,9 @@ Validates, per phase, the conditions under which the cap exists at all:
   - `C·cos(ϕ) + sin(ϕ)·pT > 0`, which is what makes the cap radius positive.
     Cohesion must exceed `sin(ϕ)·|pT|`, so a rock cannot be given a tensile
     strength that outruns its shear strength;
-  - `isfinite(Kb)`, since dilatant plasticity has no incompressible limit;
+  - positive cap radius also at `C_min`, so it survives the entire linear
+    cohesion-softening interval;
+  - `Kb > 0`, since dilatant plasticity needs positive finite bulk compliance;
   - `η_reg ≥ 0`.
 
 Each is an `ArgumentError` naming the offending phase.
@@ -454,6 +457,8 @@ function DruckerPragerCap(
     C_min = NTuple{N + 1, FP}(C_min)
     H_C   = NTuple{N + 1, FP}(H_C)
     for i in 1:(N + 1)
+        all(isfinite, (ϕ[i], Ψ[i], C[i], pT[i], η_reg[i], Kb[i], C_min[i], H_C[i])) ||
+            throw(ArgumentError("phase $i: tensile-cap parameters must all be finite"))
         pT[i] > 0 && throw(
             ArgumentError(
                 "phase $i: tensile strength pT must be ≤ 0 with compression-positive \
@@ -467,10 +472,9 @@ function DruckerPragerCap(
                  got $(c + sin(ϕ[i]) * pT[i]). Cohesion must exceed sin(ϕ)·|pT|."
             )
         )
-        isfinite(Kb[i]) || throw(
+        Kb[i] > 0 || throw(
             ArgumentError(
-                "phase $i: dilatant plasticity requires a finite bulk modulus; the \
-                 tensile cap has no K = Inf incompressible limit"
+                "phase $i: dilatant plasticity requires a positive finite bulk modulus, got $(Kb[i])"
             )
         )
         η_reg[i] ≥ 0 || throw(
@@ -484,6 +488,9 @@ function DruckerPragerCap(
         )
         H_C[i] ≤ 0 || throw(
             ArgumentError("phase $i: H_C must be ≤ 0 for softening, got $(H_C[i])")
+        )
+        C_min[i] * cos(ϕ[i]) + sin(ϕ[i]) * pT[i] > 0 || throw(
+            ArgumentError("phase $i: softened cap radius must remain positive; need C_min·cos(ϕ) + sin(ϕ)·pT > 0")
         )
     end
     return DruckerPragerCap{N + 1, FP}(

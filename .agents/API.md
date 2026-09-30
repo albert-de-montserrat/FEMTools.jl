@@ -90,6 +90,13 @@ containers; its spatial dimension follows the length of `g`. Passing
 `plastic_history_size=(nq, nels)` additionally allocates zeroed integration-
 point `dr.plastic_history.γ` and `.θ` arrays for the experimental cap path;
 the default remains `nothing`.
+The revised cap plan targets a once-per-accepted-step commit of corrected
+pressure and plastic history, matching JustRelax without GeoParams. This is
+pending API/lifecycle work: `update_stokes_current_stress!` currently advances
+history on each call, so it is not yet a read-only diagnostic operation.
+The `DruckerPragerCap` constructor takes radians, rejects nonfinite material
+parameters and nonpositive `Kb`, and requires positive cap radius at both
+`C` and `C_min`. The new scalar `cap_invariants` evaluator is internal API.
 
 ### Physics states and solvers
 
@@ -193,7 +200,8 @@ reverse-mode scratch is opt-in through `enzyme=true`, matching
 - Convert once with `Array(field)` for host-only plotting/output logic.
 - Caller-owned previous-time fields (`T0`, `P0`, old stress) must be updated at
   the physical-time boundary documented by the solver; a solver must not guess
-  that lifecycle.
+  that lifecycle. Under `DruckerPragerCap` the pressure memory is the accepted
+  corrected IP pressure, passed as `solve_stokes_dyrel!(...; P_old)`.
 - Returned convergence statistics describe the final in-place state. Never use
   a state as converged without checking the documented return/exception path.
 - Connectivity, geometry, phases, fields, BC indices/values, and scratch arrays

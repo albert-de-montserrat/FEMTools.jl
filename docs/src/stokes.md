@@ -51,6 +51,12 @@ FEMTools.pressure
 FEMTools.temperature
 ```
 
+`DruckerPragerCap` takes angles in radians and finite numeric material
+parameters. Its bulk modulus `Kb` must be positive, and both the initial
+cohesion `C` and softening floor `C_min` must satisfy
+`C*cos(ϕ) + sin(ϕ)*pT > 0` (substitute `C_min` for `C` at the floor).
+This keeps the tensile-cap radius positive throughout cohesion softening.
+
 The velocity and pressure fields live on separate node sets described by a
 [`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
 `mesh.geometry`. Fill `dr.T` (and `dr.T0`) before solving. The lumped
@@ -116,9 +122,14 @@ expanded positional methods remain available for custom and adjoint workflows.
 For the experimental Drucker--Prager cap, add
 `plastic_history_size=(nq, mesh.nels)` to allocate per-integration-point `γ`
 and `θ` history arrays; they are zeroed and are not allocated by default.
-Calling `update_stokes_current_stress!` with the cap accumulates one physical
-time increment into those arrays; nonlinear residual iterations do not update
-history.
+Call `commit_stokes_plastic_history!` once per converged step, before
+overwriting `τ_old`, to accumulate that step into those arrays. Residual
+iterations and `update_stokes_current_stress!` never update history.
+`dr.P` is the trial pressure under the cap, so do not copy it into `dr.P0`:
+record the corrected pressure with a four-matrix store
+`(τxx, τyy, τxy, P_corrected)` in `update_stokes_current_stress!`, copy it into
+an `nq × nels` array after the commit, and pass that array as
+`solve_stokes_dyrel!(...; P_old)` on the next step.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
@@ -256,12 +267,16 @@ named tuple converts dimensionless fields back to SI units.
 The returned fields distinguish trial pressure, corrected pressure, and
 integration-point accumulated volumetric plastic strain `χ` (the Figure 6b
 quantity), plus deviatoric plastic strain. Trial pressure is the nodal field the
-solver carries; corrected pressure is the tensile-cap return map's pressure at
+solver carries, formed each step from the previous step's corrected pressure,
+which the driver carries at integration points; corrected pressure is the tensile-cap return map's pressure at
 integration points, returned as an `nq × nels` array rather than a nodal field.
 Set `write_output=true` to write legacy ASCII VTK files with velocity and
 projected trial pressure as point data, plus cell fields for both pressure
 states, both plastic-strain measures, and the stress/strain-rate second
 invariants.
+The returned `cross_section` contains the piecewise-constant cell profile
+`(; x, values, y)` through `χ`; `section_y=0.25` matches Figure 6b's `A–A′`
+line and can be changed for diagnostics.
 
 The driver carries the weak seed of the authors' GeoTech2D release: a
 semicircular inclusion on the middle of the bottom boundary, centre `(Lx/2, 0)`
@@ -311,6 +326,7 @@ stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
+commit_stokes_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities

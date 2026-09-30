@@ -157,7 +157,8 @@ export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, Druc
     solve_stokes_adjoint_3d!,
     stokes_material_gradient_3d,
     solve_stokes_adjoint_dyrel!,
-    update_stokes_current_stress!
+    update_stokes_current_stress!,
+    commit_stokes_plastic_history!
 
 # Post-processing: strain-rate/stress diagnostics and VTK output.
 export compute_strain_rate_stress_postprocess,

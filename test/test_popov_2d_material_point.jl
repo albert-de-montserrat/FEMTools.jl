@@ -17,17 +17,16 @@ using StaticArrays
     @test FEMTools.cap_yield_function(0.0, pT, k, c, geom) ≈ 0.0 atol = 1e-12
 
     elastic = FEMTools.cap_return_map(
-        0.0, -0.5, 1.0, 64.0, k, kq, c, pT, 0.1, Val(50),
+        0.0, -0.5, 1.0, 64.0, k, kq, c, pT, 0.1,
     )
     @test elastic.converged
     @test elastic.λ == 0.0
     @test elastic.P == -0.5
 
     yielded = FEMTools.cap_return_map(
-        0.0, -1.2, 1.0, 64.0, k, kq, c, pT, 0.1, Val(50),
+        0.0, -1.2, 1.0, 64.0, k, kq, c, pT, 0.1,
     )
     @test yielded.converged
-    @test yielded.iters > 0
     @test yielded.λ > 0
     # The regularized update moves the tensile pressure toward pT without
     # crossing the cap in one local step.
@@ -90,7 +89,7 @@ using StaticArrays
             (0.0, 0.0, 0.0), -1.2, soft, 2.0,
         )
         softened = FEMTools.cap_return_map(
-            0.0, -1.2, 1.0, 64.0, k, kq, 14.0 * cos(ϕ), pT, 0.1, Val(50),
+            0.0, -1.2, 1.0, 64.0, k, kq, 14.0 * cos(ϕ), pT, 0.1,
         )
         @test P_soft ≈ softened.P
     end

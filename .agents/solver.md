@@ -265,13 +265,31 @@ For `F>0`, the regularized multiplier and stress correction are
 Here `∂Q/∂P=-sinψ` and `∂F/∂P=-sinφ`, making their product non-negative for the
 supported angles.
 
-### Drucker-Prager tensile cap (present, not yet wired)
+### Drucker-Prager tensile cap (experimental 2-D path)
 
-`cap_geometry`, `cap_yield_function`, and `cap_flow_direction` in
-`src/stokes/assemblers/rheology.jl` implement the globally continuous tensile
-cap of Popov, Berlie and Kaus (2025), GMD 18, 7035-7058. They are pure internal
-functions with no caller: no solver, state, or type uses them yet. See
-`DRUCKER_PRAGER_CAP_PLAN.md` for the remaining work.
+`cap_geometry`, `cap_yield_function`, `cap_invariants`, `cap_return_map`, and
+`cap_local_update` in `src/stokes/assemblers/rheology.jl` implement the
+globally continuous tensile cap of Popov, Berlie and Kaus (2025), GMD 18,
+7035-7058, following JustRelax's coupled return without GeoParams. They are
+internal functions used by the experimental `DruckerPragerCap` 2-D momentum
+path.
+
+`cap_invariants` returns `(F,Aτ,Ap)` with `Aτ=(∂Q/∂τII)/2` and `Ap=-∂Q/∂p`,
+selecting yield and potential branches independently. `cap_return_map` solves
+`(s-s_trial+2ηve*λ*Aτ, p-p_trial-KΔt*λ*Ap, F-η_reg*λ)=0` by Newton with a
+ForwardDiff 3×3 Jacobian and Armijo backtracking for every yielded state,
+including the shear segment; there is no separate DP shortcut or scalar solver.
+A converged solve ends with one full Newton step so dual-number derivatives
+equal the implicit-function derivative. `cap_local_update` reconstructs the
+radial tensor return, corrected pressure, and rates `γdot=λAτ`, `θdot=λAp`;
+momentum, pressure output, and history rates all call it through
+`_cap_ip_update`, with cohesion softened by the accepted IP `γ`. A failed local
+solve returns NaN, which the DR solver's non-finite residual checks stop on.
+`update_stokes_current_stress!` is read-only for plastic history;
+`commit_stokes_plastic_history!` is its only writer, called once per converged
+step before `τ_old` is refreshed.
+Material parameters are still interpolated to the IP before evaluating one cap,
+not blended per phase as JustRelax's ratio adapter does.
 
 The cap closes the shear envelope on the tensile side with a circle of radius
 `R_y` centred at `(p_y,0)`, tangent to `τII=kP+c` and meeting the pressure axis
@@ -285,11 +303,9 @@ as an exact identity rather than a tolerance.
 
 Two consequences are already fixed and should not be rediscovered:
 
-- The closed-form multiplier above exists only because the shear surface is
-  linear. On the cap both `∂F/∂τII` and `∂Q/∂τII` are state-dependent, so a
-  local scalar solve for `λ` replaces it, and the paper reports that without an
-  Armijo line search the local iterations cycle in stress space and never
-  converge even though the surface is smooth.
+- A nonlinear local solve is needed on the cap. The coupled `(s,p,λ)` Newton
+  solve uses bounded iterations and Armijo backtracking; do not restore the
+  superseded scalar solve or legacy shear shortcut.
 - **Every dilatant plasticity model needs a finite elastic bulk modulus.** Both
   of the paper's pressure schemes fail as `K→∞`. FEMTools uses `K=Inf` in the
   incompressible gauge that several miniapps and the adjoint tests rely on, so
@@ -319,24 +335,27 @@ one; do not mix them. Consequences to hold onto:
   caller is unchanged. Without this there was no way to read the physical
   pressure back out: `dr.Pnum` is the Arrow-Hurwicz update `γP·RP/M_P`, not a
   plastic correction, and using it as one is a mistake that reads plausible.
-- Under the trial-pressure scheme the global field is unbounded for sustained
-  volumetric loading, because each step seeds `P0` from the previous *trial*
-  pressure. In the homogeneous Popov extension driver the nodal field falls a
-  fixed `K·Δt·∇·v` per step with no saturation, while the corrected pressure
-  holds just past `pT` by the Perzyna overstress: after 12 steps, trial
-  `-0.768` against corrected `-0.147` for `pT = -0.1`. Whether `P0` should
-  instead be seeded from the corrected pressure is open, and it is the same
-  question the example plan records as "define how corrected pressure is
-  carried into the next physical timestep". Resolve it before reading any
-  absolute pressure from a multi-step cap run.
-- Evidence for that question, not a decision on it: the authors' GeoTech2D
+- Next-step pressure memory is the accepted *corrected* pressure at
+  integration points, matching JustRelax's `P += ΔPψ` handoff.
+  `solve_stokes_dyrel!` takes `P_old` (default `dr.P0`): a nodal vector is
+  interpolated as before, an `nq × nels` matrix is read directly at the
+  velocity quadrature points, which are also the continuity quadrature points
+  (`IntegrationPointPressure`, `pressure_increment_at_ip`). Only the pressure
+  residual (and hence `Pnum`) reads it; the augmented momentum Jacobian keeps
+  `dr.P0` because `∂Rv/∂v` is independent of the old pressure. Seeding `P0`
+  from trial `dr.P` instead makes the global field unbounded under sustained
+  extension (it falls `K·Δt·∇·v` per step: trial `-0.768` vs corrected
+  `-0.147` after 12 Popov steps with `pT = -0.1`). No P1 projection of the
+  corrected pressure exists; add one only with a constant-preservation test.
+  The trial/physical split lives inside a solve, not in accepted history.
+- Consistent with that decision, the authors' GeoTech2D
   release carries the *corrected* pressure into the next step. In
   `CODE/src/update.py` the local update stores `svar['svp'] = pcor` and the
   next step forms its trial pressure as `pstar = pn - dp` from that stored
   value, so nothing accumulates an uncorrected trial field across steps. That
   code solves the two-field system with Newton rather than Powell-Hestenes and
-  DYREL, so its handoff is not automatically ours; treat it as the reference
-  behaviour to argue for or against, and keep the decision explicit.
+  DYREL, while the inspected JustRelax DYREL path also commits corrected
+  pressure. FEMTools stores and reuses the accepted corrected IP pressure.
 - `DruckerPragerCap` accepts optional per-phase `C_min` and `H_C` tuples for
   bounded linear cohesion softening. Residual and augmented Jacobian assembly
   accept per-IP γ and apply the same local law.
@@ -346,8 +365,8 @@ one; do not mix them. Consequences to hold onto:
   non-cap Stokes and adjoint paths retain the historical bulk-viscosity form,
   including the `K = Inf` incompressible gauge. Direct low-level callers that
   omit `K` retain that behavior. The cap return map is dispatched by the
-  experimental 2-D constitutive path; per-IP volumetric history and softening
-  are not assembled yet, so this remains an incomplete cap solve.
+  experimental 2-D constitutive path. Per-IP history, stress, corrected
+  pressure, and rates share the same softened local result.
 - The elastic bulk modulus must be finite, so the cap cannot be used in the
   `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
   needs a finite `K` first.
@@ -356,10 +375,11 @@ one; do not mix them. Consequences to hold onto:
   the local return-map derivative at a tensile-cap state, but not a full cap
   benchmark or history/softening evolution.
 - `StokesDR(...; plastic_history_size=(nq, nels))` provides zeroed,
-  caller-visible per-integration-point `γ` and `θ` arrays. When a cap is passed
-  to `update_stokes_current_stress!`, one physical-time increment is accumulated
-  through a backend kernel; residual iterations do not mutate this history. The
-  default remains `nothing` to preserve non-cap memory behavior.
+  caller-visible per-integration-point `γ` and `θ` arrays. Only
+  `commit_stokes_plastic_history!` advances them, one physical-time increment
+  per call through a backend kernel; residual iterations and
+  `update_stokes_current_stress!` never do. The default remains `nothing` to
+  preserve non-cap memory behavior.
 
 ### Two-dimensional Powell-Hestenes/DYREL iteration
 
@@ -560,6 +580,9 @@ Keep one shared solver mechanism where the mathematics truly matches, while
 allowing the mixed 2-D and cell-pressure 3-D Stokes layouts to remain distinct.
 Do not create a generalized solver framework merely to make their signatures
 look alike.
+
+3-D plasticity and the tensile cap are planned on the mixed path (Tet15/P1-disc
+on `MixedMesh{3}`), not on the Hex27 cell-pressure path.
 
 Priorities:
 

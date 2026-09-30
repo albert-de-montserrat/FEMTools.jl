@@ -500,7 +500,7 @@ end
         Pq = dot(NqP[q], Ploc)
         τ_old_q = old_stress_at_ip(Nv, τ_old_loc, eltype(vx), q)
         γdot, θdot = plastic_history_rates(
-            (vxloc, vyloc), ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic)
+            (vxloc, vyloc), ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, γ[q, iel])
         γ[q, iel] += Δt * γdot
         θ[q, iel] += Δt * θdot
     end

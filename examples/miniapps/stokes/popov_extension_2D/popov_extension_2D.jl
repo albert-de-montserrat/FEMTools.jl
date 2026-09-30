@@ -62,8 +62,30 @@ function build_popov_extension_mesh(; Lx, Ly, max_area,
     return coords, el2n, boundary, attributes
 end
 
+function horizontal_cell_profile(coords, el2n, field, y)
+    x = Float64[]
+    values = Float64[]
+    for iel in axes(el2n, 2)
+        corners = @view el2n[1:3, iel]
+        ymin, ymax = extrema(coords[n][2] for n in corners)
+        ymin ≤ y ≤ ymax || continue
+        intersections = Float64[]
+        for (a, b) in ((1, 2), (2, 3), (3, 1))
+            pa, pb = coords[corners[a]], coords[corners[b]]
+            iszero(pb[2] - pa[2]) && continue
+            t = (y - pa[2]) / (pb[2] - pa[2])
+            0 ≤ t ≤ 1 && push!(intersections, pa[1] + t * (pb[1] - pa[1]))
+        end
+        length(intersections) ≥ 2 || continue
+        push!(x, (minimum(intersections) + maximum(intersections)) / 2)
+        push!(values, mean(@view field[:, iel]))
+    end
+    order = sortperm(x)
+    return (; x = x[order], values = values[order], y)
+end
+
 """
-    main(; max_area=3.0e-4, nsteps=2000, dt=nothing,
+    main(; max_area=3.0e-4, nsteps=2000, dt=nothing, section_y=0.25,
            write_output=true, output_dir, vtk_every=100) -> NamedTuple
 
 Small CPU restrained-extension driver for the Popov et al. 2-D tensile-cap
@@ -77,14 +99,15 @@ velocity and the projected trial pressure as point fields, plus cell fields
 `strain_rate_second_invariant`.
 
 `trial_pressure` is the nodal pressure field the solver carries; it is purely
-elastic under the current pressure residual. `corrected_pressure` is the
+elastic relative to the accepted corrected pressure of the previous step, which
+the driver carries at integration points as the continuity memory. `corrected_pressure` is the
 tensile-cap return map's pressure at integration points, the value the
 momentum balance uses. The two differ once the cap activates, and the returned
 `pressure_corrected` is the `nq × nels` integration-point array, not a nodal
 field.
 """
-function main(; max_area = 3.0e-4, nsteps = 2000,
-        dt = nothing, write_output = true,
+function main(; max_area = 1.0e-3, nsteps = 2000,
+        dt = nothing, section_y = 0.25, write_output = true,
         output_dir = joinpath(@__DIR__, "output"), vtk_every = 100,
         verbose = false)
     length_scale = 1.0                 # m
@@ -160,6 +183,8 @@ function main(; max_area = 3.0e-4, nsteps = 2000,
     # Fourth slot collects the cap return map's corrected pressure, the value
     # the momentum balance uses. It is not `dr.P`, which stays the trial field.
     P_corrected = zeros(Float64, nq, mesh.nels)
+    # Accepted corrected pressure of the previous step: the continuity memory.
+    P_old = zeros(Float64, nq, mesh.nels)
     τ_and_P = (τ..., P_corrected)
     write_output && mkpath(output_dir)
     el2nP_cpu = Array(mesh.el2nP)
@@ -180,11 +205,11 @@ function main(; max_area = 3.0e-4, nsteps = 2000,
         return values ./ max.(counts, 1)
     end
     for step in 1:nsteps
+        println("Starting step $step\n")
         times[step] = step * dt
-        copyto!(dr.P0, dr.P)
         copyto!(dr.T0, dr.T)
         result = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, dt, γP;
-            plastic, phases_v, phases_P, τ_old, workgroup,
+            plastic, phases_v, phases_P, τ_old, P_old, workgroup,
             # Pressure relaxation needs several PH updates; a short inner cap
             # keeps those updates frequent while retaining a generous total budget.
             ncheck = 25, iterMax = 500, total_iterMax = 50_000,
@@ -192,6 +217,8 @@ function main(; max_area = 3.0e-4, nsteps = 2000,
         result.converged || error("Popov extension step $step did not converge")
         update_stokes_current_stress!(dr, mesh, τ_and_P, dt;
             plastic, phases_v, τ_old, workgroup)
+        commit_stokes_plastic_history!(dr, mesh, dt; plastic, phases_v, τ_old, workgroup)
+        copyto!(P_old, P_corrected)
         copyto!(dr.τ_old.xx, dr.τ.xx)
         copyto!(dr.τ_old.yy, dr.τ.yy)
         copyto!(dr.τ_old.xy, dr.τ.xy)
@@ -218,14 +245,17 @@ function main(; max_area = 3.0e-4, nsteps = 2000,
                     strain_rate_second_invariant = post.εII),
                 title = "Popov 2-D restrained extension")
         end
-        println("\nFinished with time step $step\n")
+        verbose && println("\nFinished with time step $step\n")
         stats[step] = result
     end
+    cross_section = horizontal_cell_profile(
+        coords_cpu, el2n_v_cpu, Array(dr.plastic_history.θ), section_y,
+    )
     return (; mesh, phases = mesh_attributes, velocity = dr.v,
         pressure_trial = dr.P, pressure_corrected = P_corrected,
         volumetric_plastic_strain = dr.plastic_history.θ,
         deviatoric_plastic_strain = dr.plastic_history.γ,
-        times, stats, scales = (; length = length_scale, stress = stress_scale,
+        cross_section, times, stats, scales = (; length = length_scale, stress = stress_scale,
             time = time_scale), write_output)
 end
 

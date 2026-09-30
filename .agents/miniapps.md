@@ -67,6 +67,36 @@ These exercise FEMTools solver states and public solver entry points.
 
 ### Popov extension driver: seeded from the authors' release
 
+The driver requires JustRelax constitutive and
+physical-step parity without GeoParams before paper reproduction. In
+particular, corrected pressure must seed the next step, and stress/history
+rates must use the same softened material. The driver carries the accepted corrected
+IP pressure as `P_old`; measurements below that mention trial-pressure growth
+predate that handoff. A 5-step coarse run (`max_area = 3e-3`) converges with
+corrected pressure bounded near `pT` (min `-0.108` for `pT = -0.1`) while the
+trial field reaches `-0.41`.
+The result also returns the cellwise `χ` profile along a horizontal section;
+the default `section_y=0.25` matches Figure 6b's `A–A′` line.
+At five nondimensional time units, its peak changes by 0.31% between
+`max_area=3e-3` and `1.5e-3`, and by 0.004% when `Δt` is halved on the coarse
+mesh. These short runs validate the comparison workflow, not the 100 kyr result.
+The paper's embedded 375 dpi Figure 6b raster gives the `max_area=3e-4`
+reference profile approximately: far-field `χ=1.83e-2`, peak `χ=6.77e-2` at
+`x=0.501 m`, and excess-peak FWHM `4.18e-2 m`. Provisional tolerances are ±10% for
+baseline and peak and ±0.01 m for peak position and FWHM; these are
+raster-derived targets, not source data.
+A 100 kyr coarse run (`max_area=3e-3`, 428 cells, `dt=1`, 2000 steps) completes
+in 646.6 s and gives baseline `1.6849e-2`, peak `5.0180e-2` at `x=0.4886 m`,
+and FWHM `4.4841e-2 m`. Baseline and width meet the provisional tolerances;
+peak and position do not.
+At `max_area=1.5e-3` (784 cells, 737 s) the same run gives baseline `1.699e-2`
+(−7.1%), peak `5.848e-2` (−13.6%) at `x=0.5137 m`, and FWHM `7.25e-2 m`. The
+peak converges toward the reference; the band spans about four ~0.02 m cells, so
+position and FWHM remain resolution-bound. That FWHM is measured from the
+profile median, interpolated between cell centers.
+This `1.5e-3` run is the accepted Figure 6b comparison; the `3e-4` paper-mesh run is
+out of scope for cost, so no paper-resolution parity is claimed.
+
 The driver reproduces the setup of `MESH/tensile.py` and `CODE/tensile.py` in
 the archived GeoTech2D release (DOI 10.5281/zenodo.15496843), which is where
 the localization seed comes from. That seed is a semicircular weak inclusion on
