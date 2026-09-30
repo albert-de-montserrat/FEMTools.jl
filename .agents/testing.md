@@ -40,6 +40,10 @@ The suite covers:
   `pressure_source_integral` are checked against the shoelace area of the reservoir, against the
   sum of the assembled continuity residual at rest (`Σᵢ ∫ Nᵢ Q dΩ = ∫ Q dΩ`), and for exact
   cancellation of a dike band source by the sink;
+- the shared pressure residual checks legacy `ηb` storage, explicit finite-`K`
+  storage, and accepted quadrature-point `P_old`;
+- the forward solver checks a finite-`K` normalized source step (`ΔP = K Qq Δt`)
+  and the residual tests cover nonuniform area-rate integration and invalid support;
 - `test/test_state_snapshot.jl` guards the in-memory snapshot: every array field of `StokesDR` and
   `ThermalDiffusionDR` must be classified as state or scratch (a new field fails until it is), the
   round trip is exact and alias-free in both directions, structural changes throw, and a replay

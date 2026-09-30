@@ -232,6 +232,38 @@ end
     @test any(!iszero, Array(dr_power.v.y))
 end
 
+@testset "finite-K normalized source works through the forward solver" begin
+    (; backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    Δt = 1.0
+    nq = length(element_v.integration_points.ω)
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0, 1.0), (Inf, Inf), (0.0, 0.0);
+        ρ0 = (1.0, 1.0), K = (10.0, 10.0), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels),
+    )
+    γP = zeros(mesh.nnodesP)
+    FEMTools.assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, mesh.geometry.geo_P, element_v, element_P,
+        20.0, Δt, backend, workgroup; phases_v = phases,
+    )
+    fill!(γP, 10.0)
+    τ_old = ntuple(_ -> zeros(nq, mesh.nels), 3)
+    Qq = ones(mesh.nnodesP)
+    stats = solve_stokes_dyrel!(
+        dr, mesh, mesh.geometry, element_v, element_P,
+        phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
+        Γ, zeros(length(Γ)), zeros(length(Γ)), backend, workgroup;
+        ncheck = 1, ϵ_tol = 1.0e-8, rel_drop0 = 0.1,
+        iterMax = 1, total_iterMax = 1, max_ph_iterations = 1,
+        verbose = false, verbose_inner = false, vx_nodes, vy_nodes,
+        finite_K = true, Qq, Q2D = 1.0,
+    )
+    @test !stats.converged
+    @test Array(dr.Q) ≈ ones(mesh.nnodesP)
+    @test Array(dr.P) ≈ fill(10.0, mesh.nnodesP) atol = 1.0e-6
+end
+
 @testset "solve_stokes_dyrel! does not report convergence on an iteration cap" begin
     (; backend, workgroup, element_v, element_P, mesh, phases,
         Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()

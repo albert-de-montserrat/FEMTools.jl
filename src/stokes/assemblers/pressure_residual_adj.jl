@@ -21,6 +21,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         element_P::ReferenceElement{TP},
         phases,
         Δt, workgroup,
+        ; pressure_bulk = dr.ηb,
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
@@ -55,6 +56,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         Enzyme.Const(Val(NV)),
         Enzyme.Const(Val(NP)),
         Enzyme.Const(workgroup),
+        Enzyme.Const(pressure_bulk),
     )
     return nothing
 end

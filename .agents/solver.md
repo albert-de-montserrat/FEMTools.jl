@@ -190,7 +190,7 @@ The Stokes paths solve momentum and pressure/mass balance
 
 ```math
 \nabla\!\cdot v
-+\frac{1}{η_b}\frac{P-P^n}{Δt}
++\frac{1}{η_p}\frac{P-P^n}{Δt}
 -α\frac{T-T^n}{Δt}=0.
 ```
 
@@ -204,17 +204,21 @@ R^v_{e,i}=\int_{Ω_e}
 ```math
 R^p_{e,i}=\int_{Ω_e}N_i\left[
 -\nabla\!\cdot v
--\frac{P-P^n}{η_bΔt}
+-\frac{P-P^n}{η_pΔt}
 +α\frac{T-T^n}{Δt}
 +Q\right]dΩ.
 ```
 
-`StokesDR.Q` is a pressure-node array for a prescribed volumetric
-source/sink. Positive values denote volume production and negative values
-denote removal. It is initialized to zero and populated by the caller on the
-selected backend. The 2-D pressure residual and adjoint treat it as an input
-coefficient; the specialized 3-D cell-local pressure residual does not yet
-carry `Q`.
+`η_p = η_b` by default. The 2-D solver accepts `finite_K=true` to set
+`η_p = K`, with finite positive `K` validated independently of plasticity.
+`StokesDR.Q` is a pressure-node array for a prescribed volumetric source/sink;
+positive values denote production and negative values removal. For area-rate
+injection, `Qq` is a nonnegative pressure-node weight and `Q2D` is a signed
+plane-strain rate in m²/s; the shared residual normalizes it so `Σ Q dΩ = Q2D`.
+Direct `Qq` without `Q2D` remains an s⁻¹ source. A nodal `P_old` is
+interpolated, while an `nq × nels` matrix supplies accepted quadrature pressure.
+The finite-`K` mean is not removed. The specialized 3-D cell-local pressure
+residual does not yet carry `Q`.
 
 In 2-D, velocity and pressure live on the two fields of `MixedMesh` (commonly
 T7/P1-discontinuous). In the 3-D state path, velocity is continuous T11 or

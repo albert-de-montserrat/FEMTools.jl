@@ -204,6 +204,13 @@ the raw `geo_v`, `geo_P` arrays.
   power iteration on the symmetrically Jacobi-scaled velocity operator.
 - `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
   Jacobian instead of differentiating it at every convergence check.
+- `finite_K = false`: use the finite positive material bulk modulus `K` in the
+  pressure storage term, independently of plasticity. The default preserves
+  the historical `ηb` form.
+- `P_old = dr.P0`: accepted previous pressure; a nodal vector is interpolated,
+  while an `nq × nels` matrix supplies accepted quadrature-point pressure.
+- `Qq`, `Q2D`: optional nonnegative pressure-node source weights and signed
+  plane-strain area rate. The solver normalizes them so `∑ Q dΩ = Q2D`.
 
 # Return value
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
@@ -272,9 +279,27 @@ function solve_stokes_dyrel!(
         λmax_power_rtol = 1.0e-2,
         λmax_safety = 1.1,
         freeze_jacobian = plastic === nothing,
+        P_old = dr.P0,
+        finite_K = false,
+        Q2D = nothing,
+        Qq = nothing,
         _thermal = nothing,
     ) where {D}
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
+    finite_K isa Bool || throw(ArgumentError("finite_K must be a Bool"))
+    ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
+    P_old isa AbstractMatrix && size(P_old) != ip_size && throw(DimensionMismatch(
+        "integration-point P_old must be nq × nels = $ip_size, got $(size(P_old))"))
+    P_old isa AbstractArray || throw(ArgumentError("P_old must be an array"))
+    P_old isa AbstractVector && length(P_old) != length(dr.P) && throw(
+        DimensionMismatch("nodal P_old must match the pressure field shape"))
+    typeof(KA.get_backend(P_old)) === typeof(backend) ||
+        throw(ArgumentError("P_old and Stokes state must use the same backend"))
+    pressure_bulk = finite_K ? dr.K : dr.ηb
+    if finite_K
+        all(isfinite, dr.K) && all(>(zero(eltype(dr.K))), dr.K) ||
+            throw(ArgumentError("finite_K requires finite positive material K"))
+    end
     measure_λmax && D != 2 &&
         throw(ArgumentError("measure_λmax is currently supported only in plane strain"))
     # Non-associated plastic tangents are non-normal, so the power estimate is
@@ -301,10 +326,27 @@ function solve_stokes_dyrel!(
     Nq_P = quadrature_table(backend, shape_function_values(element_P, element_v.integration_points))
     ∂N∂ξ_v = quadrature_table(backend, shape_function_gradients(element_v))
 
+    if Qq !== nothing || Q2D !== nothing
+        Qq === nothing && throw(ArgumentError("Qq is required when Q2D is supplied"))
+        if Q2D === nothing
+            size(Qq) == size(dr.Q) || throw(DimensionMismatch("Qq must match the pressure field shape"))
+            typeof(KA.get_backend(Qq)) === typeof(backend) ||
+                throw(ArgumentError("Qq and Stokes state must use the same backend"))
+            _validate_finite_source!(Qq, backend, workgroup)
+            copyto!(dr.Q, Qq)
+        else
+            _normalize_pressure_source!(
+                dr.Q, Qq, Q2D, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
+                element_v, element_P, backend, workgroup,
+            )
+        end
+    end
+
     velocity_op = if measure_λmax
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup
+            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+            pressure_bulk,
         )
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -312,7 +354,7 @@ function solve_stokes_dyrel!(
             v, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
-            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
+            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
             backend, workgroup; τ_old, plastic
         )
         nothing
@@ -368,10 +410,10 @@ function solve_stokes_dyrel!(
 
         assemble_pressure_residual_kernel!(
             dr.RP,
-            v, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
+            v, dr.P, P_old, dr.T, dr.T0, dr.Q,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
-            valNV, valNP, workgroup,
+            valNV, valNP, workgroup, pressure_bulk,
         )
 
         assemble_momentum_residual_kernel!(
@@ -488,10 +530,10 @@ function solve_stokes_dyrel!(
 
             assemble_pressure_residual_kernel!(
                 dr.RP,
-                v, dr.P, dr.P0, dr.T, dr.T0, dr.Q,
+                v, dr.P, P_old, dr.T, dr.T0, dr.Q,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
-                valNV, valNP, workgroup,
+                valNV, valNP, workgroup, pressure_bulk,
             )
 
             @. dr.Pnum = γP * dr.RP / M_P
@@ -539,7 +581,8 @@ function solve_stokes_dyrel!(
                     velocity_op = if measure_λmax
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup
+                            phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
+                            pressure_bulk,
                         )
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -548,7 +591,7 @@ function solve_stokes_dyrel!(
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic
+                            pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic
                         )
                         nothing
                     end

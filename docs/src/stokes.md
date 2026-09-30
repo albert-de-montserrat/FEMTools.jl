@@ -13,13 +13,15 @@ continuity balances
 
 ```math
 \nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
-\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+\nabla \cdot v + \frac{1}{\eta_p}\frac{\partial P}{\partial t}
 - \alpha\frac{\partial T}{\partial t} = Q,
 ```
 
 `Q` is the backend-resident volumetric source/sink array on the Stokes
 pressure nodes. Positive values produce volume and negative values remove it;
-the default is zero.
+the default is zero. By default `ηp = ηb`; pass `finite_K=true` to use the
+finite positive material `K` instead, independently of plasticity. The
+finite-`K` pressure mean is not removed.
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
@@ -112,6 +114,18 @@ assemble_viscosity_weighted_pressure_scaling!(
 )
 solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 ```
+
+For area-rate injection, pass nonnegative pressure-node weights `Qq` and a
+signed plane-strain rate `Q2D` in m²/s:
+
+```julia
+solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP;
+                    finite_K=true, Qq, Q2D)
+```
+
+The solver normalizes the weights so `∑ Q dΩ = Q2D`. Omitting `Q2D` treats
+`Qq` as a direct s⁻¹ source. `P_old` defaults to `dr.P0`; use an `nq × nels`
+array when accepted pressure is stored at quadrature points.
 
 `mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The

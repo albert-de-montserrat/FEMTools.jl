@@ -273,6 +273,56 @@ end
     @test residual ≈ SA[2.0]
 end
 
+@testset "finite-K pressure storage keeps legacy default" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    v = (SA[0.0], SA[0.0], SA[0.0])
+    common = (v, SA[3.0], SA[0.0], SA[0.0], SA[0.0],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],))
+    @test FEMTools.integrate_PH_pressure_residual(common...) ≈ SA[0.0]
+    @test FEMTools.integrate_PH_pressure_residual(common...; K = (2.0,)) ≈ SA[-3.0]
+
+    P_old = FEMTools.IntegrationPointPressure(SA[1.0])
+    @test FEMTools.integrate_PH_pressure_residual(
+        v, SA[3.0], P_old, SA[0.0], SA[0.0],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],); K = (2.0,)
+    ) ≈ SA[-2.0]
+end
+
+@testset "pressure source normalizes discrete area rate" begin
+    element_v = ReferenceElement(QuadraticElement{2, 6, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (1, 1))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    Q = zeros(mesh.nnodesP)
+    Qq = collect(range(0.5, 1.5; length = mesh.nnodesP))
+    FEMTools._normalize_pressure_source!(
+        Q, Qq, 2.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    integrated = 0.0
+    for iel in 1:mesh.nels, q in eachindex(geo_P[iel])
+        integrated += dot(NqP[q], Q[mesh.DoFsP[:, iel]]) * geo_P[iel][q]
+    end
+    @test integrated ≈ 2.0
+    FEMTools._normalize_pressure_source!(
+        Q, zeros(mesh.nnodesP), 0.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    @test all(iszero, Q)
+    @test_throws ArgumentError FEMTools._normalize_pressure_source!(
+        Q, zeros(mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    @test_throws ArgumentError FEMTools._normalize_pressure_source!(
+        Q, fill(-1.0, mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+end
+
 @testset "DruckerPrager constructor precomputes phase parameters" begin
     for FP in (FP32, FP64)
         ϕ     = NTuple{2, FP}((π / 6, π / 4))

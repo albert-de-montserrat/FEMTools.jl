@@ -186,6 +186,13 @@ stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP)
 stats.converged || error("Stokes solve did not converge")
 ```
 
+The legacy pressure storage term uses `ηb`. Pass `finite_K=true` to select
+finite positive material `K` independently of plasticity; the finite-`K`
+pressure mean remains physical. `Qq` plus signed plane-strain `Q2D` (m²/s)
+supplies a nonnegative source weight normalized by the shared residual so
+`sum(Q dΩ) = Q2D`; omitting `Q2D` keeps `Qq` as a direct s⁻¹ source. `P_old`
+may be nodal or an `nq × nels` quadrature-pressure matrix.
+
 `stats.converged` is true only when the outer test `min(err_abs, err_rel) < ϵ_tol`
 passed, so a run that ends on `total_iterMax` is never converged; `stats.err` is
 the inner velocity residual in that case, so read `err_abs` and `err_rel`.

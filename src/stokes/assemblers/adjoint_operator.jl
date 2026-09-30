@@ -214,6 +214,7 @@ function assemble_velocity_operator(
         dr, mesh_stokes, geo_v, geo_P,
         element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
         phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup,
+        ; pressure_bulk = dr.ηb,
     ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
     Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
@@ -227,7 +228,7 @@ function assemble_velocity_operator(
         Ablocks, dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
         dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
         mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, phases_v, phases_P,
-        τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb,
+        τ_old, plastic, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk,
         Δt, γP, dr.M_P, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP);
         ndrange = mesh_stokes.nels,
     )
