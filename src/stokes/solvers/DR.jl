@@ -281,18 +281,10 @@ function solve_stokes_dyrel!(
 
     if Qq !== nothing || Q2D !== nothing
         Qq === nothing && throw(ArgumentError("Qq is required when Q2D is supplied"))
-        if Q2D === nothing
-            size(Qq) == size(dr.Q) || throw(DimensionMismatch("Qq must match the pressure field shape"))
-            typeof(KA.get_backend(Qq)) === typeof(backend) ||
-                throw(ArgumentError("Qq and Stokes state must use the same backend"))
-            _validate_finite_source!(Qq, backend, workgroup)
-            copyto!(dr.Q, Qq)
-        else
-            _normalize_pressure_source!(
-                dr.Q, Qq, Q2D, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
-                element_v, element_P, backend, workgroup,
-            )
-        end
+        _set_pressure_source!(
+            dr.Q, Qq, Q2D, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
+            element_v, element_P, backend, workgroup,
+        )
     end
 
     velocity_op = if measure_λmax

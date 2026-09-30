@@ -375,6 +375,12 @@ one; do not mix them. Consequences to hold onto:
   pressure quadrature so `Σ Q dΩ = Q2D`. `P_old` may be nodal or accepted
   `nq × nels` integration-point pressure. The finite-`K` mean is not removed,
   and the specialized 3-D cell-local pressure path does not carry `Q`.
+- The 2-D adjoint pressure residual is `ResλP = (∂Rv/∂P)ᵀλv` alone in every
+  operator path (`:blocks`, `:matrix_free`, `:enzyme`); the storage self-coupling
+  `(∂RP/∂P)ᵀλP = -M/(ηₚΔt)·λP` is omitted. The adjoint is therefore exact only in
+  the `ηₚ = Inf` incompressible gauge, and the choice of `ηb` versus finite `K`
+  never reaches it. Miniapps that run the adjoint with `ηb = K` rely on this
+  approximation.
 - The elastic bulk modulus must be finite, so the cap cannot be used in the
   `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
   needs a finite `K` first.

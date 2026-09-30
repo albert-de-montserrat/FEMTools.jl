@@ -321,22 +321,6 @@ function assemble_momentum_residual_matrices_atomix!(
     )
 end
 
-function assemble_momentum_residual_matrices_atomix!(
-    R::NTuple{2}, v::NTuple{2}, P, T, Pnum,
-    el2n_v, el2nP, geo_v, nels, element_v, element_P,
-    phases, τ_old, plastic, τ_store,
-    η, G, α, ρ0, K, g, Tref, Δt, backend, workgroup;
-    γ_history = nothing,
-)
-    return assemble_momentum_residual_matrices_atomix!(
-        R[1], R[2], v[1], v[2], P, T, Pnum,
-        el2n_v, el2nP, geo_v, nels, element_v, element_P,
-        phases, τ_old, plastic, τ_store,
-        η, G, α, ρ0, K, g, Tref, Δt, backend, workgroup;
-        γ_history,
-    )
-end
-
 """
     assemble_momentum_residual_kernel!(Rv_x, Rv_y, vx, vy, P, T, Pnum,
                                        el2n_v, el2nP, geo_v, nels, phases,

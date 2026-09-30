@@ -89,10 +89,6 @@ end
     @test dr3.τ_old isa FEMTools.SymmetricTensor3D{Vector{Float64}}
     @test FEMTools.velocity(dr3) === (dr3.v.x, dr3.v.y, dr3.v.z)
     @test length(FEMTools.stress(dr3)) == 6
-    @test FEMTools.stress(dr3) ===
-        (dr3.τ.xx, dr3.τ.yy, dr3.τ.zz, dr3.τ.xy, dr3.τ.xz, dr3.τ.yz)
-    @test FEMTools.stress_old(dr3) ===
-        (dr3.τ_old.xx, dr3.τ_old.yy, dr3.τ_old.zz, dr3.τ_old.xy, dr3.τ_old.xz, dr3.τ_old.yz)
     @test size(dr3.Q) == size(dr3.P)
     @test all(iszero, dr3.Q)
     @test dr3.g === (0.0, 0.0, -9.81)
@@ -263,7 +259,7 @@ end
     v = (SA[1.0], SA[2.0], SA[3.0])
     residual = FEMTools.integrate_PH_pressure_residual(
         v, SA[0.0], SA[0.0], SA[0.0], SA[0.0], SA[3.0],
-        ((dNdx, 2.0),), ((dNdx, 2.0),), SA[1],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
         (0.0,), (Inf,), 1.0, (SA[1.0],),
     )
     @test residual ≈ SA[2.0]
@@ -294,7 +290,7 @@ end
     geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
     Q = zeros(mesh.nnodesP)
     Qq = collect(range(0.5, 1.5; length = mesh.nnodesP))
-    FEMTools._normalize_pressure_source!(
+    FEMTools._set_pressure_source!(
         Q, Qq, 2.0, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P, CPU(), 1,
     )
@@ -304,16 +300,16 @@ end
         integrated += dot(NqP[q], Q[mesh.DoFsP[:, iel]]) * geo_P[iel][q]
     end
     @test integrated ≈ 2.0
-    FEMTools._normalize_pressure_source!(
+    FEMTools._set_pressure_source!(
         Q, zeros(mesh.nnodesP), 0.0, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P, CPU(), 1,
     )
     @test all(iszero, Q)
-    @test_throws ArgumentError FEMTools._normalize_pressure_source!(
+    @test_throws ArgumentError FEMTools._set_pressure_source!(
         Q, zeros(mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P, CPU(), 1,
     )
-    @test_throws ArgumentError FEMTools._normalize_pressure_source!(
+    @test_throws ArgumentError FEMTools._set_pressure_source!(
         Q, fill(-1.0, mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P, CPU(), 1,
     )

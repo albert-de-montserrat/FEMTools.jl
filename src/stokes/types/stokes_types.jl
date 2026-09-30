@@ -296,20 +296,8 @@ Return the independent deviatoric-stress component arrays of a Stokes solver
 state, in Voigt order and excluding the invariant slot, or `nothing` for a state
 built with `stress_size = :none`.
 """
-stress(dr::StokesDR{<:Any, 2}) = Tuple(dr.τ)
-stress(dr::StokesDR{<:Any, 3}) =
-    (dr.τ.xx, dr.τ.yy, dr.τ.zz, dr.τ.xy, dr.τ.xz, dr.τ.yz)
+stress(dr::StokesDR) = Tuple(dr.τ)
 stress(::StokesDR{<:Any, <:Any, <:Any, Nothing}) = nothing
-
-"""
-    stress_old(dr::StokesDR) -> NTuple
-
-Return previous-time stress component arrays in the same assembler order as
-[`stress`](@ref).
-"""
-stress_old(dr::StokesDR{<:Any, 2}) = Tuple(dr.τ_old)
-stress_old(dr::StokesDR{<:Any, 3}) =
-    (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.zz, dr.τ_old.xy, dr.τ_old.xz, dr.τ_old.yz)
 
 """
     pressure(dr) -> P
