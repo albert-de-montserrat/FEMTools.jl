@@ -25,7 +25,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
     RP, vx, vy, P = dr.RP, dr.v.x, dr.v.y, dr.P
-    P0, T, T0 = dr.P0, dr.T, dr.T0
+    P0, T, T0, Q = dr.P0, dr.T, dr.T0, dr.Q
     el2n_v, el2nP = mesh_stokes.el2n, mesh_stokes.DoFsP
     nels = mesh_stokes.nels
 
@@ -40,6 +40,7 @@ function assemble_pressure_residual_matrices_atomix_adj!(
         Enzyme.Const(P0),
         Enzyme.Const(T),
         Enzyme.Const(T0),
+        Enzyme.Const(Q),
         Enzyme.Const(el2n_v),
         Enzyme.Const(el2nP),
         Enzyme.Const(geo_v),

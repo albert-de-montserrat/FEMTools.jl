@@ -367,6 +367,20 @@ one; do not mix them. Consequences to hold onto:
   omit `K` retain that behavior. The cap return map is dispatched by the
   experimental 2-D constitutive path. Per-IP history, stress, corrected
   pressure, and rates share the same softened local result.
+- The forward 2-D solver now exposes `finite_K` explicitly. When `true`, the
+  pressure storage coefficient is the finite positive material `K`, regardless
+  of whether plasticity is enabled; when `false`, the legacy `ηb` coefficient
+  remains in use. `Qq` without `Q2D` is copied as a signed local source, while
+  nonnegative `Qq` weights with signed `Q2D` are normalized by the discrete
+  pressure quadrature so `Σ Q dΩ = Q2D`. `P_old` may be nodal or accepted
+  `nq × nels` integration-point pressure. The finite-`K` mean is not removed,
+  and the specialized 3-D cell-local pressure path does not carry `Q`.
+- The 2-D adjoint pressure residual is `ResλP = (∂Rv/∂P)ᵀλv` alone in every
+  operator path (`:blocks`, `:matrix_free`, `:enzyme`); the storage self-coupling
+  `(∂RP/∂P)ᵀλP = -M/(ηₚΔt)·λP` is omitted. The adjoint is therefore exact only in
+  the `ηₚ = Inf` incompressible gauge, and the choice of `ηb` versus finite `K`
+  never reaches it. Miniapps that run the adjoint with `ηb = K` rely on this
+  approximation.
 - The elastic bulk modulus must be finite, so the cap cannot be used in the
   `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
   needs a finite `K` first.

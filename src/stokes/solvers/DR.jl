@@ -156,6 +156,11 @@ arrays.
   power iteration on the symmetrically Jacobi-scaled velocity operator.
 - `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
   Jacobian instead of differentiating it at every convergence check.
+- `finite_K = plastic isa DruckerPragerCap`: use finite positive material `K`
+  in pressure storage independently of plastic dispatch. `false` preserves
+  the legacy `ηb` choice.
+- `Qq`, `Q2D`: optional nonnegative pressure-node source weights and signed
+  plane-strain area rate. The solver normalizes them so `∑ Q dΩ = Q2D`.
 - `P_old = dr.P0`: accepted pressure of the previous step in the continuity
   rate `(P - P_old)/(KΔt)`. A nodal vector is interpolated; an `nq × nels`
   matrix is read directly at the velocity quadrature points. With
@@ -235,11 +240,23 @@ function solve_stokes_dyrel!(
     λmax_safety = 1.1,
     freeze_jacobian = plastic === nothing,
     P_old = dr.P0,
+    finite_K = plastic isa DruckerPragerCap,
+    Q2D = nothing,
+    Qq = nothing,
     _thermal = nothing,
 )
     ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
     P_old isa AbstractMatrix && size(P_old) != ip_size && throw(DimensionMismatch(
         "integration-point P_old must be nq × nels = $ip_size, got $(size(P_old))"))
+    finite_K isa Bool || throw(ArgumentError("finite_K must be a Bool"))
+    P_old isa AbstractArray || throw(ArgumentError("P_old must be an array"))
+    P_old isa AbstractVector && length(P_old) != length(dr.P) && throw(
+        DimensionMismatch("nodal P_old must match the pressure field shape"))
+    typeof(KA.get_backend(P_old)) === typeof(backend) ||
+        throw(ArgumentError("P_old and Stokes state must use the same backend"))
+    pressure_bulk = finite_K ? dr.K : dr.ηb
+    finite_K && (all(isfinite, dr.K) && all(>(zero(eltype(dr.K))), dr.K) ||
+        throw(ArgumentError("finite_K requires finite positive material K")))
     verbose, verbose_inner = Bool(verbose), Bool(verbose_inner)
     # Non-associated plastic tangents are non-normal, so the power estimate is
     # less predictive than for the symmetric viscous operator.
@@ -262,18 +279,26 @@ function solve_stokes_dyrel!(
     Nq_P = quadrature_table(backend, shape_function_values(element_P, element_v.integration_points))
     ∂N∂ξ_v = quadrature_table(backend, shape_function_gradients(element_v))
 
+    if Qq !== nothing || Q2D !== nothing
+        Qq === nothing && throw(ArgumentError("Qq is required when Q2D is supplied"))
+        _set_pressure_source!(
+            dr.Q, Qq, Q2D, mesh_stokes.DoFsP, geo_P, mesh_stokes.nels,
+            element_v, element_P, backend, workgroup,
+        )
+    end
+
     velocity_op = if measure_λmax
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-            γ_history = _plastic_history_gamma(dr.plastic_history))
+            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk)
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
             dr.v.x, dr.v.y, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
-            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, dr.ηb, Δt, γP, M_P,
+            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
             backend, workgroup; τ_old, plastic,
             γ_history = _plastic_history_gamma(dr.plastic_history))
         nothing
@@ -335,7 +360,7 @@ function solve_stokes_dyrel!(
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
             valNV, valNP, workgroup,
-            _pressure_bulk_modulus(plastic, dr.K),
+            pressure_bulk; Q = dr.Q,
         )
 
         assemble_momentum_residual_kernel!(
@@ -449,7 +474,7 @@ function solve_stokes_dyrel!(
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                 phases_P, dr.α, dr.ηb, Δt, Nq_P, ∂N∂ξ_v,
                 valNV, valNP, workgroup,
-                _pressure_bulk_modulus(plastic, dr.K),
+                pressure_bulk; Q = dr.Q,
             )
 
             @. dr.Pnum = γP * dr.RP / M_P
@@ -506,7 +531,7 @@ function solve_stokes_dyrel!(
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
                             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-                            γ_history = _plastic_history_gamma(dr.plastic_history))
+                            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk)
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
                             dr.∂Rv∂v.x, dr.PC_v.x, dr.∂Rv∂v.y, dr.PC_v.y,
@@ -514,7 +539,7 @@ function solve_stokes_dyrel!(
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
-                            dr.ηb, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
+                            pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
                             γ_history = _plastic_history_gamma(dr.plastic_history))
                         nothing
                     end

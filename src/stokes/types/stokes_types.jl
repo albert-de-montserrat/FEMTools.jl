@@ -119,6 +119,7 @@ array.
 | `∂P∂τ`    | Pseudo-transient rate for pressure         |
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
+| `Q`        | Volumetric source/sink in continuity      |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
 | `M_P`      | Lumped pressure mass (`∫ N_i dΩ`)         |
@@ -129,8 +130,8 @@ array.
 Properties are supplied together through [`StokesMaterial`](@ref).
 
 # Global scalar fields
-`G` is the shear modulus. `g::NTuple{2,FP}` (gravity vector, default `(0,0)`), `Tref::FP` (reference
-temperature for the linearised EOS, default 0).
+`G` is the shear modulus. `g::NTuple{ndim,FP}` is the gravity vector (default
+`(0,0)`), and `Tref::FP` is the equation-of-state reference temperature.
 
 # Solver parameters
 `CFL_v`, `CFL_P`, `c_fact`, `ϵ` (convergence tolerance).
@@ -158,7 +159,9 @@ arrays `dr.plastic_history.γ` and `dr.plastic_history.θ` for the cap's future
 history update; it is independent of stress storage and defaults to `nothing`.
 `nnodes_v` and `nnodes_P` likewise accept a dimension tuple instead of a node
 count, which is how a cell-local pressure layout such as `(4, nels)` is
-expressed. `T` and `T0` should be filled via `copyto!` before calling the solver.
+expressed. `T`, `T0`, and `Q` should be filled via `copyto!` before calling the
+solver. `Q` is the volumetric source (positive) or sink (negative) in the
+continuity equation.
 The time step `Δt` is passed directly to the assembler rather than stored here.
 
 `:none` suits a purely viscous model, where the shear modulus is infinite and the
@@ -194,6 +197,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     ∂P∂τ::_TP
     T::_TP
     T0::_TP
+    Q::_TP
     # pressure-node residual and DR work arrays
     RP::_TP
     RP0::_TP
@@ -268,7 +272,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             newiv(),                                  # phases_v
             newτfield(), newτfield(),                 # τ, τ_old
             newhistory(),                              # optional cap history
-            newP(), newP(), newP(), newP(), newP(),   # P, P0, ∂P∂τ, T, T0
+            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _G, _g, _Tref,
