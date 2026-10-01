@@ -31,13 +31,40 @@ Meshing spans `src/elements/` and `src/mesh/`:
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`, and
-  `circle_boundary_nodes`. They are `public`, not exported, and cover tag
-  renumbering, triangle orientation, T6-to-T7 promotion, and coordinate-based
-  boundary selection.
-- Gmsh and Triangulate are external meshers in the examples environment. The shared
-  `examples/gmsh_meshing.jl` helper drives the utilities above to convert its
-  triangle tags/order to FEMTools connectivity. Reading mesh files is still
-  outside the package API; only the post-import conversion is package code.
+  `circle_boundary_nodes`, plus the `triangulate_t7_mesh` stub whose method the
+  Triangulate extension supplies. They are `public`, not exported, and cover tag
+  renumbering, triangle orientation, T6-to-T7 promotion, coordinate-based
+  boundary selection, and 2-D mesh generation.
+- Two external meshers are in use. Gmsh covers both 2-D triangles and 3-D
+  hexahedra from the examples environment; the shared `examples/gmsh_meshing.jl`
+  helper drives the utilities above to convert its triangle tags and ordering to
+  FEMTools connectivity. Reading mesh files is still outside the package API;
+  only the post-import conversion is package code.
+- Triangulate covers 2-D triangles only and is now package code behind an
+  extension. `Triangulate` is a weak dependency, `ext/FEMToolsTriangulateExt.jl`
+  supplies the single method `triangulate_t7_mesh(points; max_area, min_angle,
+  segments, regions)`, and the stub in `src/mesh/utils.jl` carries the
+  docstring and raises a message naming the missing `using Triangulate`. The
+  core package therefore still installs no mesher and no `Triangle_jll`.
+  `min_angle` is rejected at 34 degrees and above, because beyond that Triangle
+  can refine forever instead of failing.
+- `segments` and `regions` cover the conforming-interface case. Without them
+  `points` is a simple polygon and the closing segment is added automatically;
+  with them the caller describes any planar straight-line graph and names the
+  subdomains it encloses, and the returned per-element attributes say which
+  subdomain each element is in. Two Triangle details matter. A numeric `a` flag
+  overrides per-region area constraints, so with regions the flag carries no
+  number and every region is defaulted to `max_area` instead. And a per-region
+  constraint does not leave its neighbour untouched, because quality refinement
+  propagates across the shared interface.
+- Either mesher feeds the same conversion path. Triangle's `o2` output lists
+  the midside node opposite each corner, so rows 4-6 need the remap
+  `(6, 4, 5)` before `add_t7_bubbles!`. The extension does that remap, then
+  `add_t7_bubbles!` and `orient_triangle_elements!`, and returns `Float64`
+  coordinates with `Int32` T7 connectivity. Boundary selection stays with the
+  caller, which knows the domain shape. Do not hand-roll centroid insertion,
+  the midside remap, or boundary selection in a new script; `ice_bridge_2D` and
+  `popov_extension_2D` both call the extension.
 
 Primary code:
 
@@ -50,11 +77,12 @@ Primary code:
 - `src/mesh/sparsity.jl`
 - `src/mesh/coloring.jl`
 - `src/mesh/utils.jl`
+- `ext/FEMToolsTriangulateExt.jl`
 
 Primary checks: `test/test_elements.jl`,
 `test/test_shape_function_evaluations.jl`, `test/test_mesh.jl`,
 `test/test_mixed_mesh.jl`, `test/test_mesh_producer_api.jl`, and
-`test/test_mesh_utils.jl`.
+`test/test_mesh_utils.jl`, and `test/test_triangulate_mesh_ext.jl`.
 `examples/gmsh_meshing.jl` defines mesh builders only; the example scripts
 exercise it, and `test/test_volcano_mesh.jl` checks the conformity of its 2-D
 sill mesh. `examples/triangulate_meshing.jl` does the same with Triangulate.jl
@@ -109,7 +137,10 @@ Priorities:
 
 Do not add a mandatory mesher dependency to the core package merely to remove
 a few lines from examples. Prefer a small import boundary or optional extension
-once repeated real use justifies it.
+once repeated real use justifies it. Triangulate reached that bar with two
+miniapps duplicating the same PSLG-to-T7 conversion, so it entered as a weak
+dependency and an extension, not as a core dependency. Gmsh has not: it is
+still only a test and examples dependency.
 
 ## Acceptance checks
 

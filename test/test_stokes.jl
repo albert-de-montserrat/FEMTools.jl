@@ -3,6 +3,8 @@ using Test
 using DomainSets
 using DomainSets: ×
 using FEMTools
+using LinearAlgebra: I, dot, tr
+using ForwardDiff
 using FEMTools: assemble_momentum_residual_matrices_atomix!,
     assemble_viscosity_weighted_pressure_scaling!
 using ForwardDiff
@@ -115,35 +117,39 @@ end
     # the 2-D mixed-mesh solvers reject a 3-D state instead of dropping z
     @test !hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr3), MixedMesh,
-              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+        Tuple{
+            typeof(dr3), MixedMesh,
+            DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any,
+        },
     )
     @test hasmethod(
         solve_stokes_dyrel!,
-        Tuple{typeof(dr2), MixedMesh,
-              DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any},
+        Tuple{
+            typeof(dr2), MixedMesh,
+            DirichletBoundaryCondition, DirichletBoundaryCondition, Any, Any,
+        },
     )
 end
 
 @testset "StokesDR constructor — defaults" begin
     for FP in (FP32, FP64)
-        η  = NTuple{2, FP}((1.0, 10.0))
+        η = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
-        α  = NTuple{2, FP}((0.0,  0.0))
+        α = NTuple{2, FP}((0.0, 0.0))
         dr = StokesDR(CPU(), 10, 12, η, ηb, α)
 
-        @test dr.ρ0   == NTuple{2, FP}((1.0, 1.0))
-        @test dr.K    == NTuple{2, FP}((Inf, Inf))
-        @test dr.G    == NTuple{2, FP}((Inf, Inf))
-        @test dr.g    == (FP(0), FP(0))
+        @test dr.ρ0 == NTuple{2, FP}((1.0, 1.0))
+        @test dr.K == NTuple{2, FP}((Inf, Inf))
+        @test dr.G == NTuple{2, FP}((Inf, Inf))
+        @test dr.g == (FP(0), FP(0))
         @test dr.Tref == FP(0)
-        @test dr.η    == η
-        @test dr.ηb   == ηb
-        @test dr.α    == α
+        @test dr.η == η
+        @test dr.ηb == ηb
+        @test dr.α == α
         @test eltype(dr.v.x) == FP
-        @test eltype(dr.P)  == FP
+        @test eltype(dr.P) == FP
         @test length(dr.v.x) == 10
-        @test length(dr.P)  == 12
+        @test length(dr.P) == 12
         @test length(dr.M_P) == 12
         @test length(dr.Pnum) == 12
         @test all(==(1), Array(dr.phases_v))
@@ -177,9 +183,9 @@ end
 
 @testset "StokesDR constructor — integration-point stress storage" begin
     for FP in (FP32, FP64)
-        η  = NTuple{2, FP}((1.0, 10.0))
+        η = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
-        α  = NTuple{2, FP}((0.0,  0.0))
+        α = NTuple{2, FP}((0.0, 0.0))
         dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
 
         @test size(dr.τ.xx) == (3, 4)
@@ -191,6 +197,17 @@ end
         @test all(iszero, Array(dr.τ.xx))
         @test all(iszero, Array(dr.τ_old.xx))
         @test size(dr.τ.II) == size(dr.τ_old.II) == (0, 0)
+        @test dr.plastic_history === nothing
+
+        drh = StokesDR(
+            CPU(), 10, 12, η, ηb, α;
+            plastic_history_size = (3, 4)
+        )
+        @test size(drh.plastic_history.γ) == (3, 4)
+        @test size(drh.plastic_history.θ) == (3, 4)
+        @test eltype(drh.plastic_history.γ) == FP
+        @test all(iszero, Array(drh.plastic_history.γ))
+        @test all(iszero, Array(drh.plastic_history.θ))
 
         dr3 = StokesDR(CPU(), 10, 12, η, ηb, α; g = (FP(0), FP(0), FP(0)), stress_size = (3, 4))
         @test size(dr3.τ.xy) == (3, 4)
@@ -200,18 +217,18 @@ end
 
 @testset "StokesDR constructor — explicit ρ0 / K / g / Tref" begin
     for FP in (FP32, FP64)
-        η    = NTuple{2, FP}((1.0,    10.0))
-        ηb   = NTuple{2, FP}((1.0,    10.0))
-        α    = NTuple{2, FP}((1e-5,   2e-5))
-        ρ0   = NTuple{2, FP}((2700.0, 3000.0))
-        K    = NTuple{2, FP}((1e10,   2e10))
-        g    = (FP(0), FP(-9.81))
+        η = NTuple{2, FP}((1.0, 10.0))
+        ηb = NTuple{2, FP}((1.0, 10.0))
+        α = NTuple{2, FP}((1.0e-5, 2.0e-5))
+        ρ0 = NTuple{2, FP}((2700.0, 3000.0))
+        K = NTuple{2, FP}((1.0e10, 2.0e10))
+        g = (FP(0), FP(-9.81))
         Tref = FP(1600)
-        dr   = StokesDR(CPU(), 10, 12, η, ηb, α; ρ0, K, g, Tref)
+        dr = StokesDR(CPU(), 10, 12, η, ηb, α; ρ0, K, g, Tref)
 
-        @test dr.ρ0   == ρ0
-        @test dr.K    == K
-        @test dr.g    == g
+        @test dr.ρ0 == ρ0
+        @test dr.K == K
+        @test dr.g == g
         @test dr.Tref == Tref
     end
 end
@@ -242,11 +259,13 @@ end
     Nv = SA[1.0]
     v = (SA[1.0], SA[2.0], SA[3.0])
     plastic = DruckerPrager((0.0,), (0.0,), (0.0,), (1.0,), (1.0,))
-    momentum(vx) = first(FEMTools.integrate_momentum_residual(
-        (vx, v[2], v[3]), SA[0.0], nothing, SA[0.0], ((dNdx, 1.0),), SA[1],
-        (1.0,), (Inf,), (0.0,), (1.0,), (Inf,), (0.0, 0.0, 0.0), 0.0, 1.0,
-        (Nv,), (Nv,), ntuple(_ -> 0.0, 6), plastic,
-    ))
+    momentum(vx) = first(
+        FEMTools.integrate_momentum_residual(
+            (vx, v[2], v[3]), SA[0.0], nothing, SA[0.0], ((dNdx, 1.0),), SA[1],
+            (1.0,), (Inf,), (0.0,), (1.0,), (Inf,), (0.0, 0.0, 0.0), 0.0, 1.0,
+            (Nv,), (Nv,), ntuple(_ -> 0.0, 6), plastic,
+        )
+    )
 
     @test all(isfinite, ForwardDiff.jacobian(momentum, v[1]))
 end
@@ -267,19 +286,71 @@ end
     v = (SA[1.0], SA[2.0], SA[3.0])
     residual = FEMTools.integrate_PH_pressure_residual(
         v, SA[0.0], SA[0.0], SA[0.0], SA[0.0], SA[3.0],
-        ((dNdx, 2.0),), ((dNdx, 2.0),), SA[1],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
         (0.0,), (Inf,), 1.0, (SA[1.0],),
     )
     @test residual ≈ SA[2.0]
 end
 
+@testset "finite-K pressure storage keeps legacy default" begin
+    dNdx = @SMatrix [0.2 0.3 0.4]
+    v = (SA[0.0], SA[0.0], SA[0.0])
+    common = (
+        v, SA[3.0], SA[0.0], SA[0.0], SA[0.0],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],),
+    )
+    @test FEMTools.integrate_PH_pressure_residual(common...) ≈ SA[0.0]
+    @test FEMTools.integrate_PH_pressure_residual(common...; K = (2.0,)) ≈ SA[-3.0]
+
+    P_old = FEMTools.IntegrationPointPressure(SA[1.0])
+    @test FEMTools.integrate_PH_pressure_residual(
+        v, SA[3.0], P_old, SA[0.0], SA[0.0],
+        _stokes_geo_el(dNdx, 2.0), _stokes_geo_weights(2.0), SA[1],
+        (0.0,), (Inf,), 1.0, (SA[1.0],); K = (2.0,)
+    ) ≈ SA[-2.0]
+end
+
+@testset "pressure source normalizes discrete area rate" begin
+    element_v = ReferenceElement(QuadraticElement{2, 6, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (1, 1))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    Q = zeros(mesh.nnodesP)
+    Qq = collect(range(0.5, 1.5; length = mesh.nnodesP))
+    FEMTools._set_pressure_source!(
+        Q, Qq, 2.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    integrated = 0.0
+    for iel in 1:mesh.nels, q in eachindex(geo_P[iel])
+        integrated += dot(NqP[q], Q[mesh.DoFsP[:, iel]]) * geo_P[iel][q]
+    end
+    @test integrated ≈ 2.0
+    FEMTools._set_pressure_source!(
+        Q, zeros(mesh.nnodesP), 0.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    @test all(iszero, Q)
+    @test_throws ArgumentError FEMTools._set_pressure_source!(
+        Q, zeros(mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+    @test_throws ArgumentError FEMTools._set_pressure_source!(
+        Q, fill(-1.0, mesh.nnodesP), 1.0, mesh.DoFsP, geo_P, mesh.nels,
+        element_v, element_P, CPU(), 1,
+    )
+end
+
 @testset "DruckerPrager constructor precomputes phase parameters" begin
     for FP in (FP32, FP64)
-        ϕ     = NTuple{2, FP}((π / 6, π / 4))
-        Ψ     = NTuple{2, FP}((π / 12, π / 8))
-        C     = NTuple{2, FP}((10.0, 20.0))
+        ϕ = NTuple{2, FP}((π / 6, π / 4))
+        Ψ = NTuple{2, FP}((π / 12, π / 8))
+        C = NTuple{2, FP}((10.0, 20.0))
         η_reg = NTuple{2, FP}((1.0e18, 2.0e18))
-        Kb    = NTuple{2, FP}((1.0e10, 2.0e10))
+        Kb = NTuple{2, FP}((1.0e10, 2.0e10))
 
         plastic = DruckerPrager(ϕ, Ψ, C, η_reg, Kb)
 
@@ -345,6 +416,197 @@ end
     @test τxy ≈ τxy_trial - 2 * λ * ∂Q∂τxy
 end
 
+@testset "DruckerPragerCap updates integration-point plastic history" begin
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
+    nq = length(element_v.integration_points.ω)
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
+        K = (100.0,), G = (Inf,), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+    )
+    dr.v.x .= [10.0 * c[1] for c in mesh.coords]
+    dr.v.y .= 0.0
+    dr.P .= -20.0
+    cap = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,), (1.0,), (100.0,)
+    )
+    τ = (dr.τ.xx, dr.τ.yy, dr.τ.xy)
+
+    # Stress refreshes are reads: they never advance history.
+    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
+    @test all(iszero, dr.plastic_history.γ)
+    @test all(iszero, dr.plastic_history.θ)
+
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = cap)
+    γ1 = copy(dr.plastic_history.γ)
+    θ1 = copy(dr.plastic_history.θ)
+    @test minimum(γ1) > 0
+    @test minimum(θ1) > 0   # tension opens
+    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
+    @test dr.plastic_history.γ == γ1
+
+    # A second commit uses the softened cohesion from the first, and the stress
+    # read sees the same softening.
+    soft = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,), (1.0,), (100.0,);
+        C_min = (6.0,), H_C = (-1.0e3,)
+    )
+    τ_hard = copy(dr.τ.xx)
+    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = soft)
+    @test dr.τ.xx != τ_hard
+    dr.plastic_history.γ .= 0
+    dr.plastic_history.θ .= 0
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = soft)
+    @test dr.plastic_history.γ ≈ γ1
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = soft)
+    Δγ_soft = dr.plastic_history.γ .- γ1
+    @test all(Δγ_soft .> γ1)   # weaker rock flows faster
+end
+
+@testset "DruckerPragerCap carries corrected pressure across steps" begin
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
+    nq = length(element_v.integration_points.ω)
+    Δt, K, ε̇ = 1.0, 4.0, 0.1
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (K,), (0.0,);
+        K = (K,), G = (1.0,), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+    )
+    cap = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(5.0),), (1.0,), (-0.5,), (0.1,), (K,);
+        C_min = (0.5,), H_C = (-1.0,)
+    )
+    # Homogeneous uniaxial extension imposed on every boundary node.
+    coords = Array(mesh.coords)
+    nodes = Int32.(collect(mesh_v.Γnodes))
+    bc_vx = DirichletBoundaryCondition(nothing, nodes, [ε̇ * coords[n][1] for n in nodes])
+    bc_vy = DirichletBoundaryCondition(nothing, nodes, zeros(length(nodes)))
+    dr.v.x .= [ε̇ * c[1] for c in coords]
+    dr.v.y .= 0
+    γP = zeros(mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 20.0, Δt; workgroup = 1)
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
+    P_corrected = zeros(nq, mesh.nels)
+    P_old = zeros(nq, mesh.nels)
+
+    # Material-point recurrence: trial pressure starts from the accepted
+    # corrected pressure, and θ opens by the pressure correction over K.
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    v_mp = (SA[ε̇, 0.0, 0.0], SA[0.0, 0.0, 0.0])
+    τ_mp, P_mp, γ_mp, θ_mp = (0.0, 0.0, 0.0), 0.0, 0.0, 0.0
+    for step in 1:3
+        result = solve_stokes_dyrel!(
+            dr, mesh, bc_vx, bc_vy, Δt, γP;
+            plastic = cap, τ_old, P_old, workgroup = 1, verbose = false, ϵ_tol = 1.0e-10
+        )
+        @test result.converged
+        update_stokes_current_stress!(
+            dr, mesh, mesh.geometry, (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected), Δt;
+            plastic = cap, τ_old, workgroup = 1
+        )
+        commit_stokes_plastic_history!(dr, mesh, Δt; plastic = cap, τ_old, workgroup = 1)
+        copyto!(P_old, P_corrected)
+        foreach(copyto!, τ_old, (dr.τ.xx, dr.τ.yy, dr.τ.xy))
+
+        P_trial = P_mp - K * Δt * ε̇
+        args = (v_mp, dNdx, Nv, (1.0,), (1.0,), SA[1, 1, 1], Δt, τ_mp, P_trial, cap, γ_mp)
+        γdot, _ = FEMTools.plastic_history_rates(args...)
+        τ_mp, P_mp = FEMTools.deviatoric_stress_and_pressure(args...)
+        γ_mp += Δt * γdot
+        θ_mp += (P_mp - P_trial) / K
+
+        @test all(isapprox.(P_corrected, P_mp; atol = 1.0e-8))
+        @test all(isapprox.(dr.τ.xx, τ_mp[1]; atol = 1.0e-8))
+        @test all(isapprox.(dr.plastic_history.γ, γ_mp; atol = 1.0e-8))
+        @test all(isapprox.(dr.plastic_history.θ, θ_mp; atol = 1.0e-8))
+    end
+    # Elastic first step, then two tensile steps: the corrected pressure stays
+    # at the cap while the trial pressure does not.
+    @test θ_mp > 0
+    @test -0.51 < P_mp < -0.5
+    @test all(dr.P .< -0.9)
+
+    @test_throws DimensionMismatch solve_stokes_dyrel!(
+        dr, mesh, bc_vx, bc_vy, Δt, γP;
+        plastic = cap, τ_old, P_old = zeros(nq + 1, mesh.nels), verbose = false
+    )
+end
+
+@testset "DruckerPragerCap is radial Drucker-Prager in the shear domain" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    vx = SA[2.0e6, 0.0, 0.0]
+    vy = SA[0.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    τ_old = (0.0, 0.0, 0.0)
+    ϕ = deg2rad(30)
+    Ψ = deg2rad(20)
+    C = 2.0e6
+    η_reg = 3.0
+    Kb = 2.0e2
+    Δt = 0.1
+
+    cap = DruckerPragerCap((ϕ,), (Ψ,), (C,), (-1.0e6,), (η_reg,), (Kb,))
+    τ_trial = FEMTools.deviatoric_stress(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, Δt, τ_old,
+    )
+    τ_cap, P_cap = FEMTools.deviatoric_stress_and_pressure(
+        (vx, vy), dNdx, Nv, (1.0,), (Inf,), phase_loc, Δt, τ_old, 0.0, cap, nothing,
+    )
+    s = FEMTools.second_invariant(τ_trial)
+    λ = (s - C * cos(ϕ)) / (1.0 + η_reg + Kb * Δt * sin(ϕ) * sin(Ψ))
+    @test all(τ_cap .≈ τ_trial .* ((s - λ) / s))
+    @test P_cap ≈ Kb * Δt * sin(Ψ) * λ
+end
+
+@testset "DruckerPragerCap stress tangent differentiates through the cap" begin
+    dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    Nv = SA[1.0, 0.0, 0.0]
+    phase_loc = SA[1, 1, 1]
+    cap = DruckerPragerCap(
+        (deg2rad(30),), (deg2rad(10),), (10.0,), (-5.0,), (1.0,), (100.0,)
+    )
+    u0 = SVector(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    stress(u) = FEMTools.deviatoric_stress(
+        (SVector(u[1], u[2], u[3]), SVector(u[4], u[5], u[6])),
+        dNdx, Nv, (1.0,), (Inf,), phase_loc, 0.1, (0.0, 0.0, 0.0), -20.0, cap,
+    )
+    J = ForwardDiff.jacobian(u -> SVector(stress(u)...), u0)
+    h = 1.0e-5
+    J_fd = hcat(
+        ntuple(
+            j -> begin
+                ej = SVector{6}(ntuple(i -> i == j ? h : 0.0, Val(6)))
+                (SVector(stress(u0 + ej)...) - SVector(stress(u0 - ej)...)) / (2h)
+            end, Val(6)
+        )...
+    )
+    @test J ≈ J_fd rtol = 1.0e-4 atol = 1.0e-6
+
+    # Non-associated flow has no symmetric constitutive tangent. Use work-
+    # conjugate components (εxx, εyy, εxy) and (σxx, σyy, 2τxy).
+    total_stress(ε) = begin
+        v = (SVector(ε[1], ε[3], 0.0), SVector(ε[3], ε[2], 0.0))
+        τ, P = FEMTools.deviatoric_stress_and_pressure(
+            v, dNdx, Nv, (1.0,), (Inf,), phase_loc, 0.1,
+            (0.0, 0.0, 0.0), -20.0, cap, nothing,
+        )
+        return SVector(τ[1] - P, τ[2] - P, 2τ[3])
+    end
+    J_nonassociated = ForwardDiff.jacobian(total_stress, SVector(10.0, 0.0, 0.0))
+    @test maximum(abs, J_nonassociated - transpose(J_nonassociated)) > 0.1
+end
+
 @testset "Dilation stiffens the plastic return for a stiff bulk modulus" begin
     dNdx = @SMatrix [1.0 0.0; 0.0 1.0; 0.0 0.0]
     Nv = SA[1.0, 0.0, 0.0]
@@ -379,16 +641,16 @@ end
 # ---------------------------------------------------------------------------
 
 let
-    Nv_c    = SA[1/3, 1/3, 1/3]
-    NqP_c   = SA[1/3, 1/3, 1/3]
-    dNdx_0  = @SMatrix zeros(3, 2)
-    geo_el  = _stokes_geo_el(dNdx_0, 0.5)   # dΩ = 0.5 (reference triangle area)
-    Nq      = (Nv_c,)
-    NqP_v   = (NqP_c,)
+    Nv_c = SA[1 / 3, 1 / 3, 1 / 3]
+    NqP_c = SA[1 / 3, 1 / 3, 1 / 3]
+    dNdx_0 = @SMatrix zeros(3, 2)
+    geo_el = _stokes_geo_el(dNdx_0, 0.5)   # dΩ = 0.5 (reference triangle area)
+    Nq = (Nv_c,)
+    NqP_v = (NqP_c,)
 
-    vx0       = SA[0.0, 0.0, 0.0]
-    vy0       = SA[0.0, 0.0, 0.0]
-    P0_loc    = SA[0.0, 0.0, 0.0]
+    vx0 = SA[0.0, 0.0, 0.0]
+    vy0 = SA[0.0, 0.0, 0.0]
+    P0_loc = SA[0.0, 0.0, 0.0]
     phase_loc = SA[1, 1, 1]             # single homogeneous phase
 
     @testset "pressure rates interpolate nodal increments" begin
@@ -404,9 +666,31 @@ let
                 SA[1, 1, 1], α, ηb, Δt, (Nv,),
             )
             rate = -sum(Nv .* (P - P0)) / (ηb[1] * Δt) +
-                   α[1] * sum(Nv .* (T - T0)) / Δt
+                α[1] * sum(Nv .* (T - T0)) / Δt
             @test residual ≈ Nv * rate * dΩ
         end
+    end
+
+    @testset "finite elastic bulk modulus replaces bulk viscosity" begin
+        Nv = SA[0.2, 0.3, 0.5]
+        P, P0 = SA[3.0, 5.0, 8.0], SA[1.0, 2.0, 3.0]
+        T = T0 = SA[0.0, 0.0, 0.0]
+        residual = FEMTools.integrate_PH_pressure_residual(
+            (zero(P), zero(P)), P, P0, T, T0,
+            _stokes_geo_el(@SMatrix(zeros(3, 2)), 0.5),
+            _stokes_geo_weights(0.5), SA[1, 1, 1], (0.0,), (4.0,), 2.0, (Nv,);
+            K = (8.0,),
+        )
+        expected = Nv * (-dot(Nv, P - P0) / (8.0 * 2.0) * 0.5)
+        @test residual ≈ expected
+
+        legacy = FEMTools.integrate_PH_pressure_residual(
+            (zero(P), zero(P)), P, P0, T, T0,
+            _stokes_geo_el(@SMatrix(zeros(3, 2)), 0.5),
+            _stokes_geo_weights(0.5), SA[1, 1, 1], (0.0,), (4.0,), 2.0, (Nv,),
+        )
+        @test legacy ≈ Nv * (-dot(Nv, P - P0) / (4.0 * 2.0) * 0.5)
+        @test !isapprox(residual, legacy)
     end
 
     @testset "integrate_momentum_residual — zero gravity vanishes" begin
@@ -437,8 +721,8 @@ let
             (vx0, vy0), P0_loc, nothing, T_loc,
             geo_el, phase_loc, (1.0,), (Inf,), (0.0,), (2.0,), (Inf,), (5.0, 0.0), 0.0, 1.0, Nq, NqP_v,
         )
-        @test Rv_x ≈ SA[-5/3, -5/3, -5/3]   # −Nv·(2·5·0.5) = −5/3
-        @test Rv_y ≈ SA[0.0,  0.0,  0.0]
+        @test Rv_x ≈ SA[-5 / 3, -5 / 3, -5 / 3]   # −Nv·(2·5·0.5) = −5/3
+        @test Rv_y ≈ SA[0.0, 0.0, 0.0]
     end
 
     @testset "integrate_momentum_residual — thermal EOS reduces density" begin
@@ -475,17 +759,17 @@ let
             geo_el, ph2, (1.0, 1.0), (Inf, Inf), (0.0, 0.0), (1.0, 3.0), (Inf, Inf), (0.0, -6.0), 0.0, 1.0, Nq, NqP_v,
         )
         @test Rv_x ≈ SA[0.0, 0.0, 0.0]
-        @test Rv_y ≈ SA[5/3, 5/3, 5/3]
+        @test Rv_y ≈ SA[5 / 3, 5 / 3, 5 / 3]
     end
 
     @testset "integrate_momentum_residual — Pnum correction shifts residual" begin
         # With nonzero ∂N∂x the pressure term is nonzero; Pnum adds to it.
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]   # reference-triangle gradients
-        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
-        T_loc   = SA[0.0, 0.0, 0.0]
-        P_loc   = SA[1.0, 1.0, 1.0]
-        Pn_loc  = SA[0.5, 0.5, 0.5]
-        args    = (
+        geo_nz = _stokes_geo_el(dNdx_nz, 1.0)
+        T_loc = SA[0.0, 0.0, 0.0]
+        P_loc = SA[1.0, 1.0, 1.0]
+        Pn_loc = SA[0.5, 0.5, 0.5]
+        args = (
             (vx0, vy0), P_loc, nothing, T_loc,
             geo_nz, phase_loc, (1.0,), (Inf,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 1.0, Nq, NqP_v,
         )
@@ -507,24 +791,24 @@ let
 
     @testset "integrate_momentum_x/y_residual — inline pressure correction matches explicit Pnum" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
-        vx_loc  = SA[0.2, -0.1, 0.4]
-        vy_loc  = SA[-0.3, 0.5, 0.1]
-        P_loc   = SA[0.7, 0.2, -0.1]
-        P0loc   = SA[0.1, -0.2, 0.3]
-        T_loc   = SA[2.0, 3.0, 1.0]
-        T0loc   = SA[1.5, 2.0, 0.5]
-        MP_loc  = SA[1.0, 2.0, 4.0]
-        γ_eff   = SA[0.5, 0.75, 1.0]
-        η       = (2.0,)
-        G       = (Inf,)
-        α       = (0.05,)
-        ρ0      = (3.0,)
-        K       = (Inf,)
-        ηb      = (4.0,)
-        g       = (1.0, -2.0)
-        Tref    = 0.0
-        Δt      = 0.25
+        geo_nz = _stokes_geo_el(dNdx_nz, 1.0)
+        vx_loc = SA[0.2, -0.1, 0.4]
+        vy_loc = SA[-0.3, 0.5, 0.1]
+        P_loc = SA[0.7, 0.2, -0.1]
+        P0loc = SA[0.1, -0.2, 0.3]
+        T_loc = SA[2.0, 3.0, 1.0]
+        T0loc = SA[1.5, 2.0, 0.5]
+        MP_loc = SA[1.0, 2.0, 4.0]
+        γ_eff = SA[0.5, 0.75, 1.0]
+        η = (2.0,)
+        G = (Inf,)
+        α = (0.05,)
+        ρ0 = (3.0,)
+        K = (Inf,)
+        ηb = (4.0,)
+        g = (1.0, -2.0)
+        Tref = 0.0
+        Δt = 0.25
 
         Pnum_loc = FEMTools.pressure_scale(
             γ_eff,
@@ -555,24 +839,24 @@ let
     @testset "x/y component functions are consistent with combined residual" begin
         # Arbitrary parameters; combined output must equal per-component outputs.
         T_loc = SA[2.0, 3.0, 1.0]
-        args  = (
+        args = (
             (vx0, vy0), P0_loc, nothing, T_loc,
             geo_el, phase_loc, (1.0,), (Inf,), (0.05,), (3.0,), (Inf,), (3.0, -7.0), 5.0, 1.0, Nq, NqP_v,
         )
         Rv_x, Rv_y = FEMTools.integrate_momentum_residual(args...)
-        Rx_only    = FEMTools.integrate_momentum_x_residual(args...)
-        Ry_only    = FEMTools.integrate_momentum_y_residual(args...)
+        Rx_only = FEMTools.integrate_momentum_x_residual(args...)
+        Ry_only = FEMTools.integrate_momentum_y_residual(args...)
         @test Rv_x ≈ Rx_only
         @test Rv_y ≈ Ry_only
     end
 
     @testset "x/y component functions match combined finite-G stress" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
-        vx_loc  = SA[0.2, -0.1, 0.4]
-        vy_loc  = SA[-0.3, 0.5, 0.1]
-        P_loc   = SA[0.7, 0.2, -0.1]
-        T_loc   = SA[0.0, 0.0, 0.0]
+        geo_nz = _stokes_geo_el(dNdx_nz, 1.0)
+        vx_loc = SA[0.2, -0.1, 0.4]
+        vy_loc = SA[-0.3, 0.5, 0.1]
+        P_loc = SA[0.7, 0.2, -0.1]
+        T_loc = SA[0.0, 0.0, 0.0]
         args = (
             (vx_loc, vy_loc), P_loc, nothing, T_loc,
             geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, Nq, NqP_v,
@@ -584,9 +868,9 @@ let
 
     @testset "integrate_momentum_residual — finite-G old stress contributes" begin
         dNdx_nz = @SMatrix [-1.0 -1.0; 1.0 0.0; 0.0 1.0]
-        geo_nz  = _stokes_geo_el(dNdx_nz, 1.0)
-        T_loc   = SA[0.0, 0.0, 0.0]
-        τ_old   = (SA[0.3, 0.3, 0.3], SA[-0.1, -0.1, -0.1], SA[0.2, 0.2, 0.2])
+        geo_nz = _stokes_geo_el(dNdx_nz, 1.0)
+        T_loc = SA[0.0, 0.0, 0.0]
+        τ_old = (SA[0.3, 0.3, 0.3], SA[-0.1, -0.1, -0.1], SA[0.2, 0.2, 0.2])
         R0_x, R0_y = FEMTools.integrate_momentum_residual(
             (vx0, vy0), P0_loc, nothing, T_loc,
             geo_nz, phase_loc, (2.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, 0.0), 0.0, 0.25, Nq, NqP_v,
@@ -606,7 +890,7 @@ let
             (vx0, vy0), P0_loc, nothing, T_loc,
             geo_el, phase_loc, (1.0,), (Inf,), (0.0,), (2.0,), (Inf,), (4.0, 0.0), 0.0, 1.0, Nq, NqP_v,
         )
-        @test Rv_x ≈ SA[-4/3, -4/3, -4/3]
+        @test Rv_x ≈ SA[-4 / 3, -4 / 3, -4 / 3]
         # y-component: g=(0,−6) → Rv_y = [⅓,⅓,⅓]·(2·6·0.5) = [2,2,2]
         Rv_y = FEMTools.integrate_momentum_y_residual(
             (vx0, vy0), P0_loc, nothing, T_loc,
@@ -621,15 +905,15 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "assemble_viscosity_weighted_pressure_scaling! — homogeneous viscosity" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
-    mesh      = MixedMesh(mesh_v, element_P)
-    geo_P     = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
-    M_P      = zeros(FP, mesh.nnodesP)
-    γP       = zeros(FP, mesh.nnodesP)
+    M_P = zeros(FP, mesh.nnodesP)
+    γP = zeros(FP, mesh.nnodesP)
     phases_v = ones(Int, mesh.nnodes)
 
     assemble_viscosity_weighted_pressure_scaling!(
@@ -640,44 +924,44 @@ end
         CPU(), 1,
     )
 
-    @test sum(M_P) ≈ one(FP) atol = 1e-12
+    @test sum(M_P) ≈ one(FP) atol = 1.0e-12
     @test all(>(0), M_P)
-    @test γP ≈ fill(6.0, mesh.nnodesP) atol = 1e-12
+    @test γP ≈ fill(6.0, mesh.nnodesP) atol = 1.0e-12
 end
 
 @testset "assemble_viscosity_weighted_pressure_scaling! — finite bulk modulus" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
-    mesh      = MixedMesh(mesh_v, element_P)
-    geo_P     = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
-    γP       = zeros(FP, mesh.nnodesP)
-    dr       = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (6.0, 99.0), (1.0, 1.0), (0.0, 0.0))
+    γP = zeros(FP, mesh.nnodesP)
+    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (6.0, 99.0), (1.0, 1.0), (0.0, 0.0))
 
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
         2.0, 0.5, CPU(), 1; K = (4.0, 99.0),
     )
 
-    @test sum(dr.M_P) ≈ one(FP) atol = 1e-12
+    @test sum(dr.M_P) ≈ one(FP) atol = 1.0e-12
     @test all(>(0), dr.M_P)
-    @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1e-12
+    @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1.0e-12
 end
 
 @testset "assemble_momentum_residual_matrices_atomix! — zero velocity + zero gravity" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
-    mesh      = MixedMesh(mesh_v, element_P)
-    geo_v     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_v = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
-    vx     = zeros(FP, mesh.nnodes);  vy  = zeros(FP, mesh.nnodes)
-    P      = zeros(FP, mesh.nnodesP); T   = zeros(FP, mesh.nnodesP)
+    vx = zeros(FP, mesh.nnodes);  vy = zeros(FP, mesh.nnodes)
+    P = zeros(FP, mesh.nnodesP); T = zeros(FP, mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
-    Rv_x   = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
+    Rv_x = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
 
     # Pass DoFsP (sequential 1..3*nels) — the assembler uses it to index into P and T
     assemble_momentum_residual_matrices_atomix!(
@@ -689,25 +973,25 @@ end
         CPU(), 1,
     )
 
-    @test Rv_x ≈ zeros(FP, mesh.nnodes) atol = 1e-14
-    @test Rv_y ≈ zeros(FP, mesh.nnodes) atol = 1e-14
+    @test Rv_x ≈ zeros(FP, mesh.nnodes) atol = 1.0e-14
+    @test Rv_y ≈ zeros(FP, mesh.nnodes) atol = 1.0e-14
 end
 
 @testset "assemble_momentum_residual_matrices_atomix! — quadrature old stress" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
-    mesh      = MixedMesh(mesh_v, element_P)
-    geo_v     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
-    nq        = length(element_v.integration_points.ω)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_v = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    nq = length(element_v.integration_points.ω)
 
-    vx     = zeros(FP, mesh.nnodes);  vy  = zeros(FP, mesh.nnodes)
-    P      = zeros(FP, mesh.nnodesP); T   = zeros(FP, mesh.nnodesP)
+    vx = zeros(FP, mesh.nnodes);  vy = zeros(FP, mesh.nnodes)
+    P = zeros(FP, mesh.nnodesP); T = zeros(FP, mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
-    τ_old  = (fill(FP(0.2), nq, mesh.nels), fill(FP(-0.1), nq, mesh.nels), fill(FP(0.15), nq, mesh.nels))
-    τ_new  = (zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels))
-    Rv_x   = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
+    τ_old = (fill(FP(0.2), nq, mesh.nels), fill(FP(-0.1), nq, mesh.nels), fill(FP(0.15), nq, mesh.nels))
+    τ_new = (zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels), zeros(FP, nq, mesh.nels))
+    Rv_x = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
 
     assemble_momentum_residual_matrices_atomix!(
         Rv_x, Rv_y, vx, vy, P, T, nothing,
@@ -726,18 +1010,18 @@ end
 end
 
 @testset "assemble_momentum_residual_matrices_atomix! — gravity body force" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (2, 2))
-    mesh      = MixedMesh(mesh_v, element_P)
-    geo_v     = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P)
+    geo_v = _stokes_geo(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
     ρ0 = 1.0; gy = -9.81
-    vx     = zeros(FP, mesh.nnodes);  vy  = zeros(FP, mesh.nnodes)
-    P      = zeros(FP, mesh.nnodesP); T   = zeros(FP, mesh.nnodesP)
+    vx = zeros(FP, mesh.nnodes);  vy = zeros(FP, mesh.nnodes)
+    P = zeros(FP, mesh.nnodesP); T = zeros(FP, mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
-    Rv_x   = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
+    Rv_x = zeros(FP, mesh.nnodes);  Rv_y = zeros(FP, mesh.nnodes)
 
     assemble_momentum_residual_matrices_atomix!(
         Rv_x, Rv_y, vx, vy, P, T, nothing,
@@ -749,26 +1033,26 @@ end
     )
 
     # Horizontal component must be zero (no horizontal gravity)
-    @test Rv_x ≈ zeros(FP, mesh.nnodes) atol = 1e-14
+    @test Rv_x ≈ zeros(FP, mesh.nnodes) atol = 1.0e-14
     # All vertical residuals carry upward body force (−ρ·g_y > 0 since g_y < 0)
     @test all(Rv_y .>= 0)
     # ∑ᵢ Rv_y[i] = −ρ·g_y·Area (partition of unity: ∑ᵢ Nᵢ = 1 over the domain)
-    @test sum(Rv_y) ≈ -ρ0 * gy * 1.0   atol = 1e-10
+    @test sum(Rv_y) ≈ -ρ0 * gy * 1.0   atol = 1.0e-10
 end
 
 @testset "backend-resident shape-function tables" begin
-    FP        = Float64
+    FP = Float64
     element_v = ReferenceElement(QuadraticElement{2, 6, FP})
     element_P = ReferenceElement(LinearElement{2, 3, FP})
-    mesh_v    = Mesh(CPU(), (0.0..1.0) × (0.0..1.0), element_v, (3, 3))
-    mesh      = MixedMesh(mesh_v, element_P; workgroup = 1)
+    mesh_v = Mesh(CPU(), (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (3, 3))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
     (; geo_v, geo_P) = mesh.geometry
-    nq        = length(element_v.integration_points.ω)
+    nq = length(element_v.integration_points.ω)
 
-    Nq_tuple  = shape_function_values(element_v)
+    Nq_tuple = shape_function_values(element_v)
     NqP_tuple = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_tuple = shape_function_gradients(element_v)
-    Nq  = quadrature_table(CPU(), Nq_tuple)
+    Nq = quadrature_table(CPU(), Nq_tuple)
     NqP = quadrature_table(CPU(), NqP_tuple)
     ∂N∂ξ = quadrature_table(CPU(), ∂N∂ξ_tuple)
 
@@ -779,8 +1063,8 @@ end
 
     vx = collect(range(FP(0), FP(1), mesh.nnodes))
     vy = collect(range(FP(1), FP(2), mesh.nnodes))
-    P  = collect(range(FP(-1), FP(1), mesh.nnodesP))
-    T  = zeros(FP, mesh.nnodesP)
+    P = collect(range(FP(-1), FP(1), mesh.nnodesP))
+    T = zeros(FP, mesh.nnodesP)
     phases_v = ones(Int, mesh.nnodes)
     phases_P = ones(Int, mesh.nnodesP)
     # Integration-point stress history: the branch whose local `SVector` length
@@ -790,7 +1074,7 @@ end
     α, ρ0, K = (0.0, 0.0), (1.0, 1.0), (Inf, Inf)
 
     Rv_x = zeros(FP, mesh.nnodes); Rv_y = zeros(FP, mesh.nnodes)
-    RP   = zeros(FP, mesh.nnodesP)
+    RP = zeros(FP, mesh.nnodesP)
 
     momentum(nv, np, gv) = FEMTools.assemble_momentum_residual_kernel!(
         Rv_x, Rv_y, vx, vy, P, T, nothing, mesh.el2n, mesh.DoFsP, geo_v, mesh.nels,
@@ -798,7 +1082,7 @@ end
         nv, np, gv, Val(6), Val(3), 1,
     )
     pressure(np, gv) = FEMTools.assemble_pressure_residual_kernel!(
-        RP, vx, vy, P, zero(P), T, T, mesh.el2n, mesh.DoFsP, geo_v, geo_P, mesh.nels,
+        RP, vx, vy, P, zero(P), T, T, nothing, mesh.el2n, mesh.DoFsP, geo_v, geo_P, mesh.nels,
         phases_P, α, (Inf, Inf), FP(1), np, gv, Val(6), Val(3), 1,
     )
 
@@ -850,9 +1134,11 @@ function _jacobian_fixture(; single_element = false)
     T = zeros(mesh.nnodesP)
     phases = ones(Int, mesh.nnodes)
 
-    return (; backend, wg, element_v, element_P, mesh, vx, vy, P, T, phases,
+    return (;
+        backend, wg, element_v, element_P, mesh, vx, vy, P, T, phases,
         η = (2.0,), G = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (Inf,),
-        g = (0.0, 0.0), Tref = 0.0, Δt = 1.0)
+        g = (0.0, 0.0), Tref = 0.0, Δt = 1.0,
+    )
 end
 
 function _momentum_residual(f, vx, vy)

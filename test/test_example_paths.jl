@@ -63,6 +63,7 @@ _example_has_parse_error(x) = x isa Expr &&
         "examples/benchmarks/stokes/first_threshold/first_threshold.jl",
         "examples/miniapps/stokes/vevp/stokes_2D_pure_shear_triangle_adj.jl",
         "examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl",
+        "examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl",
         "examples/miniapps/stokes/solvi2D/Solvi2D_triangle.jl",
         "examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl",
         "examples/miniapps/stokes/sinking_block_3D/sinking_block_3D.jl",

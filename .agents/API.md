@@ -107,12 +107,22 @@ explicitly. Vector components use `.x`, `.y`, and `.z`; stress components
 include the invariant II. Tuple uses Voigt order; stress(dr) and stress_old(dr)
 use assembler order (xx, yy, zz, xy, xz, yz) in 3-D. StokesDR owns v, Rv,
 PC_v, τ, and τ_old containers; its spatial dimension follows the length of g.
+Passing `plastic_history_size=(nq, nels)` additionally allocates a zeroed
+`CapPlasticHistory` in `dr.plastic_history`, holding integration-point `γ` and
+`θ` arrays for the tensile-cap path; the default remains `nothing`.
+`update_stokes_current_stress!` only reads that history, and
+`commit_stokes_plastic_history!` advances it once per accepted step.
+`CapPlasticHistory` is distinct from the caller-owned
+`IntegrationPointPlasticHistory` (`λ`, `εpl`, `D`) used by the damage path.
+The `DruckerPragerCap` constructor takes radians, rejects nonfinite material
+parameters and nonpositive `Kb`, and requires positive cap radius at both
+`C` and `C_min`. The new scalar `cap_invariants` evaluator is internal API.
 
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
   `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
-  `StokesAdjointWorkspace`, `DruckerPrager`.
+  `StokesAdjointWorkspace`, `DruckerPrager`, `DruckerPragerCap`.
 - Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
 - Stokes entry points: `solve_stokes_dyrel!`,
   `solve_coupled_dyrel!`,
@@ -149,12 +159,25 @@ The module currently marks the following categories `public`:
 - external-mesh ingestion helpers in `src/mesh/utils.jl`:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`,
-  `circle_boundary_nodes`;
+  `circle_boundary_nodes`, and the `triangulate_t7_mesh` stub whose method the
+  Triangulate extension supplies;
 - result accessors: `velocity`, `stress`, `stress_old`, `pressure`, `temperature`.
 
 These names are callable as `FEMTools.name` but are deliberately not imported
 by `using FEMTools`. Before adding another public low-level method, confirm that
 an extension, maintained miniapp, or downstream package genuinely needs it.
+
+The 2-D pressure residual assembler uses the solver state's finite elastic bulk
+modulus `K` for the experimental `DruckerPragerCap` path. Its element-level integration
+helper retains the legacy bulk-viscosity behavior when `K` is omitted, and uses
+`K` when supplied for the trial-pressure formulation.
+
+The forward solver makes that choice explicit with `finite_K`: `true` selects
+finite positive `K` independently of plastic-model dispatch, while `false`
+keeps the legacy `ηb` storage coefficient. `Qq` can be supplied directly as a
+signed local source, or paired with nonnegative weights and signed `Q2D` to
+enforce the discrete area-rate identity `Σ Q dΩ = Q2D`. `P_old` accepts either
+a nodal pressure vector or accepted `nq × nels` integration-point pressure.
 
 ## Canonical user flows
 
@@ -211,7 +234,8 @@ charging the default block path for unused arrays.
 - Convert once with `Array(field)` for host-only plotting/output logic.
 - Caller-owned previous-time fields (`T0`, `P0`, old stress) must be updated at
   the physical-time boundary documented by the solver; a solver must not guess
-  that lifecycle.
+  that lifecycle. Under `DruckerPragerCap` the pressure memory is the accepted
+  corrected IP pressure, passed as `solve_stokes_dyrel!(...; P_old)`.
 - Returned convergence statistics describe the final in-place state. Never use
   a state as converged without checking the documented return/exception path.
 - Connectivity, geometry, phases, fields, BC indices/values, and scratch arrays
@@ -240,6 +264,13 @@ those behaviors hide costly scientific errors.
 `TA(::CPU)` maps to `Array`. Optional package extensions in `ext/` add mappings
 for CUDA, AMDGPU, and Metal backends when those packages are loaded. Core code
 must remain loadable without any GPU dependency.
+
+Extensions also carry optional non-backend capability. `FEMToolsTriangulateExt`
+adds the only method of `triangulate_t7_mesh`, so 2-D mesh generation is
+available without making Triangulate a core dependency. A capability added this
+way needs three pieces: a stub in `src/` that owns the docstring and raises an
+error naming the package to load, the method in `ext/`, and the weak dependency
+listed in both `[weakdeps]` and `[extras]` so the test target can exercise it.
 
 Backend-generic API additions should:
 

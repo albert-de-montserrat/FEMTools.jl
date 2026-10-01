@@ -23,5 +23,6 @@ FEMTools = {path = ".."}
 
 [compat]
 Enzyme = "0.13.199"
+ExactFieldSolutions = "0.2.3"
 JLD2 = "0.5, 0.6"
 TimerOutputs = "1.1.0"

@@ -27,6 +27,23 @@ with a Maxwell viscoelastic deviatoric stress that carries stress history
 `ρ0`, `K`) and the body-force parameters are grouped in a typed
 `StokesMaterial`.
 
+The pressure storage coefficient is written as `ηp` below. In the legacy
+formulation `ηp = ηb`; with finite elastic compressibility it is `ηp = K`:
+
+```math
+R^P_i = \int_{\Omega_e} N_i\left[
+    -\nabla\cdot v
+    -\frac{P-P^n}{\eta_p\,\Delta t}
+    +\alpha\frac{T-T^n}{\Delta t}
+    +Q
+\right]d\Omega.
+```
+
+This distinction matters: `ηb` is the bulk-viscosity parameter used by the
+historical pressure formulation, while `K` is the elastic bulk modulus in the
+equation of state and in the finite-compressibility pressure storage term.
+`finite_K` selects the latter explicitly; plastic-model dispatch does not.
+
 The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
 mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
@@ -47,12 +64,19 @@ StokesDR
 Stokes3DWorkspace
 StokesAdjointWorkspace
 DruckerPrager
+DruckerPragerCap
 pressure_mass
 FEMTools.velocity
 FEMTools.stress
 FEMTools.pressure
 FEMTools.temperature
 ```
+
+`DruckerPragerCap` takes angles in radians and finite numeric material
+parameters. Its bulk modulus `Kb` must be positive, and both the initial
+cohesion `C` and softening floor `C_min` must satisfy
+`C*cos(ϕ) + sin(ϕ)*pT > 0` (substitute `C_min` for `C` at the floor).
+This keeps the tensile-cap radius positive throughout cohesion softening.
 
 The velocity and pressure fields live on separate node sets described by a
 [`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
@@ -116,8 +140,107 @@ solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
 `mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
 expanded positional methods remain available for custom and adjoint workflows.
+For the experimental Drucker--Prager cap, add
+`plastic_history_size=(nq, mesh.nels)` to allocate per-integration-point `γ`
+and `θ` history arrays; they are zeroed and are not allocated by default.
+Call `commit_stokes_plastic_history!` once per converged step, before
+overwriting `τ_old`, to accumulate that step into those arrays. Residual
+iterations and `update_stokes_current_stress!` never update history.
+`dr.P` is the trial pressure under the cap, so do not copy it into `dr.P0`:
+record the corrected pressure with a four-matrix store
+`(τxx, τyy, τxy, P_corrected)` in `update_stokes_current_stress!`, copy it into
+an `nq × nels` array after the commit, and pass that array as
+`solve_stokes_dyrel!(...; P_old)` on the next step.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
+
+### Finite compressibility, pressure history, and sources
+
+These three options control the pressure part of the two-dimensional solver:
+
+| Keyword | Meaning | Default |
+|:--|:--|:--|
+| `finite_K` | Use the material `dr.K` in `(P - P_old)/(K*Δt)` | `plastic isa DruckerPragerCap` |
+| `P_old` | Accepted pressure from the previous physical step | `dr.P0` |
+| `Qq` | Direct source field, or nonnegative spatial weights with `Q2D` | `nothing` |
+| `Q2D` | Total signed plane-strain source rate | `nothing` |
+
+`finite_K` is an independent physical choice. It can be set to `true` for a
+viscous or Drucker--Prager solve, and to `false` for a cap solve when the
+legacy `ηb` storage is wanted. When it is `true`, every phase's `K` must be
+finite and strictly positive. When it is `false`, the pressure residual uses
+`ηb`, preserving the pre-existing behavior. The default enables finite `K`
+only for `DruckerPragerCap` because that model's trial pressure is corrected
+by its cap return map.
+
+`P_old` is the pressure accepted at the end of the previous physical step,
+not merely the last nonlinear iterate:
+
+- a pressure-node vector is interpolated to each pressure quadrature point;
+- an `nq × nels` matrix is read directly at the quadrature points;
+- the matrix form is the required form when the accepted pressure includes
+  the Drucker--Prager cap correction.
+
+For a cap solve, `dr.P` is the current trial pressure. Do not use it as the
+next `P_old` without first applying the constitutive correction. The accepted
+pressure workflow is:
+
+```julia
+nq = size(dr.τ.xx, 1)
+P_old = similar(dr.P, nq, mesh.nels)
+fill!(P_old, zero(eltype(dr.P)))
+P_corrected = similar(P_old)
+τ_and_P = (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected)
+
+for step in 1:nsteps
+    stats = solve_stokes_dyrel!(
+        dr, mesh, bc_vx, bc_vy, Δt, γP;
+        plastic = cap, finite_K = true, P_old,
+        verbose = false,
+    )
+    stats.converged || error("Stokes solve did not converge")
+
+    # The fourth entry receives the accepted/corrected pressure at each IP.
+    update_stokes_current_stress!(dr, mesh, τ_and_P, Δt;
+                                  plastic = cap)
+    commit_stokes_plastic_history!(dr, mesh, Δt; plastic = cap)
+    copyto!(P_old, P_corrected)
+end
+```
+
+For a non-cap model, a nodal `P_old` is usually sufficient. The caller owns
+this physical-time update; the solver does not overwrite `P_old` or guess
+when a step has been accepted.
+
+`Q` is the volumetric source in the weak continuity residual. Positive `Q`
+creates material and negative `Q` removes it. It is stored in `dr.Q`, and the
+solver can fill it from the `Qq` and `Q2D` keywords:
+
+```julia
+# A prescribed total injection in a plane-strain model.
+Qq = similar(dr.P)
+fill!(Qq, one(eltype(dr.P)))
+stats = solve_stokes_dyrel!(
+    dr, mesh, bc_vx, bc_vy, Δt, γP;
+    Qq, Q2D = 1.0e-6,
+)
+```
+
+There are two deliberately different `Qq` modes:
+
+1. `Qq` without `Q2D` is copied directly into `dr.Q`. Its entries are local
+   rates with units of inverse time and may be signed.
+2. `Qq` with `Q2D` is a nonnegative distribution weight. The solver rescales
+   it using the pressure quadrature so that
+   `∑ₑ ∫_{Ωₑ} Q dΩ = Q2D`. Thus `Q2D` has units of area per time in 2-D,
+   positive means injection, and negative means extraction. The shape of
+   `Qq` must match the pressure field and its backend must match the Stokes
+   state.
+
+`Q2D = 0` clears the stored source. A nonzero `Q2D` with no positive weight
+is rejected rather than silently producing no injection. These source options
+belong to the two-dimensional mixed-mesh solver; the specialized three-
+dimensional cell-local pressure path does not currently carry `Q`.
 
 ### Coupled thermal--Stokes relaxation
 
@@ -249,7 +372,41 @@ julia --project=examples examples/stokes/volcano/volcano_thermal_stokes.jl
 julia --project=examples examples/stokes/volcano/volcano_thermal_stokes_3D.jl
 julia --project=examples examples/reykjanes/reykjanes_thermal_stokes.jl
 julia --project=examples examples/reykjanes/elliptical_cavity.jl
+julia --project=examples examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl
 ```
+
+The Popov extension driver is a small unstructured T7/P1-discontinuous
+tensile-cap case using only the Table 1 / Figure 6b setup. It meshes the domain
+with `FEMTools.triangulate_t7_mesh` from a target triangle area, `max_area`, in
+the paper's range of `5e-6` to `3e-4`, so the script needs `using Triangulate`
+to load that extension. Inputs are nondimensionalised
+with `L0=1 m`, `S0=10 MPa`, and `t0=50 yr`; therefore `nsteps=2000` represents
+100 kyr and one solver step is one paper time increment. The returned `scales`
+named tuple converts dimensionless fields back to SI units.
+The returned fields distinguish trial pressure, corrected pressure, and
+integration-point accumulated volumetric plastic strain `χ` (the Figure 6b
+quantity), plus deviatoric plastic strain. Trial pressure is the nodal field the
+solver carries, formed each step from the previous step's corrected pressure,
+which the driver carries at integration points; corrected pressure is the tensile-cap return map's pressure at
+integration points, returned as an `nq × nels` array rather than a nodal field.
+Set `write_output=true` to write legacy ASCII VTK files with velocity and
+projected trial pressure as point data, plus cell fields for both pressure
+states, both plastic-strain measures, and the stress/strain-rate second
+invariants.
+The returned `cross_section` contains the piecewise-constant cell profile
+`(; x, values, y)` through `χ`; `section_y=0.25` matches Figure 6b's `A–A′`
+line and can be changed for diagnostics.
+
+The driver carries the weak seed of the authors' GeoTech2D release: a
+semicircular inclusion on the middle of the bottom boundary, centre `(Lx/2, 0)`
+and radius `0.025`, meshed as its own Triangle region so the mesh conforms to
+it, and given a ten times smaller shear modulus than the bulk. Every other
+property is shared. Without it the domain deforms homogeneously and cannot
+localise at any step count, because a single phase plus fully prescribed
+boundary velocities makes the uniform field an exact solution; an unstructured
+mesh does not change that on its own. `vy` is prescribed on the top and bottom
+only, so the side walls stay free to move vertically. The returned `phases`
+vector gives each element's region, and `phase` is written as a VTK cell field.
 
 The ice-bridge miniapp generates a 20 km by 6 km arch-shaped body with a
 4 km-radius semicircular opening cut into its bottom, then applies gravity and
@@ -326,6 +483,7 @@ stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
+commit_stokes_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities

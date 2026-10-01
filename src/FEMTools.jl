@@ -148,6 +148,7 @@ export eval_shape_function,
 export ThermalMaterial, ThermalDiffusionDR, solver!
 export LithostaticPressureDR
 export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, DruckerPrager,
+    DruckerPragerCap,
     assemble_viscosity_weighted_pressure_scaling!,
     pressure_mass,
     rotate_stress!,
@@ -157,7 +158,8 @@ export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, Druc
     solve_stokes_adjoint_3d!,
     stokes_material_gradient_3d,
     solve_stokes_adjoint_dyrel!,
-    update_stokes_current_stress!
+    update_stokes_current_stress!,
+    commit_stokes_plastic_history!
 
 # Post-processing: strain-rate/stress diagnostics and VTK output.
 export compute_strain_rate_stress_postprocess,
@@ -187,7 +189,8 @@ public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
 public stokes_update_rate!, stokes_update_variable!, precompute_stokes_geometry!
 public color_mesh_greedy, remove_pressure_mean!
 public renumber_connectivity, orient_triangle_elements!, add_t7_bubbles!,
-    straighten_t7_geometry!, rectangle_boundary_nodes, circle_boundary_nodes
+    straighten_t7_geometry!, rectangle_boundary_nodes, circle_boundary_nodes,
+    triangulate_t7_mesh
 public velocity, stress, stress_old, pressure, temperature, plastic_multiplier
 
 end # module FEMTools

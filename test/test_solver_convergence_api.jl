@@ -181,13 +181,17 @@ function _buoyancy_stokes_case()
     tol = 1.0e-9
     vx_nodes = Int32[n for n in Γ if abs(coords[n][1]) ≤ tol || abs(coords[n][1] - 1.0) ≤ tol]
     vy_nodes = Int32[n for n in Γ if abs(coords[n][2]) ≤ tol || abs(coords[n][2] - 1.0) ≤ tol]
-    return (; backend, workgroup, element_v, element_P, mesh, phases,
-        Γ, vx_nodes, vy_nodes)
+    return (;
+        backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes,
+    )
 end
 
 @testset "solve_stokes_dyrel! measures λmax by power iteration" begin
-    (; backend, workgroup, element_v, element_P, mesh, phases,
-        Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    (;
+        backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes,
+    ) = _buoyancy_stokes_case()
 
     η = (1.0, 1.0)
     Δt = 1.0
@@ -195,20 +199,24 @@ end
     bc = zeros(length(Γ))
 
     function solve(; measure_λmax)
-        dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
+        dr = StokesDR(
+            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
             ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+        )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
             γP, dr, mesh, mesh.geometry.geo_P, element_v, element_P, 20.0, Δt, backend, workgroup;
-            phases_v = phases, η)
+            phases_v = phases, η
+        )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         stats = solve_stokes_dyrel!(
             dr, mesh, mesh.geometry, element_v, element_P,
             phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
             Γ, bc, bc, backend, workgroup;
             ncheck = 100, ϵ_tol = 1.0e-9, rel_drop0 = 0.1,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes, measure_λmax)
+            verbose = false, verbose_inner = false, vx_nodes, vy_nodes, measure_λmax
+        )
         return dr, stats
     end
 
@@ -233,8 +241,10 @@ end
 end
 
 @testset "solve_stokes_dyrel! does not report convergence on an iteration cap" begin
-    (; backend, workgroup, element_v, element_P, mesh, phases,
-        Γ, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    (;
+        backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes,
+    ) = _buoyancy_stokes_case()
 
     η = (1.0, 1.0)
     Δt = 1.0
@@ -242,20 +252,24 @@ end
     bc = zeros(length(Γ))
 
     function solve(; ϵ_tol, total_iterMax)
-        dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
+        dr = StokesDR(
+            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
             ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+        )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
             γP, dr, mesh, mesh.geometry.geo_P, element_v, element_P, 20.0, Δt, backend, workgroup;
-            phases_v = phases, η)
+            phases_v = phases, η
+        )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         return solve_stokes_dyrel!(
             dr, mesh, mesh.geometry, element_v, element_P,
             phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
             Γ, bc, bc, backend, workgroup;
             ncheck = 100, ϵ_tol, rel_drop0 = 0.1, iterMax = total_iterMax, total_iterMax,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes)
+            verbose = false, verbose_inner = false, vx_nodes, vy_nodes
+        )
     end
 
     # The inner loop overwrites `err` with a velocity residual that is far smaller than the outer
@@ -273,4 +287,119 @@ end
     @test stats.converged
     @test !stats.reached_total_iter
     @test min(stats.err_abs, stats.err_rel) < 1.0e-6
+end
+
+@testset "solve_stokes_dyrel! applies finite-K source normalization" begin
+    (;
+        backend, workgroup, element_v, element_P, mesh, phases,
+        Γ, vx_nodes, vy_nodes,
+    ) = _buoyancy_stokes_case()
+    nq = length(element_v.integration_points.ω)
+    K = 10.0
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0, 1.0), (Inf, Inf), (0.0, 0.0);
+        ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0),
+        stress_size = (nq, mesh.nels)
+    )
+    γP = zeros(Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, 1.0, 1.0;
+        workgroup, phases_v = phases
+    )
+    γP .= 10.0
+    τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+    Qq = ones(Float64, mesh.nnodesP)
+    bc = DirichletBoundaryCondition(nothing, Γ, zeros(length(Γ)))
+    stats = solve_stokes_dyrel!(
+        dr, mesh, bc, bc, 1.0, γP;
+        phases_v = phases, phases_P = phases, τ_old,
+        finite_K = true, Qq, Q2D = 1.0, ncheck = 1, iterMax = 1,
+        # One pseudo-step relaxes P to K; the second outer pass records convergence.
+        total_iterMax = 1, max_ph_iterations = 2, verbose = false,
+        verbose_inner = false,
+    )
+    @test stats.converged
+    @test Array(dr.Q) ≈ ones(mesh.nnodesP)
+    @test Array(dr.P) ≈ fill(K, mesh.nnodesP)
+end
+
+@testset "solve_stokes_dyrel! converges from an exact initial velocity" begin
+    backend = CPU()
+    workgroup = 64
+    Lx, Ly = 1.0, 0.7
+    Δt = 1.0
+    ε̇ = 1.0e-5
+    ηb = 6.4e3
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. Lx) × (0.0 .. Ly), element_v, (6, 4))
+    mesh = MixedMesh(mesh_v, element_P)
+    nq = length(element_v.integration_points.ω)
+
+    # Bulk-viscous block pulled at a constant rate. `vx = ε̇(x − Lx/2)`, `vy = 0`
+    # already balances momentum — the deviatoric stress is uniform, so its
+    # divergence vanishes — which leaves the velocity residual at round-off from
+    # the first check while the pressure still has to relax to `−ηb Δt ∇·v`.
+    # `ηb` must stay finite: without a plastic model the pressure residual uses
+    # it rather than `K`, and `ηb → ∞` would impose incompressibility on a
+    # velocity field with `∇·v = ε̇ ≠ 0`, which has no solution.
+    material = StokesMaterial(;
+        η = (1.0e30,), ηb = (ηb,), G = (4.0e3,),
+        α = (0.0,), ρ0 = (1.0,), K = (6.4e3,), g = (0.0, 0.0), Tref = 0.0
+    )
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, material;
+        stress_size = (nq, mesh.nels)
+    )
+    phases_v = ones(Int32, length(element_v), mesh.nels)
+    phases_P = ones(Int32, length(element_P), mesh.nels)
+    γP = zeros(Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        γP, dr, mesh, 20.0, Δt;
+        workgroup, phases_v
+    )
+
+    coords = Array(mesh.coords)
+    boundary = Array(mesh_v.Γnodes)
+    tol = 32eps(Float64)
+    left = Int32[n for n in boundary if abs(coords[n][1]) ≤ tol]
+    right = Int32[n for n in boundary if abs(coords[n][1] - Lx) ≤ tol]
+    bc_vx = DirichletBoundaryCondition(
+        nothing, vcat(left, right),
+        vcat(fill(-0.5ε̇ * Lx, length(left)), fill(0.5ε̇ * Lx, length(right)))
+    )
+    bc_vy = DirichletBoundaryCondition(
+        nothing, Int32[n for n in boundary],
+        zeros(length(boundary))
+    )
+    dr.v.x .= [ε̇ * (c[1] - Lx / 2) for c in coords]
+    dr.v.y .= 0
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
+    τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
+
+    stats = solve_stokes_dyrel!(
+        dr, mesh, bc_vx, bc_vy, Δt, γP;
+        phases_v, phases_P, τ_old, workgroup, ncheck = 25, iterMax = 500,
+        total_iterMax = 50_000, verbose = false, verbose_inner = false
+    )
+
+    post = compute_strain_rate_stress_postprocess(
+        Array(dr.v.x), Array(dr.v.y), Array(mesh.el2n),
+        Array(mesh.geometry.geo_v), (dr.τ.xx, dr.τ.yy, dr.τ.xy), element_v,
+    )
+
+    # The inner loop scores progress against the residual at its first check.
+    # With nothing left to drop that ratio sits at ~1, so it alone can never
+    # satisfy the exit test.
+    @test stats.converged
+    # The defect wastes work rather than breaking the answer: before the escape
+    # this same solve spent its whole 500-iteration inner budget on the first
+    # outer pass and finished at 501, against 25 once the absolute term decides.
+    @test stats.iter <= 4 * 25
+    # Check the answer, not just the flag: uniform extension against a bulk
+    # viscosity has the closed-form pressure `−ηb Δt ∇·v`.
+    @test all(≈(-ηb * Δt * ε̇; rtol = 1.0e-6), Array(dr.P))
+    @test all(≈(ε̇; rtol = 1.0e-6), post.εxx .+ post.εyy)
+    @test maximum(abs, Array(dr.v.y)) < 1.0e-12
 end
