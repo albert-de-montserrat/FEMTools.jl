@@ -138,7 +138,7 @@ function solve_dike_crack(;
             ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0, verbose, verbose_inner = false,
         )
         update_stokes_current_stress!(
-            dr, mesh_stokes, mesh_stokes.geometry, τ, Δτ; phases_v, τ_old, workgroup,
+            dr, mesh_stokes, τ, Δτ; phases_v, τ_old, workgroup,
         )
         return stats
     end

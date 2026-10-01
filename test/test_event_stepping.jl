@@ -137,7 +137,7 @@ function _stepping_replay_model()
             dr, mesh, zero_bc, zero_bc, Δτ, γP;
             phases_v, phases_P, τ_old, workgroup, ϵ_tol = 1.0e-6, verbose = false, verbose_inner = false,
         )
-        update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, Δτ; phases_v, τ_old, workgroup)
+        update_stokes_current_stress!(dr, mesh, τ, Δτ; phases_v, τ_old, workgroup)
         copyto!(dr.P0, dr.P)
         foreach(copyto!, τ_old, τ)
         return stats

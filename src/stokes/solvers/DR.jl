@@ -685,7 +685,6 @@ so this may be called any number of times. Use
 function update_stokes_current_stress!(
         dr::StokesDR{<:Any, D},
         mesh::MixedMesh{D},
-        cache::MixedMeshCache,
         τ,
         Δt;
         plastic = nothing,
@@ -696,6 +695,7 @@ function update_stokes_current_stress!(
         damage_update = nothing,
         workgroup = 256,
     ) where {D}
+    cache = _mesh_geometry(mesh)
     backend = KA.get_backend(mesh.coords)
     return update_stokes_current_stress!(
         dr, mesh, cache, cache.element_v, cache.element_P,

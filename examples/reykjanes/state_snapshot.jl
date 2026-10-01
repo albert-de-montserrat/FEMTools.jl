@@ -23,7 +23,8 @@ const THERMAL_SCRATCH_FIELDS = (:R, :R0, :∂R∂T, :PC, :∂T∂τ)
 Return the arrays of `object` that carry the physical state of a run, aliasing the live arrays.
 
 Arrays pass through, tuples and named tuples map over their entries, and a `StokesDR`, a
-`ThermalDiffusionDR` or an `IntegrationPointPlasticHistory` gives a named tuple of its state arrays.
+`ThermalDiffusionDR`, an `IntegrationPointPlasticHistory` or a `CapPlasticHistory` gives a named tuple
+of its state arrays.
 Solver scratch (`STOKES_SCRATCH_FIELDS`, `THERMAL_SCRATCH_FIELDS`) is left out, and so are the immutable
 per-phase parameters. `M_P` is derived from the phases, the time step and the geometry: it is restored
 with them, and a caller that changes one of the three rebuilds it.
@@ -32,12 +33,14 @@ physical_state(x::AbstractArray) = x
 physical_state(x::Union{Tuple, NamedTuple}) = map(physical_state, x)
 physical_state(::Nothing) = nothing
 physical_state(history::FEMTools.IntegrationPointPlasticHistory) = (; history.λ, history.εpl, history.D)
+physical_state(history::FEMTools.CapPlasticHistory) = (; history.γ, history.θ)
 physical_state(thermal::ThermalDiffusionDR) = (; thermal.T, thermal.T0, thermal.P, thermal.source, thermal.phases)
 
 function physical_state(dr::StokesDR)
     return (;
         v = Tuple(dr.v), τ = physical_state_tensor(dr.τ), τ_old = physical_state_tensor(dr.τ_old),
         dr.P, dr.P0, dr.T, dr.T0, dr.Q, dr.M_P, dr.phases_v, dr.phases_P,
+        plastic_history = physical_state(dr.plastic_history),
     )
 end
 

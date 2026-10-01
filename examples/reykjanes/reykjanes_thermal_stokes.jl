@@ -275,7 +275,7 @@ function main(;
                 verbose, verbose_inner = false,
             )
             update_stokes_current_stress!(
-                dr, mesh_stokes, mesh_stokes.geometry, τ, Δτ_try;
+                dr, mesh_stokes, τ, Δτ_try;
                 phases_v, τ_old, plastic, workgroup,
             )
 

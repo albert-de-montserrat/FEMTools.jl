@@ -179,8 +179,7 @@ end
         CPU(), (0.0..1.0) × (0.0..1.0) × (0.0..1.0),
         velocity_element, (1, 1, 1),
     )
-    mesh = MixedMesh(mesh_v, pressure_element)
-    cache = MixedMeshCache(CPU(), 1, mesh, velocity_element, pressure_element)
+    mesh = MixedMesh(mesh_v, pressure_element; workgroup = 1)
     dr = StokesDR(
         CPU(), mesh.nnodes, mesh.nnodesP,
         StokesMaterial(; η = (1.0,), ηb = (Inf,), G = (Inf,), α = (0.0,),
@@ -189,7 +188,7 @@ end
     γP = zeros(mesh.nnodesP)
 
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh, cache, 2.0, 1.0; workgroup = 1,
+        γP, dr, mesh, 2.0, 1.0; workgroup = 1,
     )
 
     @test all(>(0), dr.M_P)

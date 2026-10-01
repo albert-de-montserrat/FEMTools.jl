@@ -197,8 +197,7 @@ function main(;
     # backend. `MixedMesh` preserves that placement for pressure connectivity.
     mesh_T = Mesh(backend, coords_cpu, el2n_cpu, element_v; workgroup)
     mesh_stokes = MixedMesh(mesh_T, element_P)
-    cache = MixedMeshCache(backend, workgroup, mesh_stokes, element_v, element_P)
-    geo_v = cache.geo_v
+    geo_v = mesh_stokes.geometry.geo_v
 
     NQ_v = length(element_v.integration_points.ω)
     NV   = length(element_v)
@@ -308,7 +307,7 @@ function main(;
     # correction while adapting the step to the local viscosity.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, cache, γfact, Δτ; workgroup, phases_v,
+        γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v,
     )
 
     # -----------------------------------------------------------------------
@@ -333,7 +332,7 @@ function main(;
         copyto!(thermal.T0, thermal.T)
 
         solve_stats = solve_coupled_dyrel!(
-            thermal, dr, mesh_T, mesh_stokes, cache,
+            thermal, dr, mesh_T, mesh_stokes,
             bc_T, (bc_vx, bc_vy, bc_vz), Δτ, γP;
             Tref, phases_v, phases_P,
             τ_old, plastic, workgroup,
@@ -344,7 +343,7 @@ function main(;
         push!(solve_stats_history, solve_stats)
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, cache, τ, Δτ;
+            dr, mesh_stokes, τ, Δτ;
             phases_v, τ_old, plastic, workgroup,
         )
 

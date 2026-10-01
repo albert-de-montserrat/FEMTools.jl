@@ -437,8 +437,8 @@ end
     τ = (dr.τ.xx, dr.τ.yy, dr.τ.xy)
 
     # Stress refreshes are reads: they never advance history.
-    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
-    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
     @test all(iszero, dr.plastic_history.γ)
     @test all(iszero, dr.plastic_history.θ)
 
@@ -447,7 +447,7 @@ end
     θ1 = copy(dr.plastic_history.θ)
     @test minimum(γ1) > 0
     @test minimum(θ1) > 0   # tension opens
-    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = cap)
     @test dr.plastic_history.γ == γ1
 
     # A second commit uses the softened cohesion from the first, and the stress
@@ -457,7 +457,7 @@ end
         C_min = (6.0,), H_C = (-1.0e3,)
     )
     τ_hard = copy(dr.τ.xx)
-    FEMTools.update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 0.1; plastic = soft)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ, 0.1; plastic = soft)
     @test dr.τ.xx != τ_hard
     dr.plastic_history.γ .= 0
     dr.plastic_history.θ .= 0
@@ -511,7 +511,7 @@ end
         )
         @test result.converged
         update_stokes_current_stress!(
-            dr, mesh, mesh.geometry, (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected), Δt;
+            dr, mesh, (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected), Δt;
             plastic = cap, τ_old, workgroup = 1
         )
         commit_stokes_plastic_history!(dr, mesh, Δt; plastic = cap, τ_old, workgroup = 1)

@@ -118,7 +118,7 @@ function _snapshot_replay_model()
     end
     # What an accepted step does after its solve: the current stress and pressure become the history.
     commit!() = begin
-        update_stokes_current_stress!(dr, mesh, mesh.geometry, τ, 1.0; phases_v, τ_old, workgroup)
+        update_stokes_current_stress!(dr, mesh, τ, 1.0; phases_v, τ_old, workgroup)
         copyto!(dr.P0, dr.P)
         foreach(copyto!, τ_old, τ)
     end

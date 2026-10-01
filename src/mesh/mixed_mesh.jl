@@ -337,40 +337,44 @@ function update_geometry!(mesh::MixedMesh{2}; workgroup = 256)
 end
 
 """
-    MixedMeshCache(backend, workgroup, mesh::MixedMesh{3}, element_v, element_P)
+    MixedMeshCache(backend, workgroup, mesh::MixedMesh{3}, element_v, element_P; geometry_precision=FP)
 
 Precompute geometry for a three-dimensional mixed mesh at the velocity
 integration points.
 
 The discontinuous pressure basis is defined on the velocity element's reference
 cell rather than on a sub-element of its own, so both geometry fields hold the
-velocity element's data. Only the quadrature weight of `geo_P` is read by the
-pressure residual and pressure scaling.
+velocity element's data: `geo_P` holds the velocity element's weighted volumes.
+`geometry_precision` sets the stored precision as in the two-dimensional method.
 """
 function MixedMeshCache(
         backend,
         workgroup,
         mesh::MixedMesh{3},
         element_v::ReferenceElement{TV},
-        element_P::ReferenceElement{TP},
+        element_P::ReferenceElement{TP};
+        geometry_precision = FP,
     ) where {NV, NP, FP, TV <: AbstractElement{3, NV, FP}, TP <: AbstractElement{3, NP, FP}}
+    _check_geometry_precision(geometry_precision)
     ip_v = element_v.integration_points
     NQ_v = length(ip_v.ω)
-
-    ξq_v = ntuple(q -> SVector(ip_v.ξ[q], ip_v.η[q], ip_v.ζ[q]), NQ_v)
-    ∂N∂ξq_v = ntuple(q -> eval_shape_function_jacobian(element_v, ξq_v[q]), NQ_v)
-
-    GeoV = NTuple{NQ_v, Tuple{SMatrix{NV, 3, FP, 3NV}, FP}}
-    geo_v = KA.allocate(backend, GeoV, mesh.nels)
+    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
+    FPg = geometry_precision
+    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{3, FPg, 9}}, mesh.nels)
+    geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
 
     TDev = TA(backend)
-    precompute_geometry_kernel!(backend, workgroup)(
-        geo_v, TDev(mesh.coords), TDev(mesh.el2n), ∂N∂ξq_v, ip_v.ω, Val(NV);
-        ndrange = mesh.nels,
-    )
+    coords = TDev(mesh.coords)
+    el2n = TDev(mesh.el2n)
+    for geo in (geo_v, geo_P)
+        precompute_geometry_kernel!(backend, workgroup)(
+            geo, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
+            ndrange = mesh.nels,
+        )
+    end
     KA.synchronize(backend)
 
-    return MixedMeshCache(geo_v, geo_v, element_v, element_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
 end
 
 # ---------------------------------------------------------------------------

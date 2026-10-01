@@ -89,7 +89,7 @@ function run_cycles(;
     function commit_step!(Δτ_step)
         stats = solve!(Δτ_step)
         update_stokes_current_stress!(
-            dr, mesh_stokes, mesh_stokes.geometry, τ, Δτ_step; phases_v, τ_old, plastic, workgroup,
+            dr, mesh_stokes, τ, Δτ_step; phases_v, τ_old, plastic, workgroup,
         )
         foreach(copyto!, τ_old, τ)
         return stats
