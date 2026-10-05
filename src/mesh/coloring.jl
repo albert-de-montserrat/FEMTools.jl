@@ -75,7 +75,7 @@ The returned groups are suitable for passing directly to
 so the assembly kernel can scatter without atomics.
 """
 function generate_element_groups(backend, colors)
-    TDev    = TA(backend)
+    TDev = TA(backend)
     ncolors = maximum(colors)
     return [TDev(findall(==(c), colors)) for c in 1:ncolors]
 end

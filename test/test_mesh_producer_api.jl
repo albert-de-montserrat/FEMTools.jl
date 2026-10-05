@@ -27,3 +27,21 @@ end
     @test all(p_dof_coords[p_el2dof[a, iel]] == coords[el2n[a, iel]]
               for iel in 1:nels, a in 1:3)
 end
+
+@testset "generate_element_adjacency respects shared entities" begin
+    triangles = Int32[1 2 3; 2 3 4; 3 4 5]
+    face = generate_element_adjacency(triangles)
+    @test face == [[Int32(2)], [Int32(1), Int32(3)], [Int32(2)]]
+
+    corner_touching = Int32[1 3; 2 4; 3 5]
+    @test generate_element_adjacency(corner_touching) == [Int32[], Int32[]]
+    @test generate_element_adjacency(corner_touching; shared = :node) == [[Int32(2)], [Int32(1)]]
+
+    quads = Int32[1 2; 2 3; 3 4; 4 5]
+    @test generate_element_adjacency(quads; dimension = 2) == [[Int32(2)], [Int32(1)]]
+    @test_throws "pass `dimension`" generate_element_adjacency(quads)
+
+    tetra = Int32[1 1; 2 2; 3 3; 4 5]
+    @test generate_element_adjacency(tetra; dimension = 3) == [[Int32(2)], [Int32(1)]]
+    @test_throws ArgumentError generate_element_adjacency(triangles; shared = :edge)
+end

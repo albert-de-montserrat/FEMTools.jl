@@ -16,21 +16,21 @@ the process. All arrays must reside on the same backend; the kernel executes
 on the backend of the output buffers.
 """
 function assemble_momentum_residual_matrices_atomix_adj!(
-    Rv_x, dRv_x, Rv_y, dRv_y,
-    vx, dvx, vy, dvy, P, dP, T, Pnum, dPnum,
-    mesh_stokes::MixedMesh{2}, geo_v,
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP},
-    phases, τ_old, plastic,
-    η, G, α, ρ0, K, g, Tref, Δt,
-    workgroup,
-) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
-    Nq  = shape_function_values(element_v)
+        Rv_x, dRv_x, Rv_y, dRv_y,
+        vx, dvx, vy, dvy, P, dP, T, Pnum, dPnum,
+        mesh_stokes::MixedMesh{2}, geo_v,
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP},
+        phases, τ_old, plastic,
+        η, G, α, ρ0, K, g, Tref, Δt,
+        workgroup,
+    ) where {TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}} where {NV, NP}
+    Nq = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
     ∂N∂ξ_v = shape_function_gradients(element_v)
     el2n_v = mesh_stokes.el2n
-    el2nP  = mesh_stokes.DoFsP
-    nels   = mesh_stokes.nels
+    el2nP = mesh_stokes.DoFsP
+    nels = mesh_stokes.nels
 
     Enzyme.autodiff_deferred(
         Enzyme.set_runtime_activity(Enzyme.Reverse),

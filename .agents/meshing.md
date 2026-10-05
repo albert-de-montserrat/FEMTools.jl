@@ -25,6 +25,9 @@ Meshing spans `src/elements/` and `src/mesh/`:
   keeps one in `mesh.geometry`; `update_geometry!` refills it in place.
 - Sparsity, node-to-element adjacency, greedy coloring, color groups, and
   discontinuous linear mesh generation are available.
+- `generate_element_adjacency(...; shared=:face)` throws for 4- and 8-node
+  connectivity without `dimension`: those counts are ambiguous (Quad4/Tet4,
+  Quad8/Hex8).
 - `src/mesh/utils.jl` holds the host-side external-mesh helpers:
   `renumber_connectivity`, `orient_triangle_elements!`, `add_t7_bubbles!`,
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`, and

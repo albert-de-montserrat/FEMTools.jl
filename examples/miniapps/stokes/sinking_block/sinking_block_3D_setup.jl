@@ -94,7 +94,7 @@ function run_sinking_block_3d(;
         # `pressure[1, :]` is the cell-constant mode; the three linear modes have
         # no single cell-centre value and are dropped from the output.
         write_vtk(joinpath(@__DIR__, "stokes_3D_sinking_block.vtk"), mesh;
-            point_data = (; vx = velocity.x, vy = velocity.y, vz = velocity.z),
+            point_data = (; velocity = Tuple(velocity)),
             cell_data = (; pressure = pressure[1, :], phase = cell_phase),
             title = "FEMTools 3D Q2/P1-disc sinking block")
     end

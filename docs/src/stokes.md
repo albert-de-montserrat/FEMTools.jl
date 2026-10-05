@@ -12,12 +12,14 @@ The solver finds a velocity `v` and pressure `P` satisfying the momentum and
 continuity balances
 
 ```math
-\begin{aligned}
-&\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \\
-&\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
-- \alpha\frac{\partial T}{\partial t} = 0,
-\end{aligned}
+\nabla \cdot \boldsymbol{\tau} - \nabla P + \rho \mathbf{g} = 0, \qquad
+\nabla \cdot v + \frac{1}{\eta_b}\frac{\partial P}{\partial t}
+- \alpha\frac{\partial T}{\partial t} = Q,
 ```
+
+`Q` is the backend-resident volumetric source/sink array on the Stokes
+pressure nodes. Positive values produce volume and negative values remove it;
+the default is zero.
 
 with a Maxwell viscoelastic deviatoric stress that carries stress history
 `τ_old` across time steps. Density uses the linearised equation of state
@@ -45,8 +47,10 @@ equation of state and in the finite-compressibility pressure storage term.
 The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
 mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
-3-D Hex27/Q2--P1 method uses three caller-owned velocity arrays and a `4 × nels`
-cell-local pressure array with diagonally preconditioned residual updates.
+3-D T11/P1-discontinuous and Hex27/Q2--P1 discretisations are available through
+a `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic problems. The
+original Hex27 viscous interface with three caller-owned velocity arrays and a
+`4 × nels` pressure array remains available.
 
 The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
@@ -111,10 +115,10 @@ dr.τ.yz         # a stress component that has no two-dimensional counterpart
 a cell-local pressure layout is expressed as `StokesDR(backend, nnodes_v,
 (4, nels), material)`.
 
-The mixed-mesh solvers on this page are two-dimensional and accept only
-`StokesDR{<:Any, 2}`; passing a three-dimensional state is a `MethodError`
-rather than a silent solve that ignores the third component. The existing
-matrix-free 3-D method takes its arrays positionally and does not consume a
+The mixed-mesh solvers on this page accept a `StokesDR` and `MixedMesh` of the
+same spatial dimension, 2 or 3, with one Dirichlet boundary condition per
+velocity component; a dimension mismatch is a `MethodError`. The viscous Hex27
+method instead takes caller-owned arrays positionally and does not consume a
 `StokesDR` — see [Sinking block (3-D)](sinking_block_3d.md).
 
 ### Compact setup
@@ -143,23 +147,30 @@ Call `commit_stokes_plastic_history!` once per converged step, before
 overwriting `τ_old`, to accumulate that step into those arrays. Residual
 iterations and `update_stokes_current_stress!` never update history.
 `dr.P` is the trial pressure under the cap, so do not copy it into `dr.P0`:
-record the corrected pressure with a four-matrix store
-`(τxx, τyy, τxy, P_corrected)` in `update_stokes_current_stress!`, copy it into
+record the corrected pressure with a store that appends one matrix to the
+stress components — `(τxx, τyy, τxy, P_corrected)` in plane strain,
+`(stress(dr)..., P_corrected)` in 3-D — in `update_stokes_current_stress!`, copy it into
 an `nq × nels` array after the commit, and pass that array as
 `solve_stokes_dyrel!(...; P_old)` on the next step.
+For plain Drucker--Prager, pass an `IntegrationPointPlasticHistory(λ, ε̇pl, εpl)`
+of `nq × nels` arrays as `update_stokes_current_stress!(...; plastic_history)`.
+That call overwrites the multiplier `λ` and the plastic strain-rate invariant
+`ε̇pl`, in plane strain and in 3-D, so repeating it is harmless. The accumulated
+plastic strain `εpl` changes only in `FEMTools.update_plastic_history!`, which
+adds `Δt·ε̇pl` and must be called once per accepted step.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
 ### Finite compressibility, pressure history, and sources
 
-These three options control the pressure part of the two-dimensional solver:
+These options control the pressure part of the mixed-mesh solver:
 
 | Keyword | Meaning | Default |
 |:--|:--|:--|
 | `finite_K` | Use the material `dr.K` in `(P - P_old)/(K*Δt)` | `plastic isa DruckerPragerCap` |
 | `P_old` | Accepted pressure from the previous physical step | `dr.P0` |
 | `Qq` | Direct source field, or nonnegative spatial weights with `Q2D` | `nothing` |
-| `Q2D` | Total signed plane-strain source rate | `nothing` |
+| `Q2D` | Total signed source rate: area per time in plane strain, volume per time in 3-D | `nothing` |
 
 `finite_K` is an independent physical choice. It can be set to `true` for a
 viscous or Drucker--Prager solve, and to `false` for a cap solve when the
@@ -238,6 +249,22 @@ is rejected rather than silently producing no injection. These source options
 belong to the two-dimensional mixed-mesh solver; the specialized three-
 dimensional cell-local pressure path does not currently carry `Q`.
 
+### Fluid pressure in the yield model
+
+`dr.Pf` is a fluid (pore or magma) pressure on the pressure DoFs, zero by
+default. The yield models see the effective pressure `P − Pf`: Drucker--Prager
+yields at `τII = C cosϕ + (P − Pf) sinϕ`, and the tensile cap of
+`DruckerPragerCap` fails when `P − Pf` reaches `pT`. The momentum balance and the
+equation of state keep the total pressure `P`, and a pressure corrected by the
+cap is returned as a total pressure. Fill `Pf` before the solve, for example
+with a lithostatic pressure for a fluid-saturated crust:
+
+```julia
+copyto!(dr.Pf, P_litho)
+```
+
+The plastic adjoint solver does not support a nonzero `Pf` and rejects it.
+
 ### Coupled thermal--Stokes relaxation
 
 `solve_coupled_dyrel!` advances one thermal DR iteration during every inner
@@ -247,22 +274,54 @@ gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 
 ```julia
 stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh,
-    bc_T, bc_vx, bc_vy, Δt, γP; workgroup,
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T,
+    (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
 )
 stats.converged || error("coupled solve did not converge")
 ```
 
 The returned Stokes statistics additionally contain `err_T` and
-`thermal_iterations`. The caller still owns physical-time history: set
+`thermal_iterations`. On the 2-D path `converged` is true only when the outer
+test `min(err_abs, err_rel) < ϵ_tol` passed (and the thermal state converged), so
+a run that ends on `total_iterMax` reports `false` and `reached_total_iter` says
+why; `err` is then the inner velocity residual, and `err_abs` and `err_rel` carry
+the outer error. The caller still owns physical-time history: set
 `thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
 solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
 
-### Three-dimensional array layout
+#### Shear heating
 
-The Hex27/Q2--P1 method uses multiple dispatch rather than `StokesDR`, because
-its four pressure modes are cell-local rather than stored on a pressure-node
-mesh:
+`shear_heating = true` makes the coupling two-way, in plane strain and in 3-D:
+the dissipation
+
+```math
+\Phi = \boldsymbol{\tau} : \left(\dot{\boldsymbol{\varepsilon}} - \dot{\boldsymbol{\varepsilon}}^{el}\right),
+\qquad
+\dot{\boldsymbol{\varepsilon}}^{el} = \frac{\boldsymbol{\tau} - \boldsymbol{\tau}^{old}}{2G\Delta t},
+```
+
+is added to the thermal heat source. `τ` is the deviatoric stress of the
+momentum residual, plastic correction included, so `Φ` is the viscous plus
+plastic shear dissipation without the elastically stored power; volumetric
+plastic work is not included. `Φ` is recomputed from the current velocity at
+every thermal convergence check and integrated at the velocity quadrature
+points, so the thermal element must share the velocity element's quadrature.
+`thermal.source` keeps the caller's own source and is not modified.
+
+```julia
+stats = solve_coupled_dyrel!(
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_vx, bc_vy, Δt, γP;
+    workgroup, shear_heating = true,
+)
+```
+
+In 2-D, pass `bc_vx` and `bc_vy` positionally as before. In 3-D, pass the tuple
+shown above. The 3-D signed pressure basis uses a positive Jacobi modal mass
+instead of direct lumping.
+
+### Three-dimensional viscous array layout
+
+The original viscous Hex27/Q2--P1 method keeps caller-owned arrays:
 
 ```julia
 velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
@@ -432,6 +491,8 @@ FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
 commit_stokes_plastic_history!
+FEMTools.IntegrationPointPlasticHistory
+FEMTools.update_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities
@@ -480,7 +541,22 @@ different discretisation. When adding an objective or material parameter,
 validate that contract with a central finite difference as demonstrated in
 `test/test_stokes_adjoint_api.jl`.
 
-### Two-dimensional frozen operator and solver controls
+### Frozen operator and solver controls
+
+The mixed-mesh adjoint runs in two and three dimensions. In three dimensions,
+pass the objective load and the adjoint velocity as one array per direction,
+`(objective_x, objective_y, objective_z)` and `(λvx, λvy, λvz)`, with the
+constrained nodes as `v_nodes = (vx_nodes, vy_nodes, vz_nodes)`; the
+plane-strain spelling with separate `vx`/`vy` arguments remains available.
+Only `operator = :blocks` is implemented in three dimensions. It is also the only
+operator that supports a plastic model together with a nonzero fluid pressure
+`dr.Pf`, because only the stored blocks differentiate the yield model at the
+effective pressure.
+
+The solver transposes the Powell–Hestenes augmented system, whose momentum rows
+carry `W·RP` with the element-local `W = ∂Rv/∂Pnum · γP/M_P`. A parameter
+contraction against the plain residual `[Rv; RP]` therefore uses the pressure
+multiplier `λP + Wᵀλv`.
 
 The forward state must be converged before the adjoint solve. At that fixed
 state the transpose Jacobian is constant, and `operator` chooses how it is
@@ -500,12 +576,13 @@ estimate directly; `operator = :enzyme` always uses that estimate, because
 power iteration needs an operator application and the reverse-mode path has
 none to offer cheaply.
 
-`λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
+The adjoint velocity and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint
 in place to warm-start the next solve.
 
 An optimization loop can also construct
-`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` once and pass it as
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` (with `vz_nodes` appended in
+three dimensions) once and pass it as
 `workspace` on every adjoint solve. This reuses the residual, rate, pullback,
 and boundary buffers instead of allocating them for every design. Construct it
 with `enzyme=true` only when using `operator = :enzyme`; the default block and
@@ -519,9 +596,11 @@ subproblem.
 
 For T7/P1-disc the cached blocks hold 147 floating-point values per element,
 about 1.2 kB per element in `Float64`, once the symmetry of a viscous tangent is
-exploited; a plastic model raises that to 280 values, about 2.2 kB. Two
-alternatives store nothing per element when that footprint is unsuitable,
-notably for larger three-dimensional elements.
+exploited; a plastic model raises that to 280 values, about 2.2 kB. For the
+three-dimensional T11/P1-disc pair a non-symmetric tangent, plastic or with a
+finite bulk modulus, holds 1 501 values per element, about 12 kB. In two
+dimensions, two alternatives store nothing per element when that footprint is
+unsuitable.
 
 `operator = :matrix_free` rebuilds the transpose products by forward-mode
 directional differentiation of the element residuals, at about three residual
@@ -548,6 +627,7 @@ FEMTools.assemble_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_pressure_residual_matrices_atomix!
 FEMTools.assemble_viscosity_weighted_pressure_scaling!
+FEMTools.assemble_shear_heating!
 FEMTools.momentum_element_residual
 FEMTools.element_momentum_jacobians
 FEMTools.element_augmented_momentum_jacobians

@@ -146,7 +146,7 @@ function _heat_element_jacobian_case()
     return FEMTools.element_jacobian(
         T, T0, source, el2n, geo, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
-        P, 1.0, 0.0, TRI_NQ, TRI_DNDξ, 1, Val(3),
+        P, 1.0, 0.0, TRI_NQ, TRI_DNDξ, nothing, 1, Val(3),
     )
 end
 
@@ -195,7 +195,7 @@ function _pressure_element_residual_case()
     geo = [TRI_POINTS]
     TRI_WEIGHTS_ARRAY = [TRI_WEIGHTS]
     return FEMTools.pressure_element_residual(
-        vx, vy, P, P0, T, T0, el2n, el2n, geo, TRI_WEIGHTS_ARRAY, phases,
+        (vx, vy), P, P0, T, T0, nothing, el2n, el2n, geo, [map(p -> p.dΩ, TRI_POINTS)], phases,
         (0.0,), (Inf,), 1.0, TRI_NQ, TRI_DNDξ, 1, Val(3), Val(3),
     )
 end
@@ -298,7 +298,7 @@ function _stokes_element_residual_case(Nq, ∂N∂ξ, geo = TRI_MESH_GEO)
     el2n = reshape(Int32[1, 2, 3], 3, 1)
     τ_old = (zeros(3, 1), zeros(3, 1), zeros(3, 1))
     return FEMTools.momentum_element_residual(
-        vx, vy, P, T, Pnum, el2n, el2n, geo, phases,
+        (vx, vy), P, T, Pnum, el2n, el2n, geo, phases,
         (1.0,), (4.0,), (0.0,), (1.0,), (Inf,), (0.0, -1.0), 0.0, 1.0,
         Nq, Nq, ∂N∂ξ, 1, Val(3), Val(3), τ_old, nothing, nothing,
     )
@@ -362,7 +362,7 @@ end
     @test (@inferred _lithostatic_assembly_case()) === nothing
     @test (@inferred _stokes_assembly_case()) === nothing
     @test (@inferred _pressure_assembly_case()) === nothing
-    element_residual_type = Tuple{<:SVector{3, <:Integer}, SVector{3, Float64}, SVector{3, Float64}}
+    element_residual_type = Tuple{<:SVector{3, <:Integer}, NTuple{2, SVector{3, Float64}}}
     @test (@inferred _stokes_element_residual_case(
         shape_function_values(TRI_ELEMENT), shape_function_gradients(TRI_ELEMENT),
     )) isa element_residual_type

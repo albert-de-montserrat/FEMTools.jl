@@ -41,17 +41,17 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G} <: AbstractMesh
     geometry::G  # MixedMeshCache or nothing
 
     function MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}(
-        coords::T1,
-        normals::T6,
-        DoFs::T2,
-        el2n::T3,
-        nnodes::Int,
-        nels::Int,
-        DoFsP::T4,
-        el2nP::T5,
-        nnodesP::Int,
-        geometry,
-    ) where {nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}
+            coords::T1,
+            normals::T6,
+            DoFs::T2,
+            el2n::T3,
+            nnodes::Int,
+            nels::Int,
+            DoFsP::T4,
+            el2nP::T5,
+            nnodesP::Int,
+            geometry,
+        ) where {nDim, O1, O2, T1, T2, T3, T4, T5, T6, G}
         length(normals) == nnodes || throw(ArgumentError("normal vector has the wrong number of nodes"))
         size(el2n, 2) == nels || throw(ArgumentError("velocity connectivity has the wrong number of elements"))
         size(el2nP, 2) == nels || throw(ArgumentError("pressure connectivity has the wrong number of elements"))
@@ -64,11 +64,13 @@ struct MixedMesh{nDim, O1, O2, T1, T2, T3, T4, T5, T6, G} <: AbstractMesh
     end
 end
 function Base.show(io::IO, mesh::MixedMesh{nDim, O1, O2}) where {nDim, O1, O2}
-    print(io, "MixedMesh{", nDim, ", ", O1, ", ", O2, "}(nnodes=", mesh.nnodes,
-          ", nnodesP=", mesh.nnodesP, ", nels=", mesh.nels, ")")
+    return print(
+        io, "MixedMesh{", nDim, ", ", O1, ", ", O2, "}(nnodes=", mesh.nnodes,
+        ", nnodesP=", mesh.nnodesP, ", nels=", mesh.nels, ")"
+    )
 end
 
-function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::AbstractMatrix{<:Integer}) where FP
+function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::AbstractMatrix{<:Integer}) where {FP}
     normals = fill(zero(SVector{2, FP}), length(coords))
     edge_paths = _boundary_edge_paths_2d(size(el2n, 1))
     corner_lids = unique(first.(edge_paths))
@@ -104,18 +106,23 @@ function _compute_node_normals(coords::AbstractVector{<:SVector{2, FP}}, el2n::A
     return [iszero(norm(n)) ? n : n / norm(n) for n in normals]
 end
 
+# Nodal normals are stored for boundary post-processing and are not read by any
+# solver path, so three-dimensional meshes carry the zero vector everywhere.
+_compute_node_normals(coords::AbstractVector{<:SVector{3, FP}}, ::AbstractMatrix{<:Integer}) where {FP} =
+    fill(zero(SVector{3, FP}), length(coords))
+
 
 function MixedMesh(
-    element::ReferenceElement,
-    elementP::ReferenceElement,
-    coords::AbstractVector{<:SVector{nDim}},
-    DoFs,
-    el2n,
-    DoFsP,
-    el2nP;
-    workgroup = 256,
-    geometry_precision = eltype(eltype(coords)),
-) where {nDim}
+        element::ReferenceElement,
+        elementP::ReferenceElement,
+        coords::AbstractVector{<:SVector{nDim}},
+        DoFs,
+        el2n,
+        DoFsP,
+        el2nP;
+        workgroup = 256,
+        geometry_precision = eltype(eltype(coords)),
+    ) where {nDim}
     coords_cpu = Array(coords)
     el2n_cpu = Array(el2n)
     normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
@@ -164,13 +171,13 @@ geometry of both fields is precomputed into `geometry`; otherwise `geometry`
 is `nothing` and the high-level Stokes solvers reject the mesh.
 """
 function MixedMesh(
-    mesh_v::Mesh{nDim, O1},
-    element_P::ReferenceElement;
-    workgroup = 256,
-    geometry_precision = eltype(eltype(mesh_v.coords)),
-) where {nDim, O1}
+        mesh_v::Mesh{nDim, O1},
+        element_P::ReferenceElement;
+        workgroup = 256,
+        geometry_precision = eltype(eltype(mesh_v.coords)),
+    ) where {nDim, O1}
     coords_cpu = Array(mesh_v.coords)
-    el2n_cpu   = Array(mesh_v.el2n)
+    el2n_cpu = Array(mesh_v.el2n)
     el2nP_cpu, DoFsP_cpu, _ = generate_discontinuous_linear_mesh(coords_cpu, el2n_cpu)
     normals_cpu = _compute_node_normals(coords_cpu, el2n_cpu)
     normals = typeof(mesh_v.coords)(normals_cpu)
@@ -208,10 +215,12 @@ function _with_geometry(mesh::MixedMesh{nDim, O1, O2}, element_v::ReferenceEleme
     geometry = MixedMeshCache(
         KA.get_backend(mesh.coords), workgroup, mesh, element_v, element_P; geometry_precision,
     )
-    return MixedMesh{nDim, O1, O2,
-                     typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n),
-                     typeof(mesh.DoFsP), typeof(mesh.el2nP), typeof(mesh.normals),
-                     typeof(geometry)}(
+    return MixedMesh{
+        nDim, O1, O2,
+        typeof(mesh.coords), typeof(mesh.DoFs), typeof(mesh.el2n),
+        typeof(mesh.DoFsP), typeof(mesh.el2nP), typeof(mesh.normals),
+        typeof(geometry),
+    }(
         mesh.coords, mesh.normals, mesh.DoFs, mesh.el2n, mesh.nnodes, mesh.nels,
         mesh.DoFsP, mesh.el2nP, mesh.nnodesP, geometry,
     )
@@ -219,10 +228,16 @@ end
 
 function _mesh_geometry(mesh::MixedMesh)
     geometry = mesh.geometry
-    isnothing(geometry) && throw(ArgumentError(
-        "mixed mesh has no geometry; build it from a velocity mesh that stores its reference element, e.g. MixedMesh(Mesh(backend, coords, el2n, element_v), element_P)"))
-    isnothing(geometry.element_v) && throw(ArgumentError(
-        "mixed mesh geometry has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"))
+    isnothing(geometry) && throw(
+        ArgumentError(
+            "mixed mesh has no geometry; build it from a velocity mesh that stores its reference element, e.g. MixedMesh(Mesh(backend, coords, el2n, element_v), element_P)"
+        )
+    )
+    isnothing(geometry.element_v) && throw(
+        ArgumentError(
+            "mixed mesh geometry has no reference elements; construct it with MixedMeshCache(backend, workgroup, mesh, element_v, element_P)"
+        )
+    )
     return geometry
 end
 
@@ -263,16 +278,16 @@ end
 MixedMeshCache(geo_v, geo_P) = MixedMeshCache(geo_v, geo_P, nothing, nothing)
 
 function MixedMeshCache(
-    backend,
-    workgroup,
-    mesh::MixedMesh{2},
-    element_v::ReferenceElement{TV},
-    element_P::ReferenceElement{TP};
-    geometry_precision = FP,
-) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
+        backend,
+        workgroup,
+        mesh::MixedMesh{2},
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP};
+        geometry_precision = FP,
+    ) where {NV, NP, FP, TV <: AbstractElement{2, NV, FP}, TP <: AbstractElement{2, NP, FP}}
     _check_geometry_precision(geometry_precision)
     NQ_v = length(element_v.integration_points.ω)
-    FPg  = geometry_precision
+    FPg = geometry_precision
     geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{2, FPg, 4}}, mesh.nels)
     geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
     _fill_mixed_geometry!(geo_v, geo_P, backend, workgroup, mesh, element_v, element_P)
@@ -280,17 +295,17 @@ function MixedMeshCache(
 end
 
 function _fill_mixed_geometry!(
-    geo_v, geo_P, backend, workgroup, mesh::MixedMesh{2},
-    element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
-) where {NV, NP, TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}}
+        geo_v, geo_P, backend, workgroup, mesh::MixedMesh{2},
+        element_v::ReferenceElement{TV}, element_P::ReferenceElement{TP},
+    ) where {NV, NP, TV <: AbstractElement{2, NV}, TP <: AbstractElement{2, NP}}
     ip_v = element_v.integration_points
     ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
     ∂N∂ξq_P = shape_function_gradients(element_P, ip_v)
 
-    TDev   = TA(backend)
+    TDev = TA(backend)
     coords = TDev(mesh.coords)
-    el2n   = TDev(mesh.el2n)
-    el2nP  = TDev(mesh.el2nP)
+    el2n = TDev(mesh.el2n)
+    el2nP = TDev(mesh.el2nP)
 
     precompute_geometry_kernel!(backend, workgroup)(
         geo_v, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
@@ -311,7 +326,7 @@ Recompute `mesh.geometry` in place from the current `mesh.coords`. Call it
 after moving the mesh nodes; the geometry arrays keep their identity, so
 references to `mesh.geometry.geo_v` and `mesh.geometry.geo_P` stay valid.
 """
-function update_geometry!(mesh::MixedMesh{2}; workgroup = 256)
+function update_geometry!(mesh::MixedMesh; workgroup = 256)
     geometry = _mesh_geometry(mesh)
     backend = KA.get_backend(geometry.geo_v)
     _fill_mixed_geometry!(
@@ -321,36 +336,105 @@ function update_geometry!(mesh::MixedMesh{2}; workgroup = 256)
     return mesh
 end
 
+"""
+    MixedMeshCache(backend, workgroup, mesh::MixedMesh{3}, element_v, element_P; geometry_precision=FP)
+
+Precompute geometry for a three-dimensional mixed mesh at the velocity
+integration points.
+
+The discontinuous pressure basis is defined on the velocity element's reference
+cell rather than on a sub-element of its own, so both geometry fields hold the
+velocity element's data: `geo_P` holds the velocity element's weighted volumes.
+`geometry_precision` sets the stored precision as in the two-dimensional method.
+"""
+function MixedMeshCache(
+        backend,
+        workgroup,
+        mesh::MixedMesh{3},
+        element_v::ReferenceElement{TV},
+        element_P::ReferenceElement{TP};
+        geometry_precision = FP,
+    ) where {NV, NP, FP, TV <: AbstractElement{3, NV, FP}, TP <: AbstractElement{3, NP, FP}}
+    _check_geometry_precision(geometry_precision)
+    NQ_v = length(element_v.integration_points.ω)
+    FPg = geometry_precision
+    geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{3, FPg, 9}}, mesh.nels)
+    geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
+    _fill_mixed_geometry!(geo_v, geo_P, backend, workgroup, mesh, element_v, element_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+end
+
+function _fill_mixed_geometry!(
+        geo_v, geo_P, backend, workgroup, mesh::MixedMesh{3},
+        element_v::ReferenceElement{TV}, element_P,
+    ) where {NV, TV <: AbstractElement{3, NV}}
+    ip_v = element_v.integration_points
+    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
+    TDev = TA(backend)
+    coords = TDev(mesh.coords)
+    el2n = TDev(mesh.el2n)
+    for geo in (geo_v, geo_P)
+        precompute_geometry_kernel!(backend, workgroup)(
+            geo, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
+            ndrange = mesh.nels,
+        )
+    end
+    KA.synchronize(backend)
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------
 
+# Local velocity nodes carrying the discontinuous pressure DoFs. Each row is the
+# node sitting at a reference point where the pressure basis is nodal, so that
+# gathering a continuous field at these nodes reproduces it exactly under the
+# pressure shape functions.
+#
+# Triangles: the P1 basis of `LinearElement{2, 3}` is nodal at the corners.
+# T10/T11: the P1 basis is nodal at the four tetrahedron vertices.
+# Hex27: the four-mode basis (1, ξ, η, ζ) is nodal at the cell center and the
+# +x, +y and +z face centers.
+_pressure_node_rows(::Val{2}, nlocal::Integer) = nlocal >= 3 ? (1, 2, 3) :
+    throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+function _pressure_node_rows(::Val{3}, nlocal::Integer)
+    nlocal in (10, 11) && return (1, 2, 3, 4)
+    nlocal == 27 && return (27, 23, 24, 26)
+    throw(ArgumentError("three-dimensional discontinuous pressure needs T10, T11, or Hex27 connectivity"))
+end
+
 """
     generate_discontinuous_linear_mesh(coords, el2n) -> (p_el2n, p_el2dof, p_dof_coords)
 
-Build the linear triangle topology and element-to-DoF map for discontinuous
-linear pressure elements.
+Build the topology and element-to-DoF map for discontinuous linear pressure
+elements.
 
-`el2n` may be either T3 or T6 triangle connectivity. The returned `p_el2n`
-uses rows 1:3, i.e. the corner nodes of each triangle. The returned
-`p_el2dof` gives each element its own three pressure DoFs:
-`p_el2dof[:, iel] == 3(iel - 1) .+ (1:3)`.
+`el2n` may be T3, T6 or T7 triangle connectivity, T10/T11 tetrahedral
+connectivity, or Hex27 connectivity. The returned `p_el2n` selects the velocity
+nodes at which the pressure basis is nodal: triangle/tetrahedron corners, or the
+cell center and +x, +y, +z face centers of a hexahedron. Each element receives
+its own `NP` pressure DoFs,
+`p_el2dof[:, iel] == NP(iel - 1) .+ (1:NP)`.
 
-Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates
-corner coordinates per element so a discontinuous nodal pressure field can be
-plotted or initialized directly on pressure DoFs.
+Returns `(p_el2n, p_el2dof, p_dof_coords)`, where `p_dof_coords` duplicates the
+selected node coordinates per element so a discontinuous nodal pressure field
+can be plotted or initialized directly on pressure DoFs.
 """
-function generate_discontinuous_linear_mesh(coords, el2n::AbstractMatrix{<:Integer})
-    size(el2n, 1) >= 3 || throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+function generate_discontinuous_linear_mesh(
+        coords::AbstractVector{<:SVector{nDim}}, el2n::AbstractMatrix{<:Integer},
+    ) where {nDim}
+    rows = _pressure_node_rows(Val(nDim), size(el2n, 1))
+    NP = length(rows)
 
-    nels      = size(el2n, 2)
-    p_el2n    = Matrix{Int32}(el2n[1:3, :])
-    p_el2dof  = Matrix{Int32}(undef, 3, nels)
-    p_dof_coords = Vector{eltype(coords)}(undef, 3 * nels)
+    nels = size(el2n, 2)
+    p_el2n = Matrix{Int32}(el2n[collect(rows), :])
+    p_el2dof = Matrix{Int32}(undef, NP, nels)
+    p_dof_coords = Vector{eltype(coords)}(undef, NP * nels)
 
     for iel in 1:nels
-        base = 3 * (iel - 1)
-        for a in 1:3
+        base = NP * (iel - 1)
+        for a in 1:NP
             dof = base + a
             p_el2dof[a, iel] = Int32(dof)
             p_dof_coords[dof] = coords[p_el2n[a, iel]]

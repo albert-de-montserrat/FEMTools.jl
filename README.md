@@ -113,7 +113,7 @@ apply_bc!(A, rhs, ΓD)     # symmetric elimination
 
 ## Solvers
 
-Three matrix-free, backend-agnostic solvers are built on the mesh and element
+Matrix-free, backend-agnostic solvers are built on the mesh and element
 primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 
 | Solver | State type | Entry point |
@@ -121,6 +121,7 @@ primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 | Transient multi-phase heat diffusion | `ThermalDiffusionDR` | `solver!` |
 | Lithostatic pressure | `LithostaticPressureDR` | `solver!` |
 | Incompressible visco-elasto-plastic Stokes flow | `StokesDR` | `solve_stokes_dyrel!` |
+| Coupled thermal–Stokes flow with optional shear heating | `ThermalDiffusionDR` + `StokesDR` | `solve_coupled_dyrel!` |
 
 Thermal and lithostatic solvers share a typed `ThermalMaterial` containing
 per-phase `k`, `Cp`, `ρ0`, `α`, and `K` tuples.
@@ -133,8 +134,8 @@ dynamic-relaxation work arrays, `SymmetricTensor2D`/`SymmetricTensor3D` for the
 deviatoric-stress history — so components are reached as `dr.v.x` and
 `dr.τ.xy`. Each component remains a plain array that a kernel can take
 unchanged. The spatial dimension follows the length of the gravity vector, so a
-three-component `g` yields a three-dimensional state; the mixed-mesh Stokes
-solver itself is two-dimensional.
+three-component `g` yields a three-dimensional state. The mixed-mesh Stokes
+solver runs in plane strain and in 3-D (T11/P1-discontinuous and Hex27/Q2–P1).
 
 Runnable scripts live under [`examples/`](examples/); see the
 [documentation](https://albert-de-montserrat.github.io/FEMTools.jl/dev/) for the

@@ -78,6 +78,9 @@ Build locally from the repository root:
 julia --project=docs docs/make.jl
 ```
 
+`docs/Project.toml` sources `FEMTools` from `..`, so the build uses the
+working tree without a separate `Pkg.develop`.
+
 For documentation changes, check:
 
 - Documenter completes without missing exports or unresolved references;

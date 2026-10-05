@@ -4,6 +4,9 @@ Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 FEMTools = "ed1482a8-558d-4a41-9c93-204a47dfc9ef"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
+[sources]
+FEMTools = {path = ".."}
+
 [compat]
 DomainSets = "0.8.0"
 Documenter = "1"

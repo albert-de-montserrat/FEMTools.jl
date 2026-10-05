@@ -16,7 +16,7 @@ julia> FEMTools.interp2ip(SVector(0.25, 0.25, 0.5), SVector(1.0, 2.0, 4.0))
 ```
 """
 @generated function interp2ip(N::SVector{M, T}, v::SVector{M, T}) where {M, T}
-    quote
+    return quote
         @inline
         out = zero(T)
         Base.@nexprs $M i -> out += N[i] * v[i]
@@ -35,7 +35,7 @@ per-node phase indices (1-based). At node `i`, `var[phase[i]]` is the property
 value, and it is weighted by `N[i]` and accumulated.
 """
 @generated function interp2ip_phase(N::SVector{M, T}, var, phase) where {M, T}
-    quote
+    return quote
         @inline
         out = zero(T)
         Base.@nexprs $M i -> out += N[i] * var[phase[i]]
@@ -53,7 +53,7 @@ interpolate those nodal values to one integration point with weights `N`.
 `i`, `f(args[1][i], args[2][i], ...)` is multiplied by `N[i]` and accumulated.
 """
 @generated function interp2ip(N::SVector{M, T}, f::F, args::NTuple{A, SVector}) where {M, F, A, T}
-    quote
+    return quote
         @inline
         out = zero(T)
         Base.@nexprs $M i -> out += begin
@@ -64,13 +64,13 @@ interpolate those nodal values to one integration point with weights `N`.
     end
 end
 
-@inline _gather_local(arr, nodes, ::Val{N}) where N =
+@inline _gather_local(arr, nodes, ::Val{N}) where {N} =
     SVector{N}(ntuple(i -> arr[nodes[i]], Val(N)))
 
 @inline _phase_at(phases::AbstractMatrix, _, i, iel) =
     Int(phases[size(phases, 1) == 1 ? 1 : i, iel])
 @inline _phase_at(phases, nodes, i, _) = Int(phases[nodes[i]])
-@inline _gather_phase(phases, nodes, iel, ::Val{N}) where N =
+@inline _gather_phase(phases, nodes, iel, ::Val{N}) where {N} =
     SVector{N}(ntuple(i -> _phase_at(phases, nodes, i, iel), Val(N)))
 
 @inline function _add_local!(dest, nodes, values, ::Val{false})
@@ -139,10 +139,12 @@ end
 @inline function jacobian_rowsums_and_diagonal(
         ∂R∂same::StaticMatrix{N, N}, ∂R∂other::StaticMatrix{N, N},
     ) where {N}
-    rowsums = SVector{N}(ntuple(
-        i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:N),
-        Val(N),
-    ))
+    rowsums = SVector{N}(
+        ntuple(
+            i -> sum(abs(∂R∂same[i, j]) + abs(∂R∂other[i, j]) for j in 1:N),
+            Val(N),
+        )
+    )
     diags = SVector{N}(ntuple(i -> abs(∂R∂same[i, i]), Val(N)))
     return rowsums, diags
 end

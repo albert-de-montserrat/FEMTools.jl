@@ -20,11 +20,11 @@ The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
     Tref::FP = 0.0
 
     function StokesMaterial(
-        η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
-        G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
-        ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
-        g::NTuple{ndim, FP}, Tref::FP,
-    ) where {ndim, FP}
+            η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
+            G::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
+            ρ0::Tuple{FP, Vararg{FP}}, K::Tuple{FP, Vararg{FP}},
+            g::NTuple{ndim, FP}, Tref::FP,
+        ) where {ndim, FP}
         nphases = length(η)
         length(ηb) == length(G) == length(α) == length(ρ0) == length(K) == nphases ||
             throw(DimensionMismatch("Stokes material property tuples must have the same length"))
@@ -61,12 +61,12 @@ _zero_symmetric_tensor(::Val{3}, new_array, new_empty) = SymmetricTensor3D(
 
 # Declared ahead of StokesDR so that its docstring stays adjacent to the struct
 # it documents; a definition placed between the two silently steals it.
-struct IntegrationPointPlasticHistory{Tγ, Tθ}
+struct CapPlasticHistory{Tγ, Tθ}
     γ::Tγ
     θ::Tθ
 end
 
-struct IntegrationPointPlasticHistoryOutput{Tγ, Tθ}
+struct CapPlasticHistoryOutput{Tγ, Tθ}
     γ::Tγ
     θ::Tθ
     iel::Int
@@ -120,9 +120,10 @@ array.
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
 | `Q`        | Volumetric source/sink in continuity      |
+| `Pf`       | Fluid pressure; the yield functions see the effective pressure `P − Pf` |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
-| `M_P`      | Lumped pressure mass (`∫ N_i dΩ`)         |
+| `M_P`      | Pressure mass diagonal (`∫NᵢdΩ` in 2-D, `∫Nᵢ²dΩ` in 3-D) |
 | `Pnum`     | Arrow-Hurwicz numerical pressure correction (`γP·RP/M_P`) passed to the momentum equation |
 | `phases_P` | Per-node phase index (1-based integer)    |
 
@@ -161,8 +162,11 @@ history update; it is independent of stress storage and defaults to `nothing`.
 count, which is how a cell-local pressure layout such as `(4, nels)` is
 expressed. `T`, `T0`, and `Q` should be filled via `copyto!` before calling the
 solver. `Q` is the volumetric source (positive) or sink (negative) in the
-continuity equation.
-The time step `Δt` is passed directly to the assembler rather than stored here.
+continuity equation. `Pf` is the fluid (pore or magma) pressure on the pressure
+DoFs, zero by default. Only the yield functions read it: plasticity is evaluated
+at the effective pressure `P − Pf`, while the momentum balance and the equation
+of state keep the total pressure `P`. The time step `Δt` is passed directly to
+the assembler rather than stored here.
 
 `:none` suits a purely viscous model, where the shear modulus is infinite and the
 stress history is never read. `τ` and `τ_old` are then `nothing`,
@@ -172,8 +176,8 @@ stress history is never read. `τ` and `τ_old` are then `nothing`,
 The spatial dimension follows the length of `g`, defaulting to two. Pass a
 three-component gravity vector — `g = (0.0, 0.0, -9.81)`, or `(0.0, 0.0, 0.0)`
 for a gravity-free three-dimensional problem — to obtain `VectorField3D`
-velocity fields and `SymmetricTensor3D` stresses. The two-dimensional
-mixed-mesh solvers accept only `StokesDR{<:Any, 2}`.
+velocity fields and `SymmetricTensor3D` stresses. Mixed-mesh solvers accept
+one boundary condition per spatial dimension.
 """
 struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # velocity-node solution fields
@@ -198,6 +202,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     T::_TP
     T0::_TP
     Q::_TP
+    Pf::_TP
     # pressure-node residual and DR work arrays
     RP::_TP
     RP0::_TP
@@ -222,27 +227,33 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     ϵ::FP
 
     function StokesDR(
-        backend, nnodes_v, nnodes_P,
-        η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
-        ρ0   = nothing,
-        K    = nothing,
-        G    = nothing,
-        g    = nothing,
-        Tref = nothing,
-        CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1e-6,
-        stress_size = nothing,
-        plastic_history_size = nothing,
-    ) where {N, FP}
+            backend, nnodes_v, nnodes_P,
+            η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
+            ρ0 = nothing,
+            K = nothing,
+            G = nothing,
+            g = nothing,
+            Tref = nothing,
+            CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
+            stress_size = nothing,
+            plastic_history_size = nothing,
+        ) where {N, FP}
         nphases = N + 1
-        _ρ0  = ρ0  === nothing ? ntuple(_ -> FP(1),   Val(nphases)) : NTuple{nphases, FP}(ρ0)
-        _K   = K   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
-        _G   = G   === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
-        _g   = g   === nothing ? (FP(0), FP(0))   : map(FP, Tuple(g))
-        _Tref = Tref === nothing ? FP(0)           : FP(Tref)
-        stress_size isa Symbol && stress_size !== :none && throw(ArgumentError(
-            "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"))
-        plastic_history_size isa Symbol && plastic_history_size !== :none && throw(ArgumentError(
-            "plastic_history_size must be `nothing`, `:none`, an integer, or a size tuple; got :$plastic_history_size"))
+        _ρ0 = ρ0 === nothing ? ntuple(_ -> FP(1), Val(nphases)) : NTuple{nphases, FP}(ρ0)
+        _K = K === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
+        _G = G === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
+        _g = g === nothing ? (FP(0), FP(0)) : map(FP, Tuple(g))
+        _Tref = Tref === nothing ? FP(0) : FP(Tref)
+        stress_size isa Symbol && stress_size !== :none && throw(
+            ArgumentError(
+                "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"
+            )
+        )
+        plastic_history_size isa Symbol && plastic_history_size !== :none && throw(
+            ArgumentError(
+                "plastic_history_size must be `nothing`, `:none`, an integer, or a size tuple; got :$plastic_history_size"
+            )
+        )
         dim = _spatial_dimension(_g)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
@@ -250,19 +261,19 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             stress_size === :none ? nothing : _storage_dims(stress_size)
         history_dims = plastic_history_size === nothing || plastic_history_size === :none ?
             nothing : _storage_dims(plastic_history_size)
-        newv()  = KernelAbstractions.zeros(backend, FP,  v_dims...)
-        newP()  = KernelAbstractions.zeros(backend, FP,  P_dims...)
-        newτ()  = KernelAbstractions.zeros(backend, FP,  stress_dims...)
-        newτ0() = KernelAbstractions.zeros(backend, FP,  map(zero, stress_dims)...)
-        newiv() = KernelAbstractions.ones(backend,  Int32, v_dims...)
-        newip() = KernelAbstractions.ones(backend,  Int32, P_dims...)
+        newv() = KernelAbstractions.zeros(backend, FP, v_dims...)
+        newP() = KernelAbstractions.zeros(backend, FP, P_dims...)
+        newτ() = KernelAbstractions.zeros(backend, FP, stress_dims...)
+        newτ0() = KernelAbstractions.zeros(backend, FP, map(zero, stress_dims)...)
+        newiv() = KernelAbstractions.ones(backend, Int32, v_dims...)
+        newip() = KernelAbstractions.ones(backend, Int32, P_dims...)
         newvfield() = _zero_vector_field(dim, newv)
         newτfield() = stress_dims === nothing ? nothing : _zero_symmetric_tensor(dim, newτ, newτ0)
-        newhistory() = history_dims === nothing ? nothing : IntegrationPointPlasticHistory(
-            KernelAbstractions.zeros(backend, FP, history_dims...),
-            KernelAbstractions.zeros(backend, FP, history_dims...),
-        )
-        new{
+        newhistory() = history_dims === nothing ? nothing : CapPlasticHistory(
+                KernelAbstractions.zeros(backend, FP, history_dims...),
+                KernelAbstractions.zeros(backend, FP, history_dims...),
+            )
+        return new{
             nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
             typeof(newiv()), typeof(newP()), typeof(newip()), FP, typeof(newhistory()),
         }(
@@ -273,6 +284,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             newτfield(), newτfield(),                 # τ, τ_old
             newhistory(),                              # optional cap history
             newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
+            newP(),                                   # Pf
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _G, _g, _Tref,
@@ -290,14 +302,27 @@ three of them according to its dimension.
 velocity(dr::StokesDR) = Tuple(dr.v)
 
 """
-    stress(dr::StokesDR) -> (τxx, τyy, τxy) or (τxx, τyy, τzz, τyz, τxz, τxy)
+    stress(dr::StokesDR) -> (τxx, τyy, τxy) or (τxx, τyy, τzz, τxy, τxz, τyz)
 
 Return the independent deviatoric-stress component arrays of a Stokes solver
-state, in Voigt order and excluding the invariant slot, or `nothing` for a state
-built with `stress_size = :none`.
+state, in assembler order and excluding the invariant slot. In three dimensions
+this differs from the tensor container's Voigt order; for states built with
+`stress_size = :none`, it returns `nothing`.
 """
-stress(dr::StokesDR) = Tuple(dr.τ)
+stress(dr::StokesDR{<:Any, 2}) = Tuple(dr.τ)
+stress(dr::StokesDR{<:Any, 3}) =
+    (dr.τ.xx, dr.τ.yy, dr.τ.zz, dr.τ.xy, dr.τ.xz, dr.τ.yz)
 stress(::StokesDR{<:Any, <:Any, <:Any, Nothing}) = nothing
+
+"""
+    stress_old(dr::StokesDR) -> NTuple
+
+Return previous-time stress component arrays in the same assembler order as
+[`stress`](@ref).
+"""
+stress_old(dr::StokesDR{<:Any, 2}) = Tuple(dr.τ_old)
+stress_old(dr::StokesDR{<:Any, 3}) =
+    (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.zz, dr.τ_old.xy, dr.τ_old.xz, dr.τ_old.yz)
 
 """
     pressure(dr) -> P
@@ -319,9 +344,11 @@ StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
 
 StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
-    StokesDR(backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
-        ρ0 = material.ρ0, K = material.K, G = material.G,
-        g = material.g, Tref = material.Tref, kwargs...)
+    StokesDR(
+    backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
+    ρ0 = material.ρ0, K = material.K, G = material.G,
+    g = material.g, Tref = material.Tref, kwargs...
+)
 StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, material; kwargs...)
 
@@ -343,12 +370,12 @@ All fields are `NTuple{nphases, FP}`.  Pass `nothing` in place of a
 `DruckerPrager` wherever plasticity is not needed (the assemblers accept both).
 """
 struct DruckerPrager{nphases, FP}
-    cosϕ  :: NTuple{nphases, FP}
-    sinϕ  :: NTuple{nphases, FP}
-    sinΨ  :: NTuple{nphases, FP}
-    C     :: NTuple{nphases, FP}
-    η_reg :: NTuple{nphases, FP}
-    Kb    :: NTuple{nphases, FP}
+    cosϕ::NTuple{nphases, FP}
+    sinϕ::NTuple{nphases, FP}
+    sinΨ::NTuple{nphases, FP}
+    C::NTuple{nphases, FP}
+    η_reg::NTuple{nphases, FP}
+    Kb::NTuple{nphases, FP}
 end
 
 """
@@ -370,15 +397,13 @@ true
 ```
 """
 function DruckerPrager(
-    ϕ     :: Tuple{FP, Vararg{FP, N}},
-    Ψ     :: Tuple{FP, Vararg{FP, N}},
-    C     :: Tuple{FP, Vararg{FP, N}},
-    η_reg :: Tuple{FP, Vararg{FP, N}},
-    Kb    :: Tuple{FP, Vararg{FP, N}},
-) where {N, FP}
-    DruckerPrager{N + 1, FP}(
-        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb,
-    )
+        ϕ::Tuple{FP, Vararg{FP, N}},
+        Ψ::Tuple{FP, Vararg{FP, N}},
+        C::Tuple{FP, Vararg{FP, N}},
+        η_reg::Tuple{FP, Vararg{FP, N}},
+        Kb::Tuple{FP, Vararg{FP, N}},
+    ) where {N, FP}
+    return DruckerPrager{N + 1, FP}(map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb)
 end
 
 """
@@ -406,15 +431,15 @@ All fields are `NTuple{nphases, FP}`. The shear branch is identical to
 bulk modulus, so the cap cannot be used in the `K = Inf` incompressible gauge.
 """
 struct DruckerPragerCap{nphases, FP}
-    cosϕ  :: NTuple{nphases, FP}
-    sinϕ  :: NTuple{nphases, FP}
-    sinΨ  :: NTuple{nphases, FP}
-    C     :: NTuple{nphases, FP}
-    pT    :: NTuple{nphases, FP}
-    η_reg :: NTuple{nphases, FP}
-    Kb    :: NTuple{nphases, FP}
-    C_min :: NTuple{nphases, FP}
-    H_C   :: NTuple{nphases, FP}
+    cosϕ::NTuple{nphases, FP}
+    sinϕ::NTuple{nphases, FP}
+    sinΨ::NTuple{nphases, FP}
+    C::NTuple{nphases, FP}
+    pT::NTuple{nphases, FP}
+    η_reg::NTuple{nphases, FP}
+    Kb::NTuple{nphases, FP}
+    C_min::NTuple{nphases, FP}
+    H_C::NTuple{nphases, FP}
 end
 
 """
@@ -449,17 +474,17 @@ true
 ```
 """
 function DruckerPragerCap(
-    ϕ     :: Tuple{FP, Vararg{FP, N}},
-    Ψ     :: Tuple{FP, Vararg{FP, N}},
-    C     :: Tuple{FP, Vararg{FP, N}},
-    pT    :: Tuple{FP, Vararg{FP, N}},
-    η_reg :: Tuple{FP, Vararg{FP, N}},
-    Kb    :: Tuple{FP, Vararg{FP, N}},
-    ; C_min = C,
-      H_C = ntuple(_ -> zero(FP), Val(N + 1)),
-) where {N, FP}
+        ϕ::Tuple{FP, Vararg{FP, N}},
+        Ψ::Tuple{FP, Vararg{FP, N}},
+        C::Tuple{FP, Vararg{FP, N}},
+        pT::Tuple{FP, Vararg{FP, N}},
+        η_reg::Tuple{FP, Vararg{FP, N}},
+        Kb::Tuple{FP, Vararg{FP, N}},
+        ; C_min = C,
+        H_C = ntuple(_ -> zero(FP), Val(N + 1)),
+    ) where {N, FP}
     C_min = NTuple{N + 1, FP}(C_min)
-    H_C   = NTuple{N + 1, FP}(H_C)
+    H_C = NTuple{N + 1, FP}(H_C)
     for i in 1:(N + 1)
         all(isfinite, (ϕ[i], Ψ[i], C[i], pT[i], η_reg[i], Kb[i], C_min[i], H_C[i])) ||
             throw(ArgumentError("phase $i: tensile-cap parameters must all be finite"))
@@ -534,8 +559,8 @@ struct Stokes3DWorkspace{TV, TP, TB, TT}
 end
 
 function Stokes3DWorkspace(
-    velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
-)
+        velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+    )
     residual_v = ntuple(i -> similar(velocity[i]), 3)
     diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
     zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
@@ -546,17 +571,19 @@ function Stokes3DWorkspace(
 end
 
 """
-    StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme=false)
+    StokesAdjointWorkspace(dr, v_nodes...; enzyme=false)
 
-Caller-owned scratch for the two-dimensional Stokes adjoint DYREL solver.
+Caller-owned scratch for the mixed-mesh Stokes adjoint DYREL solver, with one
+set of constrained velocity nodes per direction in `v_nodes`, e.g.
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` in two dimensions.
 
 The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
 boundary-value buffers that would otherwise be allocated on every adjoint
 solve. Pass it as the `workspace` keyword of
 [`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
 optimization loop. Set `enzyme=true` when the workspace will be used with
-`operator = :enzyme`; the block and matrix-free paths do not allocate those
-additional reverse-mode buffers.
+`operator = :enzyme`, which is available in two dimensions only; the block and
+matrix-free paths do not allocate those additional reverse-mode buffers.
 
 A workspace belongs to the velocity and pressure layouts and boundary-node
 counts from which it was constructed. The solver validates those dimensions
@@ -568,30 +595,31 @@ struct StokesAdjointWorkspace{TC, TE}
     enzyme::TE
 end
 
-function StokesAdjointWorkspace(dr::StokesDR{<:Any, 2}, vx_nodes, vy_nodes; enzyme = false)
+function StokesAdjointWorkspace(
+        dr::StokesDR{<:Any, D}, v_nodes::Vararg{Any, D}; enzyme = false,
+    ) where {D}
+    enzyme && D != 2 &&
+        throw(ArgumentError("the Enzyme adjoint workspace is implemented in two dimensions only, got D = $D"))
+    Rv = Tuple(getfield(dr, :Rv))
+    v = velocity(dr)
     common = (;
-        ResλVx = zero(dr.Rv.x),
-        ResλVy = zero(dr.Rv.y),
+        Resλv = map(zero, Rv),
+        Resλv0 = map(zero, Rv),
         ResλP = zero(dr.P),
-        ResλVx0 = zero(dr.Rv.x),
-        ResλVy0 = zero(dr.Rv.y),
-        λrate_vx = zero(dr.v.x),
-        λrate_vy = zero(dr.v.y),
-        dvx = zero(dr.v.x),
-        dvy = zero(dr.v.y),
-        zero_vx_bc = fill!(similar(dr.v.x, length(vx_nodes)), 0),
-        zero_vy_bc = fill!(similar(dr.v.y, length(vy_nodes)), 0),
+        λrate = map(zero, v),
+        dv = map(zero, v),
+        zero_bc = map((vc, nodes) -> fill!(similar(vc, length(nodes)), 0), v, v_nodes),
     )
     enzyme_scratch = enzyme ? (;
-        Rv_x_buf = zero(dr.Rv.x),
-        Rv_y_buf = zero(dr.Rv.y),
-        seed_Rv_x = zero(dr.Rv.x),
-        seed_Rv_y = zero(dr.Rv.y),
-        seed_RP = zero(dr.RP),
-        dP = zero(dr.P),
-        dP_scratch = zero(dr.P),
-        Pnum = zero(dr.P),
-        dPnum = zero(dr.P),
-    ) : nothing
+            Rv_x_buf = zero(dr.Rv.x),
+            Rv_y_buf = zero(dr.Rv.y),
+            seed_Rv_x = zero(dr.Rv.x),
+            seed_Rv_y = zero(dr.Rv.y),
+            seed_RP = zero(dr.RP),
+            dP = zero(dr.P),
+            dP_scratch = zero(dr.P),
+            Pnum = zero(dr.P),
+            dPnum = zero(dr.P),
+        ) : nothing
     return StokesAdjointWorkspace(common, enzyme_scratch)
 end

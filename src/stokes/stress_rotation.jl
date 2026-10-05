@@ -1,15 +1,17 @@
 """
     rotate_stress!(dr, mesh_stokes::MixedMesh, Δt)
     rotate_stress!(dr, mesh_stokes, cache, element_v, Δt)
-    rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
+    rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt; workgroup=256)
 
 Advance the deviatoric-stress history by rotating the current stress
 `dr.τ` with the local vorticity over the time step `Δt`, writing the result
-into the components of `dr.τ_old`.
-Unpacks the solver state, connectivity (`mesh_stokes.el2n`), and element
-geometry (`cache.geo_v`) for the low-level `_rotate_stress!` worker.
-`element_v` supplies the velocity-node count `NV`. The `MixedMesh` form takes
-the geometry and element from `mesh_stokes.geometry`.
+into the components of `dr.τ_old`. Works in 2-D and 3-D; the per-point
+rotation is `GeoParams.rotate_elastic_stress`, with its vorticity conventions:
+`ω = ½(∂vx/∂y − ∂vy/∂x)` in 2-D and the full curl of `v` in 3-D. For a plane
+flow the two rotate in opposite senses; only the 3-D form is the Jaumann
+co-rotation.
+`element_v` supplies the velocity-node count. The `MixedMesh` form takes the
+geometry and element from `mesh_stokes.geometry`.
 """
 function rotate_stress!(dr, mesh_stokes::MixedMesh, Δt)
     cache = _mesh_geometry(mesh_stokes)
@@ -20,59 +22,40 @@ function rotate_stress!(dr, mesh_stokes, cache::MixedMeshCache, element_v, Δt)
     return rotate_stress!(dr, mesh_stokes, cache.geo_v, element_v, Δt)
 end
 
-function rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt)
-    return _rotate_stress!(
-        (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
-        (dr.τ.xx, dr.τ.yy, dr.τ.xy),
-        dr.v.x, dr.v.y, mesh_stokes.el2n, geo_v, Δt, element_v,
+function rotate_stress!(dr, mesh_stokes, geo_v, element_v, Δt; workgroup = 256)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
+    return launch!(
+        _rotate_stress_kernel!, KA.get_backend(dr.v.x), workgroup, size(mesh_stokes.el2n, 2),
+        _stress_components(dr.τ_old), _stress_components(dr.τ), Tuple(dr.v),
+        mesh_stokes.el2n, geo_v, ∂N∂ξ_v, Δt, _node_count(element_v),
     )
 end
 
-function _rotate_stress!(
-    τ_old,
-    τ,
-    vx, vy,
-    el2n_v,
-    geo_v,
-    dt,
-    element_v::ReferenceElement{TV},
-) where {NV, TV <: AbstractElement{2, NV}}
-    nels = size(el2n_v, 2)
-    ∂N∂ξ_v = shape_function_gradients(element_v)
+_node_count(::ReferenceElement{<:AbstractElement{<:Any, NV}}) where {NV} = Val(NV)
 
-    for iel in 1:nels
-        local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
-        vxloc = _gather_local(vx, local_nodes, Val(NV))
-        vyloc = _gather_local(vy, local_nodes, Val(NV))
-        geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+# Components in GeoParams' Voigt order: (xx, yy, xy) and (xx, yy, zz, yz, xz, xy).
+_stress_components(τ::SymmetricTensor2D) = (τ.xx, τ.yy, τ.xy)
+_stress_components(τ::SymmetricTensor3D) = (τ.xx, τ.yy, τ.zz, τ.yz, τ.xz, τ.xy)
 
-        for q in eachindex(geo_el)
-            ∂N∂x, = geo_el[q]
-            # velocity gradients
-            ∇vx = ∂N∂x' * vxloc
-            ∇vy = ∂N∂x' * vyloc
-            # vorticity ω = ½(∂vx/∂y − ∂vy/∂x)
-            ωxy_q = (∇vx[2] - ∇vy[1]) / 2
-            # rotate the current stress and store it as the old-stress history
-            τxx_q, τyy_q, τxy_q = rotate_stress_tensor(τ, ωxy_q, dt, q, iel)
-            τ_old[1][q, iel] = τxx_q
-            τ_old[2][q, iel] = τyy_q
-            τ_old[3][q, iel] = τxy_q
+# Vorticity in the form GeoParams expects: a scalar in 2-D, the curl in 3-D.
+@inline _vorticity((∇vx, ∇vy)::NTuple{2}) = (∇vx[2] - ∇vy[1]) / 2
+@inline _vorticity((∇vx, ∇vy, ∇vz)::NTuple{3}) =
+    (∇vz[2] - ∇vy[3], ∇vx[3] - ∇vz[1], ∇vy[1] - ∇vx[2])
+
+@kernel function _rotate_stress_kernel!(
+        τ_old, @Const(τ), @Const(v), @Const(el2n_v), @Const(geo_v), ∂N∂ξ_v, dt, ::Val{NV},
+    ) where {NV}
+    iel = @index(Global)
+    local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
+    vloc = map(vc -> _gather_local(vc, local_nodes, Val(NV)), v)
+    geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
+    for q in eachindex(geo_el)
+        ∂N∂x, = geo_el[q]
+        ω = _vorticity(map(vc -> ∂N∂x' * vc, vloc))
+        τq = map(c -> c[q, iel], τ)
+        rotated = GeoParams.rotate_elastic_stress(ω, τq, dt)
+        for c in eachindex(τ_old)
+            τ_old[c][q, iel] = rotated[c]
         end
     end
-
-    return nothing
-end
-
-# Rigid-body rotation of the deviatoric stress at integration point (q, iel).
-@inline function rotate_stress_tensor(τ, ω, dt, q::Int, iel::Int)
-    τxx = τ[1][q, iel]
-    τyy = τ[2][q, iel]
-    τxy = τ[3][q, iel]
-    sinθ, cosθ = sincos(ω * dt)
-    return (
-        cosθ^2 * τxx - 2 * sinθ * cosθ * τxy + sinθ^2 * τyy,
-        sinθ^2 * τxx + 2 * sinθ * cosθ * τxy + cosθ^2 * τyy,
-        sinθ * cosθ * (τxx - τyy) + (cosθ^2 - sinθ^2) * τxy,
-    )
 end
