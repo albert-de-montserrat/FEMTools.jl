@@ -344,7 +344,7 @@ state. See [`FrozenAdjointOperator`](@ref) for what each block contains.
         integrate_momentum_residual(
             v_arg, P_arg, Pnum_arg, T_loc,
             geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP,
-            τ_old_loc, plastic, nothing, nothing, nothing, nothing, Pf_loc,
+            τ_old_loc, plastic, nothing, nothing, nothing, Pf_loc,
         )...,
     )
 

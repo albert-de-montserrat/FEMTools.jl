@@ -459,7 +459,7 @@ function solve_stokes_dyrel!(
             phases_v, τ_old, plastic, nothing,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
-            nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
+            nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
         )
         _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
 
@@ -586,7 +586,7 @@ function solve_stokes_dyrel!(
                 phases_v, τ_old, plastic, nothing,
                 dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
-                nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
+                nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
             )
 
             _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
@@ -708,10 +708,9 @@ Refresh integration-point stresses using the elements in `mesh.geometry`, solver
 material and stress history, and optional phase-layout overrides. `τ` receives
 components in the assembler order returned by `stress(dr)`; the history
 defaults to `stress_old(dr)`.
-Pass `plastic_history=` to capture multiplier and accumulated plastic strain;
-its `D` field is used as optional lagged damage input unless `damage_old=` is
-provided explicitly. Pass `damage_update=(εc, th)` with matching per-IP arrays
-to update `D` once from the accepted plastic-strain increment.
+Pass an [`IntegrationPointPlasticHistory`](@ref) as `plastic_history=` to
+capture the Drucker--Prager multiplier and plastic strain rate; accumulate the
+plastic strain with [`update_plastic_history!`](@ref) once per accepted step.
 
 The tensile-cap history `dr.plastic_history` is only read here, never advanced,
 so this may be called any number of times. Use
@@ -726,8 +725,6 @@ function update_stokes_current_stress!(
         phases_v = dr.phases_v,
         τ_old = stress_old(dr),
         plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
         workgroup = 256,
     ) where {D}
     cache = _mesh_geometry(mesh)
@@ -735,7 +732,6 @@ function update_stokes_current_stress!(
     return update_stokes_current_stress!(
         dr, mesh, cache, cache.element_v, cache.element_P,
         phases_v, τ_old, plastic, τ, dr.G, Δt, backend, workgroup, plastic_history,
-        damage_old, damage_update,
     )
 end
 
@@ -762,13 +758,10 @@ function update_stokes_current_stress!(
         backend,
         workgroup,
         plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
     )
     return update_stokes_current_stress!(
         dr, mesh_stokes, cache.geo_v, element_v, element_P,
         phases_v, τ_old, plastic, τ, G, Δt, backend, workgroup, plastic_history,
-        damage_old, damage_update,
     )
 end
 
@@ -787,10 +780,7 @@ function update_stokes_current_stress!(
         backend,
         workgroup,
         plastic_history = nothing,
-        damage_old = nothing,
-        damage_update = nothing,
     )
-    εpl_old = isnothing(damage_update) || isnothing(plastic_history) ? nothing : copy(plastic_history.εpl)
     assemble_momentum_residual_matrices_atomix!(
         Tuple(getfield(dr, :Rv)),
         velocity(dr), dr.P, dr.T, nothing,
@@ -799,14 +789,9 @@ function update_stokes_current_stress!(
         phases_v, τ_old, plastic, τ, dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
         backend, workgroup;
         plastic_multiplier_store = plastic_history,
-        damage_old = isnothing(damage_old) && !isnothing(plastic_history) ? plastic_history.D : damage_old,
         γ_history = _plastic_history_gamma(dr.plastic_history),
         Pf = dr.Pf,
     )
-    if !isnothing(damage_update) && !isnothing(plastic_history)
-        εc, th = damage_update
-        update_damage_from_history!(plastic_history, εpl_old, εc, th, Δt; workgroup)
-    end
     return τ
 end
 

@@ -357,8 +357,8 @@ With `shared=:face`, two elements are adjacent only when they share a complete
 codimension-one entity: an edge in 2-D or a face in 3-D. `shared=:node` is the
 more permissive corner/node graph. High-order connectivity uses only corner
 nodes to identify faces, so midpoint and bubble numbering cannot change the
-topological graph. A four-node element is interpreted as a 2-D quadrilateral;
-pass `dimension=3` to interpret it as a tetrahedron.
+topological graph. Four- and eight-node connectivity is ambiguous (Quad4 or
+Tet4, Quad8 or Hex8), so `shared=:face` requires `dimension` for those counts.
 
 The result is a vector of sorted `Int32` neighbor lists, with one entry per
 element. Host-side construction is intentional; it is used by diagnostics and
@@ -370,7 +370,10 @@ function generate_element_adjacency(el2n; shared = :face, dimension = nothing)
     nlocal, nels = size(el2n)
     nels > 0 || return Vector{Vector{Int32}}()
     all(>(0), el2n) || throw(ArgumentError("connectivity indices must be positive"))
-    dim = dimension === nothing ? (nlocal in (10, 11, 8, 27) ? 3 : 2) : dimension
+    dimension === nothing && shared === :face && nlocal in (4, 8) && throw(
+        ArgumentError("$nlocal-node connectivity is ambiguous between 2-D and 3-D elements; pass `dimension`")
+    )
+    dim = dimension === nothing ? (nlocal in (10, 11, 27) ? 3 : 2) : dimension
     dim in (2, 3) || throw(ArgumentError("dimension must be 2 or 3"))
 
     corner_rows, entities = if shared === :node

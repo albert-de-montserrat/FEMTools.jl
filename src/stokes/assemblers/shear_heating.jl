@@ -66,7 +66,7 @@ end
         Peq = _effective_pressure(dot(NqP[q], P_loc), _fluid_pressure_at_ip(NqP[q], Pf_loc))
         τ, _ = deviatoric_stress_and_pressure(
             vloc, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_o, Peq, plastic,
-            nothing, _history_at_ip(γ_loc, q),
+            _history_at_ip(γ_loc, q),
         )
         _, inv_2Gdt = viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
         shear_dissipation(τ, τ_o, map(vc -> ∂N∂x' * vc, vloc), inv_2Gdt)

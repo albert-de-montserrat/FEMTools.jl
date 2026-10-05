@@ -369,32 +369,6 @@ Per-phase Drucker-Prager elasto-viscoplastic parameters.
 All fields are `NTuple{nphases, FP}`.  Pass `nothing` in place of a
 `DruckerPrager` wherever plasticity is not needed (the assemblers accept both).
 """
-struct DamageLaw{nphases, FP}
-    εc::NTuple{nphases, FP}
-    fC::NTuple{nphases, FP}
-    fμ::NTuple{nphases, FP}
-    th::NTuple{nphases, FP}
-
-    function DamageLaw(
-            εc::Tuple{FP, Vararg{FP, N}},
-            fC::Tuple{FP, Vararg{FP, N}},
-            fμ::Tuple{FP, Vararg{FP, N}},
-            th::Tuple{FP, Vararg{FP, N}},
-        ) where {N, FP}
-        nphases = N + 1
-        length(fC) == length(fμ) == length(th) == nphases ||
-            throw(DimensionMismatch("damage-law tuples must have equal lengths"))
-        all(isfinite, εc) && all(>(zero(FP)), εc) ||
-            throw(ArgumentError("damage strain scales εc must be finite and positive"))
-        all(x -> zero(FP) <= x <= one(FP), fC) &&
-            all(x -> zero(FP) <= x <= one(FP), fμ) ||
-            throw(ArgumentError("damage residual fractions must lie in [0, 1]"))
-        all(x -> (isfinite(x) && x > zero(FP)) || isinf(x), th) ||
-            throw(ArgumentError("healing times must be positive or Inf"))
-        return new{nphases, FP}(εc, fC, fμ, th)
-    end
-end
-
 struct DruckerPrager{nphases, FP}
     cosϕ::NTuple{nphases, FP}
     sinϕ::NTuple{nphases, FP}
@@ -402,7 +376,6 @@ struct DruckerPrager{nphases, FP}
     C::NTuple{nphases, FP}
     η_reg::NTuple{nphases, FP}
     Kb::NTuple{nphases, FP}
-    damage::Union{Nothing, DamageLaw{nphases, FP}}
 end
 
 """
@@ -428,15 +401,9 @@ function DruckerPrager(
         Ψ::Tuple{FP, Vararg{FP, N}},
         C::Tuple{FP, Vararg{FP, N}},
         η_reg::Tuple{FP, Vararg{FP, N}},
-        Kb::Tuple{FP, Vararg{FP, N}};
-        damage = nothing,
+        Kb::Tuple{FP, Vararg{FP, N}},
     ) where {N, FP}
-    nphases = N + 1
-    damage === nothing || damage isa DamageLaw{nphases, FP} ||
-        throw(ArgumentError("damage law must use the same phase count and floating-point type"))
-    return DruckerPrager{N + 1, FP}(
-        map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb, damage,
-    )
+    return DruckerPrager{N + 1, FP}(map(cos, ϕ), map(sin, ϕ), map(sin, Ψ), C, η_reg, Kb)
 end
 
 """

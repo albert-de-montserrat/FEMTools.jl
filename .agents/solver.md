@@ -287,7 +287,11 @@ momentum, pressure output, and history rates all call it through
 solve returns NaN, which the DR solver's non-finite residual checks stop on.
 `update_stokes_current_stress!` is read-only for plastic history;
 `commit_stokes_plastic_history!` is its only writer, called once per converged
-step before `τ_old` is refreshed.
+step before `τ_old` is refreshed. The Drucker-Prager
+`IntegrationPointPlasticHistory(λ, ε̇pl, εpl)` follows the same split in 2-D
+and 3-D: momentum assembly overwrites `λ` and `ε̇pl` (idempotent), and only
+`update_plastic_history!` advances `εpl += Δt·ε̇pl`, once per accepted step.
+There is no damage or strain-weakening law for `DruckerPrager`.
 Material parameters are still interpolated to the IP before evaluating one cap,
 not blended per phase as JustRelax's ratio adapter does.
 

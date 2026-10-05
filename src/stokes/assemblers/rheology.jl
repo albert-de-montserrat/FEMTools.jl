@@ -1,69 +1,5 @@
 @inline effective_viscosity(η, G, Δt) = inv(inv(η) + inv(G * Δt))
 
-"""Build per-IP damage parameters from a `(q, element)` phase-index array."""
-function damage_update_parameters(phases_ip::AbstractMatrix, law::DamageLaw)
-    all(1 <= p <= length(law.εc) for p in phases_ip) ||
-        throw(ArgumentError("phase indices must lie within the damage-law phase range"))
-    εc = similar(phases_ip, eltype(law.εc))
-    th = similar(phases_ip, eltype(law.th))
-    for i in axes(phases_ip, 2), q in axes(phases_ip, 1)
-        phase = phases_ip[q, i]
-        εc[q, i] = law.εc[phase]
-        th[q, i] = law.th[phase]
-    end
-    return εc, th
-end
-
-"""Interpolate damage threshold and healing time at one integration point."""
-@inline function damage_update_parameters(N, phase_loc, law::DamageLaw)
-    return (
-        interp2ip_phase(N, law.εc, phase_loc),
-        interp2ip_phase(N, law.th, phase_loc),
-    )
-end
-
-"""Return lagged damage- weakened `(cosϕ, sinϕ, C)` for one phase."""
-@inline function weakened_drucker_prager_parameters(
-        plastic::DruckerPrager, D, phase,
-    )
-    law = plastic.damage
-    law === nothing && return plastic.cosϕ[phase], plastic.sinϕ[phase], plastic.C[phase]
-    zeroD = zero(D)
-    oneD = one(D)
-    Dq = clamp(D, zeroD, oneD)
-    strength_C = oneD - (oneD - law.fC[phase]) * Dq
-    strength_μ = oneD - (oneD - law.fμ[phase]) * Dq
-    tanϕ = plastic.sinϕ[phase] / plastic.cosϕ[phase]
-    tanϕ_eff = tanϕ * strength_μ
-    cosϕ_eff = inv(sqrt(oneD + tanϕ_eff^2))
-    sinϕ_eff = tanϕ_eff * cosϕ_eff
-    return cosϕ_eff, sinϕ_eff, plastic.C[phase] * strength_C
-end
-
-@kernel function _update_damage_kernel!(D, Δεpl, εc, th, Δt)
-    I = @index(Global, NTuple)
-    Dold = D[I...]
-    healing = isinf(th[I...]) ? one(Dold) : one(Dold) + Δt / th[I...]
-    D[I...] = clamp((Dold + Δεpl[I...] / εc[I...]) / healing, zero(Dold), one(Dold))
-end
-
-"""Implicitly update lagged damage from an accepted plastic-strain increment."""
-function update_damage!(D, Δεpl, εc, th, Δt; workgroup = 256)
-    size(D) == size(Δεpl) == size(εc) == size(th) ||
-        throw(DimensionMismatch("damage arrays must have equal sizes"))
-    Δt >= 0 || throw(ArgumentError("Δt must be nonnegative"))
-    all(isfinite, εc) && all(>(zero(eltype(εc))), εc) ||
-        throw(ArgumentError("εc must be finite and positive"))
-    all(x -> (isfinite(x) && x > zero(x)) || isinf(x), th) ||
-        throw(ArgumentError("healing times must be positive or Inf"))
-    all(x -> isfinite(x) && x >= zero(x), Δεpl) ||
-        throw(ArgumentError("plastic-strain increments must be finite and nonnegative"))
-    backend = KA.get_backend(D)
-    _update_damage_kernel!(backend, workgroup)(D, Δεpl, εc, th, Δt; ndrange = size(D))
-    KA.synchronize(backend)
-    return D
-end
-
 """
     viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt) -> (ηve, inv_2Gdt)
 
@@ -126,118 +62,76 @@ end
 IntegrationPointStressOutput(τ::NTuple, iel) = IntegrationPointStressOutput(τ, nothing, iel)
 
 """
-    IntegrationPointPlasticHistory(λ, εpl, D)
+    IntegrationPointPlasticHistory(λ, ε̇pl, εpl)
 
-Per-integration-point plastic state owned by a Stokes driver or example.  The
-arrays are indexed `(q, element)`.  `λ` is the diagnostic Drucker--Prager
-multiplier, `εpl` is the accumulated scalar multiplier measure, and `D` is the
-damage state reserved for the GAP-2 weakening update.
+Per-integration-point Drucker--Prager plastic state owned by a Stokes driver or
+example. The arrays are indexed `(q, element)`. `λ` is the plastic multiplier
+and `ε̇pl` the plastic strain-rate invariant; momentum assembly overwrites both
+on every call. `εpl` is the accumulated plastic strain, advanced only by
+[`update_plastic_history!`](@ref).
 """
-struct IntegrationPointPlasticHistory{Tλ, Tε, TD}
+struct IntegrationPointPlasticHistory{Tλ, Tr, Tε}
     λ::Tλ
+    ε̇pl::Tr
     εpl::Tε
-    D::TD
 end
 
-"""Element-pinned, isbits view used by a per-element diagnostic kernel."""
-struct IntegrationPointPlasticHistoryOutput{Tλ, Tε, TD, Tdt}
+"""Element-pinned, isbits view used by a per-element assembly kernel."""
+struct IntegrationPointPlasticHistoryOutput{Tλ, Tr}
     λ::Tλ
-    εpl::Tε
-    D::TD
+    ε̇pl::Tr
     iel::Int
-    Δt::Tdt
 end
 
-IntegrationPointPlasticHistoryOutput(λ, εpl, D, iel) =
-    IntegrationPointPlasticHistoryOutput(λ, εpl, D, Int(iel), zero(eltype(εpl)))
+@inline IntegrationPointPlasticHistoryOutput(history::IntegrationPointPlasticHistory, iel) =
+    IntegrationPointPlasticHistoryOutput(history.λ, history.ε̇pl, Int(iel))
 
 struct IntegrationPointPlasticMultiplierOutput{T}
     λ::T
     iel::Int
 end
 
-@inline IntegrationPointPlasticHistoryOutput(history::IntegrationPointPlasticHistory, iel) =
-    IntegrationPointPlasticHistoryOutput(history.λ, history.εpl, history.D, Int(iel), zero(eltype(history.εpl)))
-
-@inline IntegrationPointPlasticHistoryOutput(
-    history::IntegrationPointPlasticHistory, iel, Δt,
-) = IntegrationPointPlasticHistoryOutput(
-    history.λ, history.εpl, history.D, Int(iel), convert(eltype(history.εpl), Δt),
-)
-
-@inline function store_plastic_multiplier_at_ip!(
-        ::Nothing, _, _,
-    )
-    return nothing
-end
-
-@inline function store_plastic_multiplier_at_ip!(
-        ::Nothing, _, _, _,
-    )
-    return nothing
-end
-
-@inline function store_plastic_multiplier_at_ip!(
-        history::IntegrationPointPlasticHistoryOutput, q, λ,
-    )
-    history.λ[q, history.iel] = λ
-    return nothing
-end
+@inline store_plastic_multiplier_at_ip!(::Nothing, _, _, _) = nothing
 
 @inline function store_plastic_multiplier_at_ip!(
         history::IntegrationPointPlasticHistoryOutput, q, λ, ε̇pl,
     )
     history.λ[q, history.iel] = λ
-    history.εpl[q, history.iel] += history.Δt * ε̇pl
+    history.ε̇pl[q, history.iel] = ε̇pl
     return nothing
 end
 
 @inline function store_plastic_multiplier_at_ip!(
-        output::IntegrationPointPlasticMultiplierOutput, q, λ,
+        output::IntegrationPointPlasticMultiplierOutput, q, λ, _,
     )
     output.λ[q, output.iel] = λ
     return nothing
 end
-@inline store_plastic_multiplier_at_ip!(output::IntegrationPointPlasticMultiplierOutput, q, λ, _) =
-    store_plastic_multiplier_at_ip!(output, q, λ)
 
-"""Accumulate the current scalar plastic multiplier over one accepted step."""
-@kernel function _update_plastic_history_kernel!(εpl, D, λ, Δt)
+@kernel function _update_plastic_history_kernel!(εpl, ε̇pl, Δt)
     I = @index(Global, NTuple)
-    εpl[I...] += Δt * λ[I...]
+    εpl[I...] += Δt * ε̇pl[I...]
 end
 
 """
     update_plastic_history!(history, Δt; workgroup=256)
 
-Update the per-IP scalar plastic history once after a converged step.  The
-multiplier array is read-only; `D` is carried through unchanged until the
-damage law is introduced.  The update is backend-neutral and preserves the
-array element type.
+Accept one step into the accumulated plastic strain, `εpl += Δt·ε̇pl`, using the
+strain rate stored by the last momentum assembly. Call it exactly once per
+converged step. The update is backend-neutral and preserves the array element
+type.
 """
 function update_plastic_history!(
         history::IntegrationPointPlasticHistory, Δt; workgroup = 256,
     )
-    size(history.λ) == size(history.εpl) || throw(DimensionMismatch("λ and εpl must have equal sizes"))
-    size(history.λ) == size(history.D) || throw(DimensionMismatch("λ and D must have equal sizes"))
+    size(history.λ) == size(history.ε̇pl) == size(history.εpl) ||
+        throw(DimensionMismatch("λ, ε̇pl, and εpl must have equal sizes"))
     Δt >= 0 || throw(ArgumentError("Δt must be nonnegative"))
     backend = KA.get_backend(history.εpl)
     _update_plastic_history_kernel!(backend, workgroup)(
-        history.εpl, history.D, history.λ, Δt; ndrange = size(history.λ),
+        history.εpl, history.ε̇pl, Δt; ndrange = size(history.εpl),
     )
     KA.synchronize(backend)
-    return history
-end
-
-"""Update `history.D` from the accepted increment in `history.εpl`."""
-function update_damage_from_history!(
-        history::IntegrationPointPlasticHistory, εpl_old, εc, th, Δt;
-        workgroup = 256,
-    )
-    size(εpl_old) == size(history.εpl) ||
-        throw(DimensionMismatch("old and current εpl arrays must have equal sizes"))
-    Δεpl = history.εpl .- εpl_old
-    update_damage!(history.D, Δεpl, εc, th, Δt; workgroup)
     return history
 end
 
@@ -332,8 +226,6 @@ end
 # Dispatch: no plasticity when plastic===nothing.
 @inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing) =
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
-@inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing, _) =
-    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
 
 # Fluid pressure enters only the yield functions: they see the effective
 # pressure P − Pf, and a pressure the return map corrects is shifted back by Pf,
@@ -352,9 +244,9 @@ end
 @inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic) =
     deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, nothing)
 
-@inline deviatoric_stress_and_pressure(
-    v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing, ::Nothing,
-) = (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)
+# `γ` is the accepted cap history; only `DruckerPragerCap` reads it.
+@inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ) =
+    (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic), Pq)
 
 """
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
@@ -371,7 +263,6 @@ denominator stays positive for any dilation angle.
 @inline function _deviatoric_stress_with_multiplier(
         v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
         τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
-        Dq = zero(Pq),
     )
     vxloc, vyloc = v
     ∇vx = ∂N∂x' * vxloc
@@ -400,17 +291,6 @@ denominator stays positive for any dilation angle.
     C = interp2ip_phase(Nv, plastic.C, phase_loc)
     η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
     Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
-    if plastic.damage !== nothing
-        damage = plastic.damage
-        fC = interp2ip_phase(Nv, damage.fC, phase_loc)
-        fμ = interp2ip_phase(Nv, damage.fμ, phase_loc)
-        Dq = clamp(Dq, zero(Dq), one(Dq))
-        C *= one(Dq) - (one(Dq) - fC) * Dq
-        tanϕ = sinϕ / cosϕ
-        tanϕ *= one(Dq) - (one(Dq) - fμ) * Dq
-        cosϕ = inv(sqrt(one(Dq) + tanϕ^2))
-        sinϕ = tanϕ * cosϕ
-    end
 
     # Drucker-Prager yield function.
     # second_invariant returns τxx²+τyy²+τzz²+2τxy² = 2J₂, so τII = sqrt(J₂) = sqrt(SI/2).
@@ -461,30 +341,12 @@ by the history update.  The out-of-plane direction is reconstructed as
     return abs(λ) * flow_norm
 end
 
-"""Return the 2-D Drucker--Prager plastic multiplier at one quadrature point."""
-@inline function plastic_multiplier(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
-    )
-    _, λ, _ = _deviatoric_stress_with_multiplier(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic,
-    )
-    return λ
-end
-
-@inline function plastic_multiplier(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager, Dq,
-    )
-    _, λ, _ = _deviatoric_stress_with_multiplier(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, Dq,
-    )
-    return λ
-end
+"""Return the Drucker--Prager plastic multiplier at one quadrature point."""
+@inline plastic_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) =
+    _deviatoric_stress_with_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic)[2]
 
 @inline function plastic_strain_rate_invariant(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
+        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager,
     )
     _, λ, ∂Q∂τ = _deviatoric_stress_with_multiplier(
         v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic,
@@ -492,35 +354,8 @@ end
     return plastic_strain_rate_invariant(λ, ∂Q∂τ)
 end
 
-@inline function plastic_strain_rate_invariant(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager, Dq,
-    )
-    _, λ, ∂Q∂τ = _deviatoric_stress_with_multiplier(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, Dq,
-    )
-    return plastic_strain_rate_invariant(λ, ∂Q∂τ)
-end
-
-@inline function deviatoric_stress(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
-    )
-    τij, _, _ = _deviatoric_stress_with_multiplier(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic,
-    )
-    return τij
-end
-
-@inline function deviatoric_stress(
-        v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{3}, Pq, plastic::DruckerPrager, Dq,
-    )
-    τij, _, _ = _deviatoric_stress_with_multiplier(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, Dq,
-    )
-    return τij
-end
+@inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) =
+    first(_deviatoric_stress_with_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic))
 
 
 """
@@ -599,11 +434,9 @@ free in-plane components, with `τzz = −τxx − τyy` slaved to them, so its 
 direction is not radial. The two return maps therefore differ even when the
 three-dimensional kinematics reduce to plane strain.
 """
-@inline function deviatoric_stress(
+@inline function _deviatoric_stress_with_multiplier(
         v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
-        τ_old::NTuple{6}, Pq,
-        plastic::DruckerPrager,
-        Dq = zero(Pq),
+        τ_old::NTuple{6}, Pq, plastic::DruckerPrager,
     )
     τij = deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
     ηve = effective_viscosity_phase(Nv, η, G, phase_loc, Δt)
@@ -615,17 +448,6 @@ three-dimensional kinematics reduce to plane strain.
     C = interp2ip_phase(Nv, plastic.C, phase_loc)
     η_reg = interp2ip_phase(Nv, plastic.η_reg, phase_loc)
     Kb = interp2ip_phase(Nv, plastic.Kb, phase_loc)
-    if plastic.damage !== nothing
-        damage = plastic.damage
-        fC = interp2ip_phase(Nv, damage.fC, phase_loc)
-        fμ = interp2ip_phase(Nv, damage.fμ, phase_loc)
-        Dq = clamp(Dq, zero(Dq), one(Dq))
-        C *= one(Dq) - (one(Dq) - fC) * Dq
-        tanϕ = sinϕ / cosϕ
-        tanϕ *= one(Dq) - (one(Dq) - fμ) * Dq
-        cosϕ = inv(sqrt(one(Dq) + tanϕ^2))
-        sinϕ = tanϕ * cosϕ
-    end
 
     τII = second_invariant(τij)
     τII_safe = τII + eps(typeof(τII))^2
@@ -641,14 +463,20 @@ three-dimensional kinematics reduce to plane strain.
 
     λ = F > 0 ? F / (ηve + η_reg + Kb * Δt * ∂Q∂P * ∂F∂P) : zero(F)
 
-    return λ > 0 ? map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) : τij
+    τij = λ > 0 ? map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) : τij
+    return τij, λ, ∂Q∂τ
 end
 
-@inline function deviatoric_stress_and_pressure(
-        v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
-        plastic::DruckerPrager, ::Nothing,
-    )
-    return deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic), Pq
+"""
+    plastic_strain_rate_invariant(λ, ∂Q∂τ::NTuple{6}) -> ε̇pl
+
+Three-dimensional counterpart of the plane-strain method, with the flow
+direction stored as `(xx, yy, zz, xy, xz, yz)` and each shear contribution
+counted twice.
+"""
+@inline function plastic_strain_rate_invariant(λ, ∂Q∂τ::NTuple{6})
+    xx, yy, zz, xy, xz, yz = ∂Q∂τ
+    return abs(λ) * sqrt((2 / 3) * (xx^2 + yy^2 + zz^2 + 2 * (xy^2 + xz^2 + yz^2)))
 end
 
 
@@ -914,14 +742,6 @@ cap, from `cap_local_update` without cohesion softening.
     return result.τ, result.P
 end
 
-# Momentum-path form carrying both history inputs: the lagged damage `Dq` used
-# by `DruckerPrager`, and the accepted cap history `γ` used by `DruckerPragerCap`.
-@inline deviatoric_stress_and_pressure(
-    v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, Dq, γ,
-) = (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, Dq), Pq)
-@inline deviatoric_stress_and_pressure(
-    v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPragerCap, _, γ,
-) = deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)
 
 """
     plastic_history_rates(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ)

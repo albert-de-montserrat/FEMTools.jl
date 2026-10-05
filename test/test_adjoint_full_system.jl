@@ -259,7 +259,7 @@ end
         FEMTools.assemble_momentum_residual_kernel!(
             Rv, v, P, dr.T, Pnum, mesh.el2n, mesh.DoFsP, geo_v, nels, phases_v,
             τ_old, plastic, nothing, dr.η, dr.G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
-            Nq, NqP, ∂N∂ξ, Val(NV), Val(NP), wg, nothing, nothing, nothing, dr.Pf,
+            Nq, NqP, ∂N∂ξ, Val(NV), Val(NP), wg, nothing, nothing, dr.Pf,
         )
         return vcat(Rv..., RP)
     end

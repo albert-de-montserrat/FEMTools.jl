@@ -83,7 +83,6 @@ Weak form per node `i`:
         plastic = nothing,
         τ_store = nothing,
         λ_store = nothing,
-        D_old = nothing,
         γ_history = nothing,
     ) where {N, T, NP}
     Rv_x = zero(SVector{N, T})
@@ -93,17 +92,16 @@ Weak form per node `i`:
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(3))
         Pq = dot(NqP[q], P_loc)
-        Dq = _damage_at_ip(D_old, q)
         (τxx, τyy, τxy), Pq_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
             _history_at_ip(γ_history, q),
         )
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy, Pq_local)
         λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
             )
         ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic, Dq,
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
             )
         store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy) dΩ
@@ -150,7 +148,6 @@ equation of state keep the total pressure. `nothing` means zero fluid pressure.
         plastic = nothing,
         τ_store = nothing,
         λ_store = nothing,
-        D_old = nothing,
         γ_history = nothing,
         Pf_loc = nothing,
     ) where {N, NP}
@@ -166,20 +163,19 @@ equation of state keep the total pressure. `nothing` means zero fluid pressure.
         Pq = dot(NqP[q], P_loc)
         Pfq = _fluid_pressure_at_ip(NqP[q], Pf_loc)
         Peq = _effective_pressure(Pq, Pfq)
-        Dq = _damage_at_ip(D_old, q)
         # Plane strain: τzz = −(τxx + τyy) is carried by `deviatoric_stress`
         # and never enters the in-plane residual.
         (τxx, τyy, τxy), Pe_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic, Dq,
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
             _history_at_ip(γ_history, q),
         )
         Pq_local = _total_pressure(Pe_local, Pfq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy, Pq_local)
         λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic, Dq,
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic, Dq,
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         τ = SMatrix{2, 2}(τxx, τxy, τxy, τyy)
@@ -225,7 +221,6 @@ With a [`DruckerPragerCap`](@ref) that pressure is the cap-corrected one, and
         plastic = nothing,
         τ_store = nothing,
         λ_store = nothing,
-        D_old = nothing,
         γ_history = nothing,
         Pf_loc = nothing,
     ) where {N, NP}
@@ -237,15 +232,21 @@ With a [`DruckerPragerCap`](@ref) that pressure is the cap-corrected one, and
         Nv = Nq[q]
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(6))
         Pq = dot(NqP[q], P_loc)
-        Dq = _damage_at_ip(D_old, q)
         Pfq = _fluid_pressure_at_ip(NqP[q], Pf_loc)
         Peq = _effective_pressure(Pq, Pfq)
         (τxx, τyy, τzz, τxy, τxz, τyz), Pe_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic, Dq,
+            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
             _history_at_ip(γ_history, q),
         )
         Pq_local = _total_pressure(Pe_local, Pfq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τzz, τxy, τxz, τyz, Pq_local)
+        λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+            )
+        ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
+                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+            )
+        store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         τ = SMatrix{3, 3}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
         Ptotal = Pq_local + dot_or_zero(NqP[q], Pnum_loc)
         Tq = dot(NqP[q], T_loc)
@@ -302,7 +303,7 @@ has one residual per direction.
     return integrate_momentum_residual(
         v, P_loc, Pnum_loc, T_loc,
         geo_v_el, phase_v, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, τ_old, plastic,
-        nothing, nothing, nothing, nothing, Pf_loc,
+        nothing, nothing, nothing, Pf_loc,
     )
 end
 
@@ -367,7 +368,6 @@ function assemble_momentum_residual_matrices_atomix!(
         g, Tref, Δt,
         backend, workgroup;
         plastic_multiplier_store = nothing,
-        damage_old = nothing,
         γ_history = nothing,
         Pf = nothing,
     ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
@@ -380,7 +380,7 @@ function assemble_momentum_residual_matrices_atomix!(
         el2n_v, el2nP, geo_v, nels, phases,
         τ_old, plastic, τ_store, η, G, α, ρ0, K,
         g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP), workgroup,
-        plastic_multiplier_store, damage_old, γ_history, Pf,
+        plastic_multiplier_store, γ_history, Pf,
     )
 end
 
@@ -421,7 +421,6 @@ function assemble_momentum_residual_kernel!(
         η, G, α, ρ0, K, g, Tref, Δt,
         Nq, NqP, ∂N∂ξ_v, ::Val{NV}, ::Val{NP}, workgroup,
         plastic_multiplier_store = nothing,
-        damage_old = nothing,
         γ_history = nothing,
         Pf = nothing,
     ) where {D, NV, NP}
@@ -430,7 +429,7 @@ function assemble_momentum_residual_kernel!(
     momentum_residual_atomic_kernel!(backend, workgroup)(
         Rv, v, P, T, Pnum, el2n_v, el2nP, geo_v, phases, τ_old, plastic,
         τ_store, γ_history, η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, Val(NV), Val(NP),
-        plastic_multiplier_store, damage_old, Pf;
+        plastic_multiplier_store, Pf;
         ndrange = nels,
     )
     KA.synchronize(backend)
@@ -458,13 +457,13 @@ assemble_momentum_residual_kernel!(
         @Const(η), @Const(G), @Const(α), @Const(ρ0), @Const(K),
         @Const(g), @Const(Tref), @Const(Δt),
         @Const(Nq), @Const(NqP), @Const(∂N∂ξ_v), ::Val{NV}, ::Val{NP}, λ_store,
-        D_old, @Const(Pf),
+        @Const(Pf),
     ) where {NV, NP}
     iel = @index(Global)
     local_nodes_v, Re = momentum_element_residual(
         v, P, T, Pnum, el2n_v, el2nP, geo_v, phases,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, ∂N∂ξ_v, iel, Val(NV), Val(NP),
-        τ_old, plastic, τ_store, λ_store, D_old, γ_history, Pf,
+        τ_old, plastic, τ_store, λ_store, γ_history, Pf,
     )
     _scatter_momentum!(Rv, local_nodes_v, Re)
 end
@@ -502,7 +501,6 @@ scatter.
         plastic = nothing,
         τ_store = nothing,
         λ_store = nothing,
-        D_old = nothing,
         γ_history = nothing,
         Pf = nothing,
     ) where {D, NV, NP}
@@ -515,24 +513,17 @@ scatter.
     T_loc = _gather_local(T, local_nodes_P, Val(NP))
     Pnum_loc = _gather_or_nothing(Pnum, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_v_el))
-    D_old_loc = _gather_old_damage(D_old, iel, quadrature_points_val(geo_v_el))
     γ_loc = _gather_history(γ_history, iel, quadrature_points_val(geo_v_el))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
     Re = integrate_momentum_residual(
         vloc, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
         η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, τ_old_loc, plastic,
         _stress_output(τ_store, iel),
-        _plastic_multiplier_output(λ_store, iel, Δt),
-        D_old_loc, γ_loc, Pf_loc,
+        _plastic_multiplier_output(λ_store, iel),
+        γ_loc, Pf_loc,
     )
     return local_nodes_v, Re
 end
-
-_gather_old_damage(::Nothing, _, ::Val) = nothing
-@inline _gather_old_damage(D_old::AbstractMatrix, iel, ::Val{NQ}) where {NQ} =
-    SVector{NQ}(ntuple(q -> D_old[q, iel], Val(NQ)))
-_damage_at_ip(::Nothing, _) = nothing
-@inline _damage_at_ip(D_old, q) = D_old[q]
 
 _gather_or_nothing(::Nothing, _, ::Val) = nothing
 
@@ -559,13 +550,10 @@ _stress_output(::Nothing, _) = nothing
 @inline _stress_output(τ_store::NTuple{Nτ, <:AbstractMatrix}, iel) where {Nτ} =
     IntegrationPointStressOutput(τ_store, Int(iel))
 _plastic_multiplier_output(::Nothing, _) = nothing
-_plastic_multiplier_output(::Nothing, _, _) = nothing
 @inline _plastic_multiplier_output(λ_store::AbstractMatrix, iel) =
     IntegrationPointPlasticMultiplierOutput(λ_store, Int(iel))
-@inline _plastic_multiplier_output(λ_store::AbstractMatrix, iel, _) =
-    IntegrationPointPlasticMultiplierOutput(λ_store, Int(iel))
-@inline _plastic_multiplier_output(history::IntegrationPointPlasticHistory, iel, Δt) =
-    IntegrationPointPlasticHistoryOutput(history, iel, Δt)
+@inline _plastic_multiplier_output(history::IntegrationPointPlasticHistory, iel) =
+    IntegrationPointPlasticHistoryOutput(history, iel)
 # A matrix after the stress components asks for the plastically corrected
 # pressure: a fourth in plane strain, a seventh in 3-D.
 @inline _stress_output(τ_store::NTuple{4, <:AbstractMatrix}, iel) =
@@ -969,7 +957,7 @@ end
         integrate_momentum_residual(
             v_arg, P_loc, Pnum_loc, T_loc,
             geo_v_el, phase_v, η_pc, G, α, ρ0, K, g, Tref, Δt, Nq, NqP,
-            τ_old_loc, plastic, nothing, nothing, nothing, γ_loc, Pf_loc,
+            τ_old_loc, plastic, nothing, nothing, γ_loc, Pf_loc,
         )
     end
     return local_nodes_v, momentum, vloc

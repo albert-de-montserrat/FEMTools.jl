@@ -38,7 +38,8 @@ end
     @test generate_element_adjacency(corner_touching; shared = :node) == [[Int32(2)], [Int32(1)]]
 
     quads = Int32[1 2; 2 3; 3 4; 4 5]
-    @test generate_element_adjacency(quads) == [[Int32(2)], [Int32(1)]]
+    @test generate_element_adjacency(quads; dimension = 2) == [[Int32(2)], [Int32(1)]]
+    @test_throws "pass `dimension`" generate_element_adjacency(quads)
 
     tetra = Int32[1 1; 2 2; 3 3; 4 5]
     @test generate_element_adjacency(tetra; dimension = 3) == [[Int32(2)], [Int32(1)]]
