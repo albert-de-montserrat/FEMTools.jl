@@ -22,6 +22,11 @@ The docs environment is separate under `docs/Project.toml`. Examples referenced
 by the manual usually run under `examples/Project.toml`, not the docs
 environment.
 
+The Stokes overview includes the `principal-stresses` section: the eigenpair
+definition, allocating/in-place APIs, 2D and 3D examples, pressure convention,
+plane-strain interpretation, and cell-output sampling. Its diagonal 3D
+example is checked by Documenter doctests.
+
 ## Source of truth
 
 - Code and executable tests define behavior.

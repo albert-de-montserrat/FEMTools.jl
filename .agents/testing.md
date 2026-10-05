@@ -19,6 +19,25 @@ The suite covers:
 - parsing of maintained example scripts;
 - sparse and finite-difference reference oracles for selected solver/adjoint
   behavior.
+- `test/test_principal_stresses.jl` checks pointwise 2D/3D eigenpairs against
+  independent CPU symmetric eigendecomposition, eigenspace projections,
+  reconstruction, and orthonormality in Float32/Float64. It covers pressure
+  shifts, the `PrincipalStresses` return type and in-place buffer reuse,
+  tensor/tuple shear ordering, array shape, empty input, alias rejection,
+  and explicit nonfinite/overflow failures. Its optional hardware helper
+  `_principal_stress_backend_tests(array_constructor; types)` runs the same
+  tensor oracle plus device pressure, reuse, alias, and failure checks after
+  loading a backend package and disabling scalar indexing. It does not add
+  accelerator dependencies or automatic GPU execution to the default suite.
+  Metal Float32 is checked locally with Julia 1.13.1; CUDA and AMDGPU remain
+  unverified for this API. For the current examples manifest, prepend the root
+  to `LOAD_PATH` so FEMTools uses its current dependency map:
+  `pushfirst!(LOAD_PATH, pwd()); using FEMTools, Metal; Metal.allowscalar(false);
+  include("test/test_principal_stresses.jl");
+  _principal_stress_backend_tests(MtlArray; types=(Float32,))`
+  under `julia --project=examples` from the repository root.
+  `test/test_type_stability.jl` also checks both public APIs with `@inferred`
+  and JET for 2D/3D Float32/Float64 matrices, pressure, and a custom workgroup.
 - `test/test_triangulate_mesh_ext.jl` exercises the Triangulate meshing
   extension. On a unit square: element orientation, the exact total area, the
   area constraint, midside and bubble placement, refinement under a smaller

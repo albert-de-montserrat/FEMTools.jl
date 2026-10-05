@@ -390,5 +390,13 @@ end
         @eval JET.@test_opt target_modules = (FEMTools,) _lithostatic_element_jacobian_case()
         @eval JET.@test_opt target_modules = (FEMTools,) _stokes_augmented_component_case()
         @eval JET.@test_opt target_modules = (FEMTools,) _pressure_element_residual_case()
+        for T in (Float32, Float64), D in (2, 3)
+            τ = ntuple(_ -> ones(T, 2, 2), D == 2 ? 3 : 6)
+            P = zeros(T, 2, 2)
+            σ = @inferred compute_principal_stresses(τ; pressure = P, workgroup = 32)
+            @test (@inferred compute_principal_stresses!(σ, τ; pressure = P, workgroup = 32)) === σ
+            @eval JET.@test_opt target_modules = (FEMTools,) compute_principal_stresses($τ; pressure = $P, workgroup = 32)
+            @eval JET.@test_opt target_modules = (FEMTools,) compute_principal_stresses!($σ, $τ; pressure = $P, workgroup = 32)
+        end
     end
 end

@@ -108,6 +108,7 @@ include("stokes/solvers/DR_adjoint.jl")
 
 # Post-processing: strain-rate/stress diagnostics and VTK output of solver results.
 include("postprocess/postprocess.jl")
+include("postprocess/principal_stresses.jl")
 
 # Public type hierarchy and constructors.
 export AbstractElement
@@ -164,7 +165,10 @@ export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, Druc
     commit_stokes_plastic_history!
 
 # Post-processing: strain-rate/stress diagnostics and VTK output.
-export compute_strain_rate_stress_postprocess,
+export PrincipalStresses,
+    compute_strain_rate_stress_postprocess,
+    compute_principal_stresses,
+    compute_principal_stresses!,
     update_old_stress_from_cells!,
     write_vtk,
     write_stokes_vtk

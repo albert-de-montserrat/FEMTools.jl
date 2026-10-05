@@ -642,8 +642,110 @@ FEMTools.viscoelastic_coefficients_phase
 
 ## Post-processing
 
+### [Principal stresses](@id principal-stresses)
+
+For a symmetric stress tensor ``\boldsymbol{\sigma}``, principal stresses
+``\lambda_k`` and directions ``\mathbf{n}_k`` satisfy
+
+```math
+\boldsymbol{\sigma}\,\mathbf{n}_k = \lambda_k\mathbf{n}_k,
+\qquad \mathbf{n}_j^\mathsf{T}\mathbf{n}_k = \delta_{jk},
+\qquad \lambda_1 \geq \lambda_2 \geq \lambda_3.
+```
+
+In 2D there are two eigenpairs; in 3D there are three. Values have the same
+units as the supplied stress, and directions are dimensionless unit vectors.
+
+`compute_principal_stresses` computes eigenpairs at each supplied stress
+sample and returns a `PrincipalStresses` container, retaining its array shape,
+floating-point type, and backend. It accepts
+`dr.τ` directly or component tuples in `FEMTools.stress(dr)` order. It does not
+refresh solver stress, interpolate pressure, or average samples.
+
+```julia
+τ = ([2.0, -2.0], [-1.0, -1.0], [0.5, 0.0]) # xx, yy, xy
+P = [7.0, 7.0]                               # collocated physical pressure
+principal = compute_principal_stresses(τ; pressure=P)
+σ1, σ2 = principal.values                    # descending algebraic order
+n1x, n1y = principal.directions[1]            # direction paired with σ1
+compute_principal_stresses!(principal, τ; pressure=P) # reuse the buffers
+```
+
+`principal.values` and `principal.directions` hold the arrays. The in-place
+method fills those same arrays and returns `principal`. To supply your own
+buffers, wrap them with `PrincipalStresses(value_arrays, direction_arrays)`;
+this constructor does not copy them, and the compute method validates them.
+
+Without pressure these are eigenpairs of the supplied tensor. Supplying
+positive-compressive pressure gives principal **total Cauchy stresses** of
+`σ = τ - P I`, with positive values denoting tension. Pressure shifts values
+without changing directions. For the tensile-cap model, use corrected physical
+pressure from the integration-point stress/pressure store; trial `dr.P` and
+the solver relaxation field `dr.Pnum` are not substitutes.
+
+The 2D method returns two in-plane eigenpairs. Full plane-strain principal
+stresses include the out-of-plane direction and require a 3D tensor:
+
+```julia
+τxx, τyy, τxy = τ
+τzz = .-(τxx .+ τyy)  # deviatoric plane-strain constraint
+zero_shear = zero.(τxx)
+full = compute_principal_stresses(
+    (τxx, τyy, τzz, τxy, zero_shear, zero_shear); pressure=P,
+)
+```
+
+The out-of-plane value can be the largest, middle, or smallest. In general 3D,
+tuple input uses `(xx, yy, zz, xy, xz, yz)`; tensor containers are read by named
+fields, because their `Tuple` conversion uses a different shear ordering.
+
+For example, a diagonal 3D tensor gives three principal values directly:
+
+```jldoctest
+julia> using FEMTools
+
+julia> τ = ([3.0], [1.0], [-4.0], [0.0], [0.0], [0.0]);
+
+julia> principal = compute_principal_stresses(τ; pressure=[2.0]);
+
+julia> map(only, principal.values)
+(1.0, -1.0, -6.0)
+
+julia> compute_principal_stresses!(principal, τ; pressure=[2.0]) === principal
+true
+```
+
+Directions are unoriented axes: `n` and `-n` mean the same direction. The
+largest-magnitude component is made nonnegative. Repeated eigenvalues define
+an eigenspace rather than unique axes; the returned basis is orthonormal but
+need not vary continuously between samples or time steps.
+
+For cell output, compute eigenpairs from the existing cell diagnostics:
+
+```julia
+# post holds the element-averaged stress diagnostics and P_cell is collocated.
+cells = compute_principal_stresses((post.τxx, post.τyy, post.τxy); pressure=P_cell)
+write_vtk(path, mesh; cell_data=(
+    sigma1=cells.values[1], principal_direction1=cells.directions[1],
+    sigma2=cells.values[2], principal_direction2=cells.directions[2],
+))
+```
+
+These are eigenpairs of the averaged tensor, which differ from averages of
+integration-point principal values. Do not average directions. Integration-point
+input remains `nq × nels` output and requires a separate, explicit sampling or
+projection step before writing cell fields.
+
+Buffers passed to the mutating method must not alias input or output arrays.
+Both methods synchronize the backend before returning and throw on nonfinite
+input or failed local eigenpair checks. CPU Float32/Float64 and Metal Float32
+are checked; CUDA and AMDGPU execution require separate hardware validation.
+
 ```@docs
+PrincipalStresses
 compute_strain_rate_stress_postprocess
+compute_principal_stresses
+compute_principal_stresses!
 rotate_stress!
 update_old_stress_from_cells!
 write_stokes_vtk

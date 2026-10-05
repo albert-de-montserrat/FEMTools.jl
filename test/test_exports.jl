@@ -57,6 +57,9 @@ import FEMTools
         :AbstractBoundaryCondition,
         :assemble_viscosity_weighted_pressure_scaling!,
         :pressure_mass,
+        :compute_principal_stresses,
+        :PrincipalStresses,
+        :compute_principal_stresses!,
     )
 
     public_only_names = (
