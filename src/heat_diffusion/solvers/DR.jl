@@ -1,10 +1,11 @@
 function _assemble_thermal!(
-        dr, Δt, mesh, geo, element, Tref, backend, workgroup, compute_jacobian,
+        dr, Δt, mesh, geo, element, Tref, backend, workgroup, compute_jacobian;
+        source_ip = nothing,
     )
     return assemble_diffusion_matrices_atomix!(
         dr.R, dr.∂R∂T, dr.PC, dr.T, dr.T0, mesh.el2n, geo, mesh.nels,
         element, dr.phases, dr.k, dr.Cp, dr.ρ0, dr.α, dr.K, dr.P, Δt, dr.source, Tref,
-        backend, workgroup; compute_jacobian,
+        backend, workgroup; compute_jacobian, source_ip,
     )
 end
 

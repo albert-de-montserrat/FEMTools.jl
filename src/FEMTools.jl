@@ -25,6 +25,7 @@ using SparseArrays
 using KernelAbstractions
 import KernelAbstractions as KA
 using LinearAlgebra
+import GeoParams
 
 """
     TA(backend) -> Array type
@@ -97,6 +98,7 @@ include("stokes/assemblers/pressure_residual_adj.jl")
 include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/rheology.jl")
 include("stokes/assemblers/momentum_residuals.jl")
+include("stokes/assemblers/shear_heating.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
@@ -183,6 +185,7 @@ public assemble_diffusion_matrices_atomix!,
     assemble_augmented_momentum_jacobian_matrices_atomix!,
     assemble_pressure_residual_matrices_atomix!,
     assemble_pressure_residual_kernel!,
+    assemble_shear_heating!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!

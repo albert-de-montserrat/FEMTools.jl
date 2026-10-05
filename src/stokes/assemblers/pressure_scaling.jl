@@ -76,9 +76,10 @@ The pressure residual assembled by FEMTools is weak/integrated,
 
     RP_i = ∫ N_i (-∇⋅v) dΩ,
 
-so the nodal 2-D pressure spaces use `MP_i = ∫ N_i dΩ`. The 3-D linear
-modal basis instead uses its positive Jacobi diagonal `MP_i = ∫ N_i² dΩ`
-because its signed modes have zero or negative lumped integrals.
+so nodal pressure spaces on triangles and tetrahedra use `MP_i = ∫ N_i dΩ`.
+On `QuadraticElement{3, 27}` cells the linear pressure functions are signed
+modes with zero or negative lumped integrals, so those cells use the positive
+Jacobi diagonal `MP_i = ∫ N_i² dΩ`.
 For the Arrow-Hurwicz/DYREL pressure update, this helper also computes a local
 pressure scale
 
@@ -152,8 +153,8 @@ At each quadrature point `q` in element `iel`, accumulates
 `MP_a += N_a(q) dΩ` and `γP_a += N_a(q) γ_eff(q) dΩ` for every
 pressure DoF `a`. Atomix atomics are used unconditionally for correctness
 when pressure DoFs are shared across elements (continuous pressure spaces).
-The three-dimensional linear modal basis uses the positive Jacobi weight
-`N_a² dΩ`; its signed modes have zero or negative lumped integrals.
+`QuadraticElement{3, 27}` cells use the positive Jacobi weight `N_a² dΩ`;
+their linear pressure modes have zero or negative lumped integrals.
 """
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
         MP, γP,
@@ -178,15 +179,19 @@ The three-dimensional linear modal basis uses the positive Jacobi weight
 
         for a in 1:NP
             inod = local_dofs_P[a]
-            weight = _pressure_mass_weight(NPq[a], dim) * dΩ
+            weight = _pressure_mass_weight(NPq[a], Val(NV)) * dΩ
             Atomix.@atomic :monotonic MP[inod] += weight
             Atomix.@atomic :monotonic γP[inod] += weight * γq
         end
     end
 end
 
+# Keyed on the velocity node count. On simplices the barycentric pressure
+# functions are nonnegative and the row-sum lumped mass ∫Nᵢ bounds the
+# consistent mass from above; the Jacobi diagonal ∫Nᵢ² underestimates it by up
+# to 2.5× on tetrahedra, which makes the pressure update overshoot.
 @inline _pressure_mass_weight(N, ::Val) = N
-@inline _pressure_mass_weight(N, ::Val{3}) = abs2(N)
+@inline _pressure_mass_weight(N, ::Val{27}) = abs2(N)
 
 @inline pressure_scale_at_ip(_, ηq, _, γfact, ::Nothing, _) = γfact * ηq / 2
 @inline function pressure_scale_at_ip(Nv, ηq, phase_loc, γfact, K, Δt)

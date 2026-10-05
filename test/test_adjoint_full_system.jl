@@ -194,3 +194,139 @@ end
         (3.0, 3.0), Δt, γP, backend, wg,
     )
 end
+
+
+# The frozen adjoint operator on the 3-D T11/P1-discontinuous mixed mesh must be the transpose of
+# the Jacobian of the augmented residual the forward solve drives to zero. Checked through the
+# transpose identity aᵀ(J b) == (Jᵀa)ᵀ b, with J b from central differences of the residual along
+# b, once per block row and column: compressible viscoelastic, and Drucker-Prager plastic with a
+# nonzero fluid pressure, which the yield model subtracts from the pressure.
+@testset "3-D adjoint operator and solver on tetrahedra" begin
+    include(joinpath(pkgdir(FEMTools), "examples", "stokes", "volcano", "volcano_mesh_3D.jl"))
+    backend = CPU()
+    wg = 1
+    element_v = ReferenceElement(QuadraticElement{3, 11, Float64})
+    element_P = ReferenceElement(LinearElement{3, 4, Float64})
+    coords, el2n, groups = build_tet11_dike_mesh(;
+        Lx = 4.0, Ly = 4.0, depth = 2.0, dike_center = (0.0, 0.0, -1.0),
+        dike_width = 0.4, dike_length = 1.0, dike_height = 0.8,
+        mesh_size = 1.0, refinement = 1.0, refinement_distance = 0.5,
+    )
+    mesh = MixedMesh(Mesh(backend, coords, el2n, element_v; workgroup = wg), element_P)
+    (; geo_v, geo_P) = mesh.geometry
+    nels, nn, nnP = mesh.nels, mesh.nnodes, mesh.nnodesP
+    NV, NP = length(element_v), length(element_P)
+    nq = length(element_v.integration_points.ω)
+    phases_v = repeat(reshape(groups.phase, 1, :), NV, 1)
+    phases_P = repeat(reshape(groups.phase, 1, :), NP, 1)
+    Δt = 1.0
+    Nq = FEMTools.quadrature_table(backend, FEMTools.shape_function_values(element_v))
+    NqP = FEMTools.quadrature_table(
+        backend, FEMTools.shape_function_values(element_P, element_v.integration_points),
+    )
+    ∂N∂ξ = FEMTools.quadrature_table(backend, FEMTools.shape_function_gradients(element_v))
+
+    seed = 2024
+    nextrand() = (seed = (1103515245 * seed + 12345) % 2147483648; seed / 2147483648 - 0.5)
+    randvec(n, scale = 1.0) = [scale * nextrand() for _ in 1:n]
+
+    K = (10.0, 5.0)
+    material = StokesMaterial(;
+        η = (1.0, 0.1), ηb = K, G = (3.0, 1.0), α = (0.0, 0.0), ρ0 = (1.0, 0.9), K,
+        g = (0.0, 0.0, -1.0), Tref = 0.0,
+    )
+
+    function setup(Pf_scale)
+        dr = StokesDR(backend, nn, nnP, material; stress_size = (nq, nels))
+        foreach((vc, x) -> copyto!(vc, x), FEMTools.velocity(dr), ntuple(_ -> randvec(nn, 0.1), 3))
+        copyto!(dr.P, randvec(nnP))
+        copyto!(dr.P0, randvec(nnP, 0.2))
+        copyto!(dr.Pf, randvec(nnP, Pf_scale))
+        τ_old = ntuple(_ -> reshape(randvec(nq * nels, 0.1), nq, nels), 6)
+        γP = zeros(nnP)
+        assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 20.0, Δt; workgroup = wg, phases_v)
+        return dr, τ_old, γP
+    end
+
+    # The augmented residual: the pressure residual is assembled first and folded into the
+    # momentum residual as Pnum = γP·RP/M_P, exactly as the forward solve does.
+    function residual(u, dr, τ_old, plastic, γP)
+        v = (u[1:nn], u[(nn + 1):(2nn)], u[(2nn + 1):(3nn)])
+        P = u[(3nn + 1):end]
+        RP = zeros(nnP)
+        FEMTools.assemble_pressure_residual_kernel!(
+            RP, v, P, dr.P0, dr.T, dr.T0, nothing, mesh.el2n, mesh.DoFsP, geo_v, geo_P, nels,
+            phases_P, dr.α, dr.ηb, Δt, NqP, ∂N∂ξ, Val(NV), Val(NP), wg, dr.ηb,
+        )
+        Pnum = γP .* RP ./ dr.M_P
+        Rv = ntuple(_ -> zeros(nn), 3)
+        FEMTools.assemble_momentum_residual_kernel!(
+            Rv, v, P, dr.T, Pnum, mesh.el2n, mesh.DoFsP, geo_v, nels, phases_v,
+            τ_old, plastic, nothing, dr.η, dr.G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            Nq, NqP, ∂N∂ξ, Val(NV), Val(NP), wg, nothing, nothing, nothing, dr.Pf,
+        )
+        return vcat(Rv..., RP)
+    end
+
+    plastic = DruckerPrager(
+        (deg2rad(30), deg2rad(30)), (deg2rad(10), deg2rad(10)), (0.05, 0.05), (0.5, 0.5), K,
+    )
+    for (name, plastic, Pf_scale) in (("viscoelastic", nothing, 0.0), ("plastic with Pf", plastic, 0.5))
+        dr, τ_old, γP = setup(Pf_scale)
+        op = FEMTools.assemble_adjoint_operator(
+            dr, mesh, geo_v, geo_P, element_v, element_P, phases_v, phases_P, τ_old, plastic,
+            dr.G, Δt, γP, backend, wg,
+        )
+        u0 = vcat(map(copy, FEMTools.velocity(dr))..., copy(dr.P))
+        a = randvec(length(u0))
+        dv = ntuple(_ -> zeros(nn), 3)
+        dP = zeros(nnP)
+        h = 1.0e-6
+        velocity_rows, pressure_rows = 1:(3nn), (3nn + 1):length(u0)
+        for (what, cols) in (("velocity", velocity_rows), ("pressure", pressure_rows))
+            b = zeros(length(u0))
+            b[cols] = randvec(length(cols))
+            Jb = (residual(u0 + h * b, dr, τ_old, plastic, γP) - residual(u0 - h * b, dr, τ_old, plastic, γP)) / 2h
+            for (block, rows) in (("velocity", velocity_rows), ("pressure", pressure_rows))
+                lhs = dot(a[rows], Jb[rows])
+                a_block = zeros(length(u0))
+                a_block[rows] = a[rows]
+                FEMTools.apply_adjoint_operator!(
+                    dv, dP, op,
+                    (a_block[1:nn], a_block[(nn + 1):(2nn)], a_block[(2nn + 1):(3nn)]),
+                    a_block[(3nn + 1):end], mesh, element_v, element_P, backend, wg,
+                )
+                rhs = dot(vcat(dv..., dP), b)
+                relative = abs(lhs - rhs) / max(abs(lhs), eps())
+                @test relative < 1.0e-6
+                relative < 1.0e-6 || @info "$name: $block rows × $what columns" lhs rhs relative
+            end
+        end
+
+        # The solver iterates to the adjoint of the same operator: Jᵀλ = −∂J/∂u on the free rows.
+        fixed = (groups.left ∪ groups.right, groups.front ∪ groups.back, groups.bottom)
+        v_nodes = map(n -> Int32.(sort!(collect(n))), fixed)
+        objective = (zeros(nn), zeros(nn), [c[3] > -0.5 ? 1.0 : 0.0 for c in coords] ./ nn)
+        λv = ntuple(_ -> zeros(nn), 3)
+        λP = zeros(nnP)
+        stats = solve_stokes_adjoint_dyrel!(
+            dr, mesh, geo_v, geo_P, element_v, element_P, phases_v, phases_P, τ_old, plastic,
+            dr.G, Δt, γP, objective, λv, λP, backend, wg;
+            v_nodes, adjoint_tol = 1.0e-10, verbose = false,
+            iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 1000,
+        )
+        @test stats.converged
+        FEMTools.apply_adjoint_operator!(dv, dP, op, λv, λP, mesh, element_v, element_P, backend, wg)
+        residual_v = map(.+, dv, objective)
+        foreach((r, nodes) -> (r[nodes] .= 0), residual_v, v_nodes)
+        @test maximum(norm, residual_v) ≤ 1.0e-6 * maximum(norm, objective)
+        @test norm(dP) ≤ 1.0e-6 * maximum(norm, objective)
+    end
+
+    dr, τ_old, γP = setup(0.0)
+    @test_throws "two dimensions only" solve_stokes_adjoint_dyrel!(
+        dr, mesh, geo_v, geo_P, element_v, element_P, phases_v, phases_P, τ_old, nothing,
+        dr.G, Δt, γP, ntuple(_ -> zeros(nn), 3), ntuple(_ -> zeros(nn), 3), zeros(nnP), backend, wg;
+        v_nodes = (Int32[], Int32[], Int32[]), operator = :matrix_free, verbose = false,
+    )
+end

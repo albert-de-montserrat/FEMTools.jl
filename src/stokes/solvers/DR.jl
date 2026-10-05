@@ -63,6 +63,14 @@ the Stokes stress history remain caller-owned. Remaining keywords are forwarded
 to [`solve_stokes_dyrel!`](@ref); `ncheck` controls convergence checks for both
 relaxation updates. Returns the Stokes statistics with additional `err_T` and
 `thermal_iterations` fields.
+
+`shear_heating = true` adds the viscous and plastic shear dissipation
+`τ : (ε̇ − ε̇ᵉˡ)` (see [`assemble_shear_heating!`](@ref)) to the heat source
+`thermal.source`, recomputed from the current velocity at every thermal
+convergence check, so temperature and flow converge together. It is evaluated
+at the velocity quadrature points and integrated there by the thermal residual,
+so `thermal_mesh.element` must share the quadrature of the velocity element.
+`thermal.source` itself is left unchanged.
 """
 function solve_coupled_dyrel!(
         thermal::ThermalDiffusionDR,
@@ -75,6 +83,7 @@ function solve_coupled_dyrel!(
         γP;
         Tref = eltype(thermal.T)(273),
         workgroup = 256,
+        shear_heating = false,
         kwargs...,
     ) where {D}
     isnothing(thermal_mesh.geometry) && throw(
@@ -107,10 +116,24 @@ function solve_coupled_dyrel!(
     _transfer_temperature!(stokes.T, thermal.T, stokes_mesh, backend, workgroup)
     _transfer_temperature!(stokes.T0, thermal.T0, stokes_mesh, backend, workgroup)
 
-    coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref)
+    Φ = shear_heating ? _shear_heating_storage(thermal, thermal_mesh, stokes_mesh, Val(D)) : nothing
+    coupled = (; dr = thermal, mesh = thermal_mesh, bc = bc_T, Tref, Φ)
     return solve_stokes_dyrel!(
         stokes, stokes_mesh, bc_v, Δt, γP;
         workgroup, _thermal = coupled, kwargs...,
+    )
+end
+
+function _shear_heating_storage(thermal, thermal_mesh, stokes_mesh, ::Val{D}) where {D}
+    ip_v = _mesh_geometry(stokes_mesh).element_v.integration_points
+    ip_T = thermal_mesh.element.integration_points
+    ip_v.ω == ip_T.ω && ip_v.ξ == ip_T.ξ && ip_v.η == ip_T.η && ip_v.ζ == ip_T.ζ || throw(
+        ArgumentError(
+            "shear heating needs the thermal element to share the velocity element's quadrature points"
+        )
+    )
+    return KA.zeros(
+        KA.get_backend(thermal.T), eltype(thermal.T), length(ip_v.ω), stokes_mesh.nels,
     )
 end
 
@@ -358,7 +381,7 @@ function solve_stokes_dyrel!(
             element_v, element_P, phases_v, phases_P,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
             backend, workgroup; τ_old, plastic,
-            γ_history = _plastic_history_gamma(dr.plastic_history)
+            γ_history = _plastic_history_gamma(dr.plastic_history), Pf = dr.Pf,
         )
         nothing
     end
@@ -403,9 +426,18 @@ function solve_stokes_dyrel!(
     err_T = isnothing(_thermal) ? nothing : Inf
     thermal_converged = isnothing(_thermal)
     α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(first(Rv)))
+    shear_heating! = () -> assemble_shear_heating!(
+        _thermal.Φ, v, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v,
+        phases_v, τ_old, plastic, dr.η, G, Δt, Nq_v, Nq_P, ∂N∂ξ_v,
+        _plastic_history_gamma(dr.plastic_history), valNV, valNP,
+        backend, workgroup, dr.Pf,
+    )
     if !isnothing(_thermal)
         fill!(_thermal.dr.∂T∂τ, 0)
         fill!(_thermal.dr.R0, 0)
+        # The first thermal residual normalizes `err_T`, so it must already
+        # carry the dissipation of the initial velocity.
+        isnothing(_thermal.Φ) || shear_heating!()
     end
 
     for itPH in 1:max_ph_iterations
@@ -427,7 +459,7 @@ function solve_stokes_dyrel!(
             phases_v, τ_old, plastic, nothing,
             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
-            nothing, nothing, _plastic_history_gamma(dr.plastic_history),
+            nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
         )
         _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
 
@@ -482,7 +514,7 @@ function solve_stokes_dyrel!(
                 _assemble_thermal!(
                     _thermal.dr, Δt, _thermal.mesh, _thermal.mesh.geometry,
                     _thermal.mesh.element, _thermal.Tref, backend, workgroup,
-                    thermal_check,
+                    thermal_check; source_ip = _thermal.Φ,
                 )
                 apply_dirichlet!(
                     _thermal.dr.R, _thermal.bc.DoFs, _thermal.bc.zero_vals,
@@ -530,6 +562,9 @@ function solve_stokes_dyrel!(
                         ) / denom_T
                     α_T, β_T = _stokes_cheb(Δτ_T, λmin_T, _thermal.dr.c_fact)
                     thermal_converged = err_T < _thermal.dr.ϵ
+                    # Refresh the dissipation only after the spectral estimate, so
+                    # the residual pair of the next estimate shares one source.
+                    isnothing(_thermal.Φ) || shear_heating!()
                 end
             end
 
@@ -551,7 +586,7 @@ function solve_stokes_dyrel!(
                 phases_v, τ_old, plastic, nothing,
                 dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
-                nothing, nothing, _plastic_history_gamma(dr.plastic_history),
+                nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
             )
 
             _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
@@ -605,7 +640,7 @@ function solve_stokes_dyrel!(
                             element_v, element_P, phases_v, phases_P,
                             dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                             pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
-                            γ_history = _plastic_history_gamma(dr.plastic_history)
+                            γ_history = _plastic_history_gamma(dr.plastic_history), Pf = dr.Pf,
                         )
                         nothing
                     end
@@ -766,6 +801,7 @@ function update_stokes_current_stress!(
         plastic_multiplier_store = plastic_history,
         damage_old = isnothing(damage_old) && !isnothing(plastic_history) ? plastic_history.D : damage_old,
         γ_history = _plastic_history_gamma(dr.plastic_history),
+        Pf = dr.Pf,
     )
     if !isnothing(damage_update) && !isnothing(plastic_history)
         εc, th = damage_update
@@ -777,7 +813,7 @@ end
 """
     commit_stokes_plastic_history!(dr, mesh, Δt;
                                    plastic, phases_v=dr.phases_v,
-                                   τ_old=(dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+                                   τ_old=stress_old(dr),
                                    workgroup=256)
 
 Accept one physical step into the integration-point plastic history of a
@@ -790,12 +826,12 @@ stress. A no-op without `dr.plastic_history` or for other yield models. Throws i
 any committed value is non-finite, which means a local return map failed.
 """
 function commit_stokes_plastic_history!(
-        dr::StokesDR{<:Any, 2},
+        dr::StokesDR,
         mesh::MixedMesh,
         Δt;
         plastic,
         phases_v = dr.phases_v,
-        τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy),
+        τ_old = stress_old(dr),
         workgroup = 256,
     )
     cache = _mesh_geometry(mesh)
@@ -823,10 +859,10 @@ function _update_stokes_plastic_history!(
     ∂N∂ξ_v = shape_function_gradients(element_v)
     update_stokes_plastic_history!(
         dr.plastic_history.γ, dr.plastic_history.θ,
-        dr.v.x, dr.v.y, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP,
+        velocity(dr), dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP,
         geo_v, phases_v, τ_old, plastic, dr.η, G, Δt,
         Nq, NqP, ∂N∂ξ_v, Val(length(element_v)), Val(length(element_P)),
-        backend, workgroup,
+        backend, workgroup, dr.Pf,
     )
     all(isfinite, dr.plastic_history.γ) && all(isfinite, dr.plastic_history.θ) ||
         error("non-finite plastic history: a tensile-cap local return map failed")

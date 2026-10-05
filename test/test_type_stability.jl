@@ -146,7 +146,7 @@ function _heat_element_jacobian_case()
     return FEMTools.element_jacobian(
         T, T0, source, el2n, geo, phases,
         (2.0,), (1.0,), (1.0,), (0.0,), (Inf,),
-        P, 1.0, 0.0, TRI_NQ, TRI_DNDξ, 1, Val(3),
+        P, 1.0, 0.0, TRI_NQ, TRI_DNDξ, nothing, 1, Val(3),
     )
 end
 

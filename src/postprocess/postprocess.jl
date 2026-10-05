@@ -174,12 +174,13 @@ function compute_strain_rate_stress_postprocess(
     ) where {NV, FP, TV <: AbstractElement{3, NV, FP}}
     nels = size(el2n_v, 2)
     Nq = shape_function_values(element_v)
+    ∂N∂ξ_v = shape_function_gradients(element_v)
     fields = ntuple(_ -> zeros(FP, nels), length(_DIAGNOSTIC_FIELDS_3D))
 
     for iel in 1:nels
         local_nodes = local_nodes_of(el2n_v, iel, Val(NV))
         vloc = ntuple(i -> _gather_local(v[i], local_nodes, Val(NV)), Val(3))
-        geo_el = geo_v[iel]
+        geo_el = element_geometry(geo_v, iel, ∂N∂ξ_v)
 
         totals = ntuple(_ -> zero(FP), length(_DIAGNOSTIC_FIELDS_3D))
         volume = zero(FP)

@@ -326,7 +326,7 @@ Recompute `mesh.geometry` in place from the current `mesh.coords`. Call it
 after moving the mesh nodes; the geometry arrays keep their identity, so
 references to `mesh.geometry.geo_v` and `mesh.geometry.geo_P` stay valid.
 """
-function update_geometry!(mesh::MixedMesh{2}; workgroup = 256)
+function update_geometry!(mesh::MixedMesh; workgroup = 256)
     geometry = _mesh_geometry(mesh)
     backend = KA.get_backend(geometry.geo_v)
     _fill_mixed_geometry!(
@@ -356,13 +356,20 @@ function MixedMeshCache(
         geometry_precision = FP,
     ) where {NV, NP, FP, TV <: AbstractElement{3, NV, FP}, TP <: AbstractElement{3, NP, FP}}
     _check_geometry_precision(geometry_precision)
-    ip_v = element_v.integration_points
-    NQ_v = length(ip_v.ω)
-    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
+    NQ_v = length(element_v.integration_points.ω)
     FPg = geometry_precision
     geo_v = KA.allocate(backend, NTuple{NQ_v, QuadraturePointGeometry{3, FPg, 9}}, mesh.nels)
     geo_P = KA.allocate(backend, NTuple{NQ_v, FPg}, mesh.nels)
+    _fill_mixed_geometry!(geo_v, geo_P, backend, workgroup, mesh, element_v, element_P)
+    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+end
 
+function _fill_mixed_geometry!(
+        geo_v, geo_P, backend, workgroup, mesh::MixedMesh{3},
+        element_v::ReferenceElement{TV}, element_P,
+    ) where {NV, TV <: AbstractElement{3, NV}}
+    ip_v = element_v.integration_points
+    ∂N∂ξq_v = shape_function_gradients(element_v, ip_v)
     TDev = TA(backend)
     coords = TDev(mesh.coords)
     el2n = TDev(mesh.el2n)
@@ -373,8 +380,7 @@ function MixedMeshCache(
         )
     end
     KA.synchronize(backend)
-
-    return MixedMeshCache(geo_v, geo_P, element_v, element_P)
+    return nothing
 end
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,8 @@ _example_has_parse_error(x) = x isa Expr &&
         "examples/stokes/volcano/volcano_mesh_3D.jl",
         "examples/stokes/volcano/volcano_mesh_topo_3D.jl",
         "examples/stokes/volcano/volcano_thermal_stokes.jl",
+        "examples/stokes/volcano/dike_injection2D_adj.jl",
+        "examples/stokes/volcano/dike_sensitivities2D.jl",
         "examples/stokes/volcano/volcano_thermal_stokes_3D.jl",
         "examples/stokes/volcano/volcano_thermal_stokes_topo_3D.jl",
         "examples/reykjanes/reykjanes_thermal_stokes.jl",

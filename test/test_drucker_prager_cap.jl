@@ -401,3 +401,39 @@ end
             SVector(s, p, λ, θdot) rtol = 1.0e-12 atol = 1.0e-14
     end
 end
+
+@testset "3-D momentum residual uses the cap-corrected pressure" begin
+    # Two nodes whose gradients span x and y give a homogeneous plane extension
+    # with ε̇zz = 0, so the 3-D element must reproduce the plane-strain one.
+    plastic = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(5.0),), (1.0,), (-0.5,), (0.1,), (1.0,),
+    )
+    vx, vy = SA[0.5, 0.0], SA[0.0, 0.2]
+    P_loc, Pf_loc = SA[-1.0], SA[0.3]
+    Nq, NqP = (SA[0.5, 0.5],), (SA[1.0],)
+    common = (SA[1, 1], (1.0e3,), (1.0,), (0.0,), (1.0,), (Inf,))
+    out(n) = ntuple(_ -> zeros(1, 1), n)
+
+    τP_2D = out(4)
+    FEMTools.integrate_momentum_residual(
+        (vx, vy), P_loc, nothing, SA[0.0], ((@SMatrix([1.0 0.0; 0.0 1.0]), 1.0),),
+        common..., (0.0, 0.0), 0.0, 1.0, Nq, NqP,
+        nothing, plastic, FEMTools._stress_output(τP_2D, 1),
+        nothing, nothing, nothing, Pf_loc,
+    )
+    τP_3D = out(7)
+    FEMTools.integrate_momentum_residual(
+        (vx, vy, SA[0.0, 0.0]), P_loc, nothing, SA[0.0],
+        ((@SMatrix([1.0 0.0 0.0; 0.0 1.0 0.0]), 1.0),),
+        common..., (0.0, 0.0, 0.0), 0.0, 1.0, Nq, NqP,
+        nothing, plastic, FEMTools._stress_output(τP_3D, 1),
+        nothing, nothing, nothing, Pf_loc,
+    )
+
+    τxx, τyy, τxy, P = map(only, τP_2D)
+    τxx3, τyy3, τzz3, τxy3, τxz3, τyz3, P3 = map(only, τP_3D)
+    @test P != only(P_loc)
+    @test all(isapprox.((τxx3, τyy3, τxy3, P3), (τxx, τyy, τxy, P); rtol = 1.0e-12))
+    @test τzz3 ≈ -(τxx + τyy)
+    @test τxz3 == τyz3 == 0
+end

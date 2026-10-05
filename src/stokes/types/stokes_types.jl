@@ -120,6 +120,7 @@ array.
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
 | `Q`        | Volumetric source/sink in continuity      |
+| `Pf`       | Fluid pressure; the yield functions see the effective pressure `P − Pf` |
 | `RP`       | Pressure residual                         |
 | `RP0`      | Residual snapshot for λ_min estimate      |
 | `M_P`      | Pressure mass diagonal (`∫NᵢdΩ` in 2-D, `∫Nᵢ²dΩ` in 3-D) |
@@ -161,8 +162,11 @@ history update; it is independent of stress storage and defaults to `nothing`.
 count, which is how a cell-local pressure layout such as `(4, nels)` is
 expressed. `T`, `T0`, and `Q` should be filled via `copyto!` before calling the
 solver. `Q` is the volumetric source (positive) or sink (negative) in the
-continuity equation. The time step `Δt` is passed directly to the assembler
-rather than stored here.
+continuity equation. `Pf` is the fluid (pore or magma) pressure on the pressure
+DoFs, zero by default. Only the yield functions read it: plasticity is evaluated
+at the effective pressure `P − Pf`, while the momentum balance and the equation
+of state keep the total pressure `P`. The time step `Δt` is passed directly to
+the assembler rather than stored here.
 
 `:none` suits a purely viscous model, where the shear modulus is infinite and the
 stress history is never read. `τ` and `τ_old` are then `nothing`,
@@ -198,6 +202,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     T::_TP
     T0::_TP
     Q::_TP
+    Pf::_TP
     # pressure-node residual and DR work arrays
     RP::_TP
     RP0::_TP
@@ -279,6 +284,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             newτfield(), newτfield(),                 # τ, τ_old
             newhistory(),                              # optional cap history
             newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
+            newP(),                                   # Pf
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
             η, ηb, α, _ρ0, _K, _G, _g, _Tref,
@@ -598,17 +604,19 @@ function Stokes3DWorkspace(
 end
 
 """
-    StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme=false)
+    StokesAdjointWorkspace(dr, v_nodes...; enzyme=false)
 
-Caller-owned scratch for the two-dimensional Stokes adjoint DYREL solver.
+Caller-owned scratch for the mixed-mesh Stokes adjoint DYREL solver, with one
+set of constrained velocity nodes per direction in `v_nodes`, e.g.
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` in two dimensions.
 
 The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
 boundary-value buffers that would otherwise be allocated on every adjoint
 solve. Pass it as the `workspace` keyword of
 [`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
 optimization loop. Set `enzyme=true` when the workspace will be used with
-`operator = :enzyme`; the block and matrix-free paths do not allocate those
-additional reverse-mode buffers.
+`operator = :enzyme`, which is available in two dimensions only; the block and
+matrix-free paths do not allocate those additional reverse-mode buffers.
 
 A workspace belongs to the velocity and pressure layouts and boundary-node
 counts from which it was constructed. The solver validates those dimensions
@@ -620,19 +628,20 @@ struct StokesAdjointWorkspace{TC, TE}
     enzyme::TE
 end
 
-function StokesAdjointWorkspace(dr::StokesDR{<:Any, 2}, vx_nodes, vy_nodes; enzyme = false)
+function StokesAdjointWorkspace(
+        dr::StokesDR{<:Any, D}, v_nodes::Vararg{Any, D}; enzyme = false,
+    ) where {D}
+    enzyme && D != 2 &&
+        throw(ArgumentError("the Enzyme adjoint workspace is implemented in two dimensions only, got D = $D"))
+    Rv = Tuple(getfield(dr, :Rv))
+    v = velocity(dr)
     common = (;
-        ResλVx = zero(dr.Rv.x),
-        ResλVy = zero(dr.Rv.y),
+        Resλv = map(zero, Rv),
+        Resλv0 = map(zero, Rv),
         ResλP = zero(dr.P),
-        ResλVx0 = zero(dr.Rv.x),
-        ResλVy0 = zero(dr.Rv.y),
-        λrate_vx = zero(dr.v.x),
-        λrate_vy = zero(dr.v.y),
-        dvx = zero(dr.v.x),
-        dvy = zero(dr.v.y),
-        zero_vx_bc = fill!(similar(dr.v.x, length(vx_nodes)), 0),
-        zero_vy_bc = fill!(similar(dr.v.y, length(vy_nodes)), 0),
+        λrate = map(zero, v),
+        dv = map(zero, v),
+        zero_bc = map((vc, nodes) -> fill!(similar(vc, length(nodes)), 0), v, v_nodes),
     )
     enzyme_scratch = enzyme ? (;
             Rv_x_buf = zero(dr.Rv.x),

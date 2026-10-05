@@ -335,6 +335,16 @@ end
 @inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, _, ::Nothing, _) =
     deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old)
 
+# Fluid pressure enters only the yield functions: they see the effective
+# pressure P − Pf, and a pressure the return map corrects is shifted back by Pf,
+# so the momentum balance keeps the total pressure. `nothing` means Pf = 0.
+@inline _fluid_pressure_at_ip(_, ::Nothing) = nothing
+@inline _fluid_pressure_at_ip(NPq, Pf_loc) = dot(NPq, Pf_loc)
+@inline _effective_pressure(Pq, ::Nothing) = Pq
+@inline _effective_pressure(Pq, Pfq) = Pq - Pfq
+@inline _total_pressure(Pe, ::Nothing) = Pe
+@inline _total_pressure(Pe, Pfq) = Pe + Pfq
+
 # Internal momentum path. Existing stress-only API stays unchanged.
 @inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, ::Nothing) =
     (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old), Pq)

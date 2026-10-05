@@ -1,8 +1,10 @@
+*.avi
 *.vtu
 *.vtk
 *.pvd
 *.gif
 *.html
+*.png
 Manifest.toml
 *.jl.cov
 *.jl.*.cov
@@ -11,3 +13,5 @@ Manifest-v*.toml
 docs/build/
 .DS_Store
 .vscode/settings.json
+reykjanes/*
+papers/*

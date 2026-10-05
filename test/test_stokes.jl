@@ -468,6 +468,44 @@ end
     @test all(Δγ_soft .> γ1)   # weaker rock flows faster
 end
 
+@testset "DruckerPragerCap history and corrected pressure in 3-D" begin
+    include(joinpath(pkgdir(FEMTools), "examples", "stokes", "volcano", "volcano_mesh_3D.jl"))
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{3, 11, Float64})
+    element_P = ReferenceElement(LinearElement{3, 4, Float64})
+    coords, el2n, _ = build_tet11_dike_mesh(;
+        Lx = 4.0, Ly = 4.0, depth = 2.0, dike_center = (0.0, 0.0, -1.0),
+        dike_width = 0.4, dike_length = 1.0, dike_height = 0.8,
+        mesh_size = 1.0, refinement = 1.0, refinement_distance = 0.5,
+    )
+    mesh = MixedMesh(Mesh(backend, coords, el2n, element_v; workgroup = 1), element_P)
+    nq = length(element_v.integration_points.ω)
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
+        K = (100.0,), G = (Inf,), g = (0.0, 0.0, 0.0),
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+    )
+    dr.v.x .= [10.0 * c[1] for c in mesh.coords]
+    dr.P .= -20.0
+    cap = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,), (1.0,), (100.0,)
+    )
+    P_corrected = zeros(nq, mesh.nels)
+    τ_and_P = (FEMTools.stress(dr)..., P_corrected)
+
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ_and_P, 0.1; plastic = cap)
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ_and_P, 0.1; plastic = cap)
+    @test all(iszero, dr.plastic_history.γ)
+    @test all(>(-20.0), P_corrected)   # the cap relaxes the tension
+
+    commit_stokes_plastic_history!(dr, mesh, 0.1; plastic = cap)
+    γ1 = copy(dr.plastic_history.γ)
+    @test minimum(γ1) > 0
+    @test minimum(dr.plastic_history.θ) > 0   # tension opens
+    FEMTools.update_stokes_current_stress!(dr, mesh, τ_and_P, 0.1; plastic = cap)
+    @test dr.plastic_history.γ == γ1
+end
+
 @testset "DruckerPragerCap carries corrected pressure across steps" begin
     backend = CPU()
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
@@ -540,6 +578,52 @@ end
         dr, mesh, bc_vx, bc_vy, Δt, γP;
         plastic = cap, τ_old, P_old = zeros(nq + 1, mesh.nels), verbose = false
     )
+end
+
+@testset "fluid pressure enters the yield model as P − Pf" begin
+    backend = CPU()
+    element_v = ReferenceElement(QuadraticElement{2, 7, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (2, 2))
+    mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
+    nq = length(element_v.integration_points.ω)
+    Δt, K, ε̇, P, Pf = 1.0, 4.0, 0.1, 0.2, 1.2
+    cap = DruckerPragerCap(
+        (deg2rad(30.0),), (deg2rad(5.0),), (1.0,), (-0.5,), (0.1,), (K,);
+        C_min = (0.5,), H_C = (-1.0,)
+    )
+    coords = Array(mesh.coords)
+
+    # The same extension with total pressure P and fluid pressure Pf, and with
+    # the effective pressure P − Pf and no fluid pressure.
+    function update(P_total, P_fluid)
+        dr = StokesDR(
+            backend, mesh.nnodes, mesh.nnodesP, (1.0,), (K,), (0.0,);
+            K = (K,), G = (1.0,), g = (0.0, 0.0),
+            stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+        )
+        dr.v.x .= [ε̇ * c[1] for c in coords]
+        fill!(dr.P, P_total)
+        fill!(dr.Pf, P_fluid)
+        τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
+        P_corrected = zeros(nq, mesh.nels)
+        update_stokes_current_stress!(
+            dr, mesh, (dr.τ.xx, dr.τ.yy, dr.τ.xy, P_corrected), Δt;
+            plastic = cap, τ_old, workgroup = 1
+        )
+        commit_stokes_plastic_history!(dr, mesh, Δt; plastic = cap, τ_old, workgroup = 1)
+        return dr, P_corrected
+    end
+    dr_f, P_corr_f = update(P, Pf)
+    dr_e, P_corr_e = update(P - Pf, 0.0)
+
+    # The effective pressure lies on the tensile side, so the cap corrects it.
+    @test !all(isapprox.(P_corr_e, P - Pf; atol = 1.0e-8))
+    @test dr_f.τ.xx ≈ dr_e.τ.xx
+    @test dr_f.τ.xy ≈ dr_e.τ.xy
+    @test P_corr_f ≈ P_corr_e .+ Pf
+    @test dr_f.plastic_history.γ ≈ dr_e.plastic_history.γ
+    @test dr_f.plastic_history.θ ≈ dr_e.plastic_history.θ
 end
 
 @testset "DruckerPragerCap is radial Drucker-Prager in the shear domain" begin
@@ -948,6 +1032,27 @@ end
     @test sum(dr.M_P) ≈ one(FP) atol = 1.0e-12
     @test all(>(0), dr.M_P)
     @test γP ≈ fill(12 / 7, mesh.nnodesP) atol = 1.0e-12
+end
+
+@testset "assemble_viscosity_weighted_pressure_scaling! — tetrahedra lump the pressure mass" begin
+    # The Jacobi diagonal ∫Nᵢ² dΩ would sum to 2/5 of the volume and make the
+    # compressible pressure update overshoot.
+    include(joinpath(pkgdir(FEMTools), "examples", "stokes", "volcano", "volcano_mesh_3D.jl"))
+    element_v = ReferenceElement(QuadraticElement{3, 11, Float64})
+    element_P = ReferenceElement(LinearElement{3, 4, Float64})
+    coords, el2n, _ = build_tet11_dike_mesh(;
+        Lx = 4.0, Ly = 4.0, depth = 2.0, dike_center = (0.0, 0.0, -1.0),
+        dike_width = 0.4, dike_length = 1.0, dike_height = 0.8,
+        mesh_size = 1.0, refinement = 1.0, refinement_distance = 0.5,
+    )
+    mesh = MixedMesh(Mesh(CPU(), coords, el2n, element_v; workgroup = 1), element_P)
+    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,); g = (0.0, 0.0, 0.0))
+    γP = zeros(mesh.nnodesP)
+
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 2.0, 1.0; workgroup = 1)
+
+    @test sum(dr.M_P) ≈ 4.0 * 4.0 * 2.0 rtol = 1.0e-10
+    @test all(>(0), dr.M_P)
 end
 
 @testset "assemble_momentum_residual_matrices_atomix! — zero velocity + zero gravity" begin
