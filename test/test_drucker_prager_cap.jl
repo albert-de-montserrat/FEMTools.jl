@@ -419,7 +419,7 @@ end
         (vx, vy), P_loc, nothing, SA[0.0], ((@SMatrix([1.0 0.0; 0.0 1.0]), 1.0),),
         common..., (0.0, 0.0), 0.0, 1.0, Nq, NqP,
         nothing, plastic, FEMTools._stress_output(τP_2D, 1),
-        nothing, nothing, nothing, Pf_loc,
+        nothing, nothing, Pf_loc,
     )
     τP_3D = out(7)
     FEMTools.integrate_momentum_residual(
@@ -427,7 +427,7 @@ end
         ((@SMatrix([1.0 0.0 0.0; 0.0 1.0 0.0]), 1.0),),
         common..., (0.0, 0.0, 0.0), 0.0, 1.0, Nq, NqP,
         nothing, plastic, FEMTools._stress_output(τP_3D, 1),
-        nothing, nothing, nothing, Pf_loc,
+        nothing, nothing, Pf_loc,
     )
 
     τxx, τyy, τxy, P = map(only, τP_2D)

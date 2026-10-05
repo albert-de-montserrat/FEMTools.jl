@@ -231,7 +231,8 @@ the raw `geo_v`, `geo_P` arrays.
   in pressure storage independently of plastic dispatch. `false` preserves
   the legacy `ηb` choice.
 - `Qq`, `Q2D`: optional nonnegative pressure-node source weights and signed
-  plane-strain area rate. The solver normalizes them so `∑ Q dΩ = Q2D`.
+  total rate (area per time in plane strain, volume per time in 3-D). The
+  solver normalizes them so `∑ Q dΩ = Q2D`.
 - `P_old = dr.P0`: accepted pressure of the previous step in the continuity
   rate `(P - P_old)/(KΔt)`. A nodal vector is interpolated; an `nq × nels`
   matrix is read directly at the velocity quadrature points. With

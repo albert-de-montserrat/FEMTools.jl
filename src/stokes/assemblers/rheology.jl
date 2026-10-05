@@ -248,18 +248,6 @@ end
 @inline deviatoric_stress_and_pressure(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic, γ) =
     (deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic), Pq)
 
-"""
-    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
-
-Compute the elasto-viscoplastic deviatoric stress at a quadrature point with
-Drucker-Prager return mapping.
-
-Computes the trial viscoelastic stress, evaluates the yield function
-`F = τII − C·cos(ϕ) − P·sin(ϕ)`, and applies the plastic return
-`τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
-regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`, whose
-denominator stays positive for any dilation angle.
-"""
 @inline function _deviatoric_stress_with_multiplier(
         v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
         τ_old::NTuple{3}, Pq, plastic::DruckerPrager,
@@ -354,8 +342,21 @@ end
     return plastic_strain_rate_invariant(λ, ∂Q∂τ)
 end
 
-@inline deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) =
-    first(_deviatoric_stress_with_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic))
+"""
+    deviatoric_stress(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager) -> (τxx, τyy, τxy)
+
+Compute the elasto-viscoplastic deviatoric stress at a quadrature point with
+Drucker-Prager return mapping.
+
+Computes the trial viscoelastic stress, evaluates the yield function
+`F = τII − C·cos(ϕ) − P·sin(ϕ)`, and applies the plastic return
+`τᵢⱼ ← τᵢⱼ − 2 ηve λ ∂Q/∂τᵢⱼ` when `F > 0`. The plastic multiplier uses the
+regularized formula `λ = F / (ηve + η_reg + Kb Δt ∂Q/∂P ∂F/∂P)`, whose
+denominator stays positive for any dilation angle.
+"""
+@inline deviatoric_stress(
+    v::Tuple{<:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic::DruckerPrager,
+) = first(_deviatoric_stress_with_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic))
 
 
 """
@@ -416,24 +417,6 @@ zeros for `τ_old` on the first time step. This method has no yield criterion.
     return map((εij, τij_o) -> 2 * ηve * (εij + τij_o * inv_2Gdt), ε, τ_old)
 end
 
-"""
-    deviatoric_stress(v::NTuple{3}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
-                      plastic::DruckerPrager) -> (τxx, τyy, τzz, τxy, τxz, τyz)
-
-Compute the three-dimensional elasto-viscoplastic deviatoric stress at a
-quadrature point with Drucker-Prager return mapping.
-
-The yield function, plastic multiplier, and regularization match the
-plane-strain method. The flow direction is the radial return
-`∂Q/∂τᵢⱼ = τᵢⱼ / (2 τII)`, which for the stored off-diagonal components — each
-of which stands for two tensor entries — becomes `τᵢⱼ / τII`. The correction is
-traceless because the normal components of `∂Q/∂τ` sum to `(τxx+τyy+τzz)/(2τII) = 0`.
-
-The plane-strain method instead differentiates `τII` with respect to the two
-free in-plane components, with `τzz = −τxx − τyy` slaved to them, so its flow
-direction is not radial. The two return maps therefore differ even when the
-three-dimensional kinematics reduce to plane strain.
-"""
 @inline function _deviatoric_stress_with_multiplier(
         v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt,
         τ_old::NTuple{6}, Pq, plastic::DruckerPrager,
@@ -466,6 +449,29 @@ three-dimensional kinematics reduce to plane strain.
     τij = λ > 0 ? map((τ, ∂q) -> τ - 2 * ηve * λ * ∂q, τij, ∂Q∂τ) : τij
     return τij, λ, ∂Q∂τ
 end
+
+"""
+    deviatoric_stress(v::NTuple{3}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+                      plastic::DruckerPrager) -> (τxx, τyy, τzz, τxy, τxz, τyz)
+
+Compute the three-dimensional elasto-viscoplastic deviatoric stress at a
+quadrature point with Drucker-Prager return mapping.
+
+The yield function, plastic multiplier, and regularization match the
+plane-strain method. The flow direction is the radial return
+`∂Q/∂τᵢⱼ = τᵢⱼ / (2 τII)`, which for the stored off-diagonal components — each
+of which stands for two tensor entries — becomes `τᵢⱼ / τII`. The correction is
+traceless because the normal components of `∂Q/∂τ` sum to `(τxx+τyy+τzz)/(2τII) = 0`.
+
+The plane-strain method instead differentiates `τII` with respect to the two
+free in-plane components, with `τzz = −τxx − τyy` slaved to them, so its flow
+direction is not radial. The two return maps therefore differ even when the
+three-dimensional kinematics reduce to plane strain.
+"""
+@inline deviatoric_stress(
+    v::Tuple{<:SVector, <:SVector, <:SVector}, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq,
+    plastic::DruckerPrager,
+) = first(_deviatoric_stress_with_multiplier(v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old, Pq, plastic))
 
 """
     plastic_strain_rate_invariant(λ, ∂Q∂τ::NTuple{6}) -> ε̇pl

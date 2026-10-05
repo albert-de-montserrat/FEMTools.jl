@@ -115,10 +115,10 @@ dr.τ.yz         # a stress component that has no two-dimensional counterpart
 a cell-local pressure layout is expressed as `StokesDR(backend, nnodes_v,
 (4, nels), material)`.
 
-The mixed-mesh solvers on this page are two-dimensional and accept only
-`StokesDR{<:Any, 2}`; passing a three-dimensional state is a `MethodError`
-rather than a silent solve that ignores the third component. The existing
-matrix-free 3-D method takes its arrays positionally and does not consume a
+The mixed-mesh solvers on this page accept a `StokesDR` and `MixedMesh` of the
+same spatial dimension, 2 or 3, with one Dirichlet boundary condition per
+velocity component; a dimension mismatch is a `MethodError`. The viscous Hex27
+method instead takes caller-owned arrays positionally and does not consume a
 `StokesDR` — see [Sinking block (3-D)](sinking_block_3d.md).
 
 ### Compact setup
@@ -152,19 +152,25 @@ stress components — `(τxx, τyy, τxy, P_corrected)` in plane strain,
 `(stress(dr)..., P_corrected)` in 3-D — in `update_stokes_current_stress!`, copy it into
 an `nq × nels` array after the commit, and pass that array as
 `solve_stokes_dyrel!(...; P_old)` on the next step.
+For plain Drucker--Prager, pass an `IntegrationPointPlasticHistory(λ, ε̇pl, εpl)`
+of `nq × nels` arrays as `update_stokes_current_stress!(...; plastic_history)`.
+That call overwrites the multiplier `λ` and the plastic strain-rate invariant
+`ε̇pl`, in plane strain and in 3-D, so repeating it is harmless. The accumulated
+plastic strain `εpl` changes only in `FEMTools.update_plastic_history!`, which
+adds `Δt·ε̇pl` and must be called once per accepted step.
 The pressure kernel interpolates nodal pressure and temperature increments
 directly, avoiding temporary per-node rate calculations.
 
 ### Finite compressibility, pressure history, and sources
 
-These three options control the pressure part of the two-dimensional solver:
+These options control the pressure part of the mixed-mesh solver:
 
 | Keyword | Meaning | Default |
 |:--|:--|:--|
 | `finite_K` | Use the material `dr.K` in `(P - P_old)/(K*Δt)` | `plastic isa DruckerPragerCap` |
 | `P_old` | Accepted pressure from the previous physical step | `dr.P0` |
 | `Qq` | Direct source field, or nonnegative spatial weights with `Q2D` | `nothing` |
-| `Q2D` | Total signed plane-strain source rate | `nothing` |
+| `Q2D` | Total signed source rate: area per time in plane strain, volume per time in 3-D | `nothing` |
 
 `finite_K` is an independent physical choice. It can be set to `true` for a
 viscous or Drucker--Prager solve, and to `false` for a cap solve when the
@@ -485,6 +491,8 @@ FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
 update_stokes_current_stress!
 commit_stokes_plastic_history!
+FEMTools.IntegrationPointPlasticHistory
+FEMTools.update_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities
