@@ -147,8 +147,9 @@ Call `commit_stokes_plastic_history!` once per converged step, before
 overwriting `τ_old`, to accumulate that step into those arrays. Residual
 iterations and `update_stokes_current_stress!` never update history.
 `dr.P` is the trial pressure under the cap, so do not copy it into `dr.P0`:
-record the corrected pressure with a four-matrix store
-`(τxx, τyy, τxy, P_corrected)` in `update_stokes_current_stress!`, copy it into
+record the corrected pressure with a store that appends one matrix to the
+stress components — `(τxx, τyy, τxy, P_corrected)` in plane strain,
+`(stress(dr)..., P_corrected)` in 3-D — in `update_stokes_current_stress!`, copy it into
 an `nq × nels` array after the commit, and pass that array as
 `solve_stokes_dyrel!(...; P_old)` on the next step.
 The pressure kernel interpolates nodal pressure and temperature increments
@@ -242,6 +243,22 @@ is rejected rather than silently producing no injection. These source options
 belong to the two-dimensional mixed-mesh solver; the specialized three-
 dimensional cell-local pressure path does not currently carry `Q`.
 
+### Fluid pressure in the yield model
+
+`dr.Pf` is a fluid (pore or magma) pressure on the pressure DoFs, zero by
+default. The yield models see the effective pressure `P − Pf`: Drucker--Prager
+yields at `τII = C cosϕ + (P − Pf) sinϕ`, and the tensile cap of
+`DruckerPragerCap` fails when `P − Pf` reaches `pT`. The momentum balance and the
+equation of state keep the total pressure `P`, and a pressure corrected by the
+cap is returned as a total pressure. Fill `Pf` before the solve, for example
+with a lithostatic pressure for a fluid-saturated crust:
+
+```julia
+copyto!(dr.Pf, P_litho)
+```
+
+The plastic adjoint solver does not support a nonzero `Pf` and rejects it.
+
 ### Coupled thermal--Stokes relaxation
 
 `solve_coupled_dyrel!` advances one thermal DR iteration during every inner
@@ -265,6 +282,32 @@ why; `err` is then the inner velocity residual, and `err_abs` and `err_rel` carr
 the outer error. The caller still owns physical-time history: set
 `thermal.T0`, `stokes.P0`, and the old Stokes stresses before each coupled
 solve. The thermal `ncheck` cadence follows the Stokes `ncheck` keyword.
+
+#### Shear heating
+
+`shear_heating = true` makes the coupling two-way, in plane strain and in 3-D:
+the dissipation
+
+```math
+\Phi = \boldsymbol{\tau} : \left(\dot{\boldsymbol{\varepsilon}} - \dot{\boldsymbol{\varepsilon}}^{el}\right),
+\qquad
+\dot{\boldsymbol{\varepsilon}}^{el} = \frac{\boldsymbol{\tau} - \boldsymbol{\tau}^{old}}{2G\Delta t},
+```
+
+is added to the thermal heat source. `τ` is the deviatoric stress of the
+momentum residual, plastic correction included, so `Φ` is the viscous plus
+plastic shear dissipation without the elastically stored power; volumetric
+plastic work is not included. `Φ` is recomputed from the current velocity at
+every thermal convergence check and integrated at the velocity quadrature
+points, so the thermal element must share the velocity element's quadrature.
+`thermal.source` keeps the caller's own source and is not modified.
+
+```julia
+stats = solve_coupled_dyrel!(
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_vx, bc_vy, Δt, γP;
+    workgroup, shear_heating = true,
+)
+```
 
 In 2-D, pass `bc_vx` and `bc_vy` positionally as before. In 3-D, pass the tuple
 shown above. The 3-D signed pressure basis uses a positive Jacobi modal mass
@@ -532,7 +575,54 @@ different discretisation. When adding an objective or material parameter,
 validate that contract with a central finite difference as demonstrated in
 `test/test_stokes_adjoint_api.jl`.
 
-### Two-dimensional frozen operator and solver controls
+### Frozen operator and solver controls
+
+The mixed-mesh adjoint runs in two and three dimensions. In three dimensions,
+pass the objective load and the adjoint velocity as one array per direction,
+`(objective_x, objective_y, objective_z)` and `(λvx, λvy, λvz)`, with the
+constrained nodes as `v_nodes = (vx_nodes, vy_nodes, vz_nodes)`; the
+plane-strain spelling with separate `vx`/`vy` arguments remains available.
+Only `operator = :blocks` is implemented in three dimensions. It is also the only
+operator that supports a plastic model together with a nonzero fluid pressure
+`dr.Pf`, because only the stored blocks differentiate the yield model at the
+effective pressure.
+
+The solver transposes the Powell–Hestenes augmented system, whose momentum rows
+carry `W·RP` with the element-local `W = ∂Rv/∂Pnum · γP/M_P`. A parameter
+contraction against the plain residual `[Rv; RP]` therefore uses the pressure
+multiplier `λP + Wᵀλv`; `examples/stokes/volcano/dike_injection3D_adj.jl` shows
+the contraction for the bulk modulus and an injection source.
+
+The 2-D driver `examples/stokes/volcano/dike_injection2D_adj.jl` reports
+sensitivities of signed box-mean vertical velocity to `K`, injection rate `Q`, shear
+modulus `G`, shear viscosity `η`, tensile-strength magnitude `|pT|`, cohesion
+`C`, and friction angle `ϕ`. Negative velocity represents subsidence and is
+supported. The existing `dlnJ_*` field names represent derivatives of `ln|J|`:
+normalization uses signed `J`, not `abs(J)`. Zero or nonfinite `J` is rejected;
+relative sensitivities become poorly conditioned near zero. For a fixed sign
+of `J`, these are log sensitivities: a value of 0.5 means
+that a 1% parameter increase changes uplift by approximately 0.5%. Friction
+angle is scaled in radians; dilation and plastic regularization stay fixed.
+Cohesion and tensile strength vary independently. The pore-pressure fraction
+instead uses `∂lnJ/∂λ_fluid`, including at zero pore pressure: increasing the
+fraction by 0.01 changes uplift by approximately `0.01 * sensitivity`.
+Lithostatic pressure is fixed for this derivative.
+
+The returned `adjoint.sensitivities` contains dimensionless cell contributions,
+`adjoint.sensitivity_density` contains those contributions divided by cell area
+in km², and `adjoint.sensitivity_totals` contains `(crust, dike)` sums for each
+field. Sum both phase contributions for the global injection or pore-pressure
+fraction derivative. VTK includes both the cell contributions and fields
+suffixed `_per_km2`; the final adjoint figure displays all density maps.
+`pT`, `eta`, and `phi` in field names denote `|pT|`, `η`, and `ϕ` respectively.
+The existing scalar `adjoint.dlnJ_dlnQ` and phase tuple `adjoint.dlnJ_dlnK`
+remain available. `fd_check=true` compares the final-step injection sensitivity
+with two frozen-temperature Stokes solves, tightening the baseline forward,
+adjoint, and perturbed forward tolerances to `1e-10`, `1e-11`, and `1e-12`
+respectively so solver error does not swamp the small objective difference. These derivatives hold geometry, temperature, prior stress,
+and accepted pressure history fixed; they do not differentiate the full
+thermal or time-evolution problem. At yield-branch transitions a smooth local
+derivative need not predict a finite perturbation crossing the transition.
 
 The forward state must be converged before the adjoint solve. At that fixed
 state the transpose Jacobian is constant, and `operator` chooses how it is
@@ -552,12 +642,13 @@ estimate directly; `operator = :enzyme` always uses that estimate, because
 power iteration needs an operator application and the reverse-mode path has
 none to offer cheaply.
 
-`λvx`, `λvy`, and `λP` are initial guesses as well as output arrays. Zero them
+The adjoint velocity and `λP` are initial guesses as well as output arrays. Zero them
 for a cold solve; in an optimization loop, leave the previous design's adjoint
 in place to warm-start the next solve.
 
 An optimization loop can also construct
-`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` once and pass it as
+`StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)` (with `vz_nodes` appended in
+three dimensions) once and pass it as
 `workspace` on every adjoint solve. This reuses the residual, rate, pullback,
 and boundary buffers instead of allocating them for every design. Construct it
 with `enzyme=true` only when using `operator = :enzyme`; the default block and
@@ -571,9 +662,11 @@ subproblem.
 
 For T7/P1-disc the cached blocks hold 147 floating-point values per element,
 about 1.2 kB per element in `Float64`, once the symmetry of a viscous tangent is
-exploited; a plastic model raises that to 280 values, about 2.2 kB. Two
-alternatives store nothing per element when that footprint is unsuitable,
-notably for larger three-dimensional elements.
+exploited; a plastic model raises that to 280 values, about 2.2 kB. For the
+three-dimensional T11/P1-disc pair a non-symmetric tangent, plastic or with a
+finite bulk modulus, holds 1 501 values per element, about 12 kB. In two
+dimensions, two alternatives store nothing per element when that footprint is
+unsuitable.
 
 `operator = :matrix_free` rebuilds the transpose products by forward-mode
 directional differentiation of the element residuals, at about three residual
@@ -600,6 +693,7 @@ FEMTools.assemble_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_augmented_momentum_jacobian_matrices_atomix!
 FEMTools.assemble_pressure_residual_matrices_atomix!
 FEMTools.assemble_viscosity_weighted_pressure_scaling!
+FEMTools.assemble_shear_heating!
 FEMTools.momentum_element_residual
 FEMTools.element_momentum_jacobians
 FEMTools.element_augmented_momentum_jacobians
