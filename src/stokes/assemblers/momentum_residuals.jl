@@ -282,7 +282,9 @@ has one residual per direction.
         geo_P_el,
         phase_v,
         phase_P,
-        η, G, α, ρ0, K,
+        # `ρ0::Tuple` separates this method from the Pnum methods, whose
+        # thirteenth argument is `Tref::Real`.
+        η, G, α, ρ0::Tuple, K,
         g,
         Tref::Real,
         ηb, Δt, γ_eff,

@@ -174,7 +174,8 @@ end
     )
 
     text = _read_temp_vtk() do path
-        coords_advected = [SVector(2.0, 0.0), SVector(0.0, 2.0), SVector(0.0, 0.0)]
+        coords_advected = [SVector(2.0, 0.0), SVector(0.0, 2.0), SVector(0.0, 0.0),
+            SVector(1.0, 1.0), SVector(0.0, 1.0), SVector(1.0, 0.0)]
         write_stokes_vtk(path, mesh, coords_advected, el2nP, DoFsP, [10.0, 20.0, 30.0], 1.0:6.0, 2.0:7.0, post; Q_cpu = [4.0, 5.0, 6.0])
     end
 

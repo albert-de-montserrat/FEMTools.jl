@@ -324,17 +324,6 @@ Gather element-local nodal values and integrate the Stokes pressure residual for
     return local_nodes_P, Re
 end
 
-# Backward-compatible zero-source overload for direct low-level callers.
-@inline function pressure_element_residual(
-        v::NTuple{D}, P, P0, T, T0, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, ::Val{NV}, ::Val{NP}
-    ) where {D, NV, NP}
-    return pressure_element_residual(
-        v, P, P0, T, T0, nothing, el2n_v, el2nP,
-        geo_v, geo_P, phases, α, ηb, Δt, NqP, iel, Val(NV), Val(NP)
-    )
-end
-
 """
     assemble_stokes_pressure_residual_3d!(RP, v, mesh; workgroup=256, tables=...)
 
