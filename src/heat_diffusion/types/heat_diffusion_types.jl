@@ -9,17 +9,17 @@ Fields use `NTuple{nphases, FP}` so phase count and precision remain available
 to the compiler. The defaults describe one unit-valued `Float64` phase.
 """
 @kwdef struct ThermalMaterial{nphases, FP}
-    k::NTuple{nphases, FP} = (1e0,)
-    Cp::NTuple{nphases, FP} = (1e0,)
-    ρ0::NTuple{nphases, FP} = (1e0,)
-    α::NTuple{nphases, FP} = (1e0,)
-    K::NTuple{nphases, FP} = (1e0,)
+    k::NTuple{nphases, FP} = (1.0e0,)
+    Cp::NTuple{nphases, FP} = (1.0e0,)
+    ρ0::NTuple{nphases, FP} = (1.0e0,)
+    α::NTuple{nphases, FP} = (1.0e0,)
+    K::NTuple{nphases, FP} = (1.0e0,)
 
     function ThermalMaterial(
-        k::Tuple{FP, Vararg{FP}}, Cp::Tuple{FP, Vararg{FP}},
-        ρ0::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
-        K::Tuple{FP, Vararg{FP}},
-    ) where {FP}
+            k::Tuple{FP, Vararg{FP}}, Cp::Tuple{FP, Vararg{FP}},
+            ρ0::Tuple{FP, Vararg{FP}}, α::Tuple{FP, Vararg{FP}},
+            K::Tuple{FP, Vararg{FP}},
+        ) where {FP}
         nphases = length(k)
         length(Cp) == length(ρ0) == length(α) == length(K) == nphases ||
             throw(DimensionMismatch("material property tuples must have the same length"))
@@ -103,15 +103,15 @@ struct ThermalDiffusionDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     ϵ::FP
 
     function ThermalDiffusionDR(
-        backend, nnodes,
-        k::Tuple{FP, Vararg{FP, N}}, Cp::Tuple{FP, Vararg{FP, N}},
-        ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
-        K::Tuple{FP, Vararg{FP, N}};
-        CFL = 0.98, c_fact = 0.9, ϵ = 1e-6,
-    ) where {N, FP}
-        newvec()  = KernelAbstractions.zeros(backend, FP,  nnodes)
-        newivec() = KernelAbstractions.ones(backend,  Int32, nnodes)
-        new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
+            backend, nnodes,
+            k::Tuple{FP, Vararg{FP, N}}, Cp::Tuple{FP, Vararg{FP, N}},
+            ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
+            K::Tuple{FP, Vararg{FP, N}};
+            CFL = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
+        ) where {N, FP}
+        newvec() = KernelAbstractions.zeros(backend, FP, nnodes)
+        newivec() = KernelAbstractions.ones(backend, Int32, nnodes)
+        return new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂T, PC
             newvec(), newvec(), newvec(),            # T, T0, ∂T∂τ
             newvec(), newvec(),                      # P, source

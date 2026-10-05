@@ -25,6 +25,7 @@ using SparseArrays
 using KernelAbstractions
 import KernelAbstractions as KA
 using LinearAlgebra
+import GeoParams
 
 """
     TA(backend) -> Array type
@@ -97,6 +98,7 @@ include("stokes/assemblers/pressure_residual_adj.jl")
 include("stokes/assemblers/pressure_scaling.jl")
 include("stokes/assemblers/rheology.jl")
 include("stokes/assemblers/momentum_residuals.jl")
+include("stokes/assemblers/shear_heating.jl")
 include("stokes/assemblers/momentum_residuals_adj.jl")
 include("stokes/assemblers/adjoint_operator.jl")
 include("stokes/helpers.jl")
@@ -125,6 +127,7 @@ export DirichletBoundaryCondition, apply_bc!
 # Mesh construction and graph utilities.
 export generate_element2node,
     generate_node2element,
+    generate_element_adjacency,
     generate_boundary_elements,
     generate_coordinates,
     generate_dofs,
@@ -182,6 +185,7 @@ public assemble_diffusion_matrices_atomix!,
     assemble_augmented_momentum_jacobian_matrices_atomix!,
     assemble_pressure_residual_matrices_atomix!,
     assemble_pressure_residual_kernel!,
+    assemble_shear_heating!,
     assemble_pressure_residual_matrices_atomix_adj!,
     assemble_momentum_residual_matrices_atomix_adj!
 public update_rate_kernel!, update_variable_kernel!, precompute_geometry_kernel!
@@ -190,6 +194,6 @@ public color_mesh_greedy, remove_pressure_mean!
 public renumber_connectivity, orient_triangle_elements!, add_t7_bubbles!,
     straighten_t7_geometry!, rectangle_boundary_nodes, circle_boundary_nodes,
     triangulate_t7_mesh
-public velocity, stress, pressure, temperature
+public velocity, stress, stress_old, pressure, temperature, plastic_multiplier
 
 end # module FEMTools

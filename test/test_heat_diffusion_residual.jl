@@ -56,3 +56,23 @@ end
     )
     @test stiff ≈ incompressible
 end
+
+@testset "quadratic-tetrahedron thermal step converges when the mass term dominates" begin
+    # The row-sum lumped mass ∫Nᵢ dΩ of the Tet11 element is negative at its
+    # corners, so a mass-dominated (small Δt) step requires the consistent mass.
+    include(joinpath(@__DIR__, "tet11_box_mesh.jl"))
+    element = ReferenceElement(QuadraticElement{3, 11, Float64})
+    coords, el2n, groups = build_tet11_inclusion_mesh()
+    mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    hot = Set(el2n[:, findall(==(2), groups.phase)])
+    copyto!(thermal.T, [n in hot ? 1.0 : 0.0 for n in eachindex(coords)])
+    copyto!(thermal.T0, thermal.T)
+    fixed = Int32.(vcat(groups.surface, groups.bottom))
+    bc = DirichletBoundaryCondition(nothing, fixed, zeros(length(fixed)))
+
+    solver!(thermal, 1.0e-4, mesh, bc; workgroup = 1, verbose = false, iterMax = 20_000)
+
+    @test all(isfinite, thermal.T)
+    @test maximum(abs, thermal.T) < 1.1
+end

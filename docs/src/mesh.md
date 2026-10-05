@@ -35,7 +35,14 @@ mesh also computes both fields' geometry on that backend and keeps it, with both
 reference elements, as a [`MixedMeshCache`](@ref) in `mesh.geometry`. High-level
 Stokes calls take geometry, elements, and backend from the mesh alone. After
 moving `mesh.coords`, call `update_geometry!(mesh)` to recompute the geometry in
-place. Avoid mixing host connectivity with device solution arrays.
+place. An element-aware `Mesh` has the same method, so a thermal mesh that shares
+its nodes with a moving mixed mesh must be moved and updated as well. Avoid mixing
+host connectivity with device solution arrays.
+
+In three dimensions, T10/T11 tetrahedra attach the four discontinuous linear
+pressure DoFs to their vertices. Hex27 instead attaches them to the cell center
+and positive-axis face centers. Three-dimensional nodal normals are currently
+zero because the solver does not consume them.
 
 ## Coordinates and Degrees of Freedom
 
@@ -49,6 +56,7 @@ generate_dofs
 ```@docs
 generate_element2node
 generate_node2element
+generate_element_adjacency
 generate_boundary_elements
 FEMTools.element_coordinate_matrix
 FEMTools._unstructured_boundary_nodes

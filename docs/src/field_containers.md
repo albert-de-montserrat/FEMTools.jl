@@ -50,7 +50,9 @@ invariant. It is allocated with the others and left for the caller to fill;
 component writes through `setindex!` do not touch it.
 
 `Tuple` unpacks the independent components — dropping `II` — for assemblers
-that take a plain `NTuple` of arrays, and `copyto!` copies a whole container
+that take a plain `NTuple` of arrays. For 3-D Stokes assembly, use
+`FEMTools.stress(dr)` and `FEMTools.stress_old(dr)` instead: they reorder the
+components to `(xx, yy, zz, xy, xz, yz)`. `copyto!` copies a whole container
 component-wise, which is how a stress history is advanced.
 
 ## A single tensor
