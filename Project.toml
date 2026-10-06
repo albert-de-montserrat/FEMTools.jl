@@ -16,19 +16,14 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
-AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [extensions]
-FEMToolsAMDGPUExt = "AMDGPU"
 FEMToolsCUDAExt = "CUDA"
-FEMToolsMetalExt = "Metal"
 FEMToolsTriangulateExt = "Triangulate"
 
 [compat]
-AMDGPU = "1, 2"
 Aqua = "0.8"
 Atomix = "1.1.3"
 CUDA = "6.1"
@@ -40,7 +35,6 @@ Gmsh = "0.3"
 JET = "0.11.5, 0.12"
 KernelAbstractions = "0.9"
 LinearAlgebra = "1.11, 1.12, 1.13"
-Metal = "1"
 Printf = "1.11, 1.12, 1.13"
 SparseArrays = "1.11, 1.12, 1.13"
 StaticArrays = "1.9.18"

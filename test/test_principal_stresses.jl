@@ -36,7 +36,7 @@ function _principal_test_tensors(::Type{T}, D) where {T}
 end
 
 # Optional hardware gate: load the backend package, disable scalar indexing,
-# then call this with its array constructor. Metal supports Float32 only.
+# then call this with CUDA.CuArray.
 function _principal_stress_backend_tests(to_backend; types = (Float32, Float64))
     @testset "principal stress accelerator" begin
         for T in types, D in (2, 3)

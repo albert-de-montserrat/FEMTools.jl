@@ -738,8 +738,8 @@ projection step before writing cell fields.
 
 Buffers passed to the mutating method must not alias input or output arrays.
 Both methods synchronize the backend before returning and throw on nonfinite
-input or failed local eigenpair checks. CPU Float32/Float64 and Metal Float32
-are checked; CUDA and AMDGPU execution require separate hardware validation.
+input or failed local eigenpair checks. CPU Float32/Float64 are checked; CUDA execution requires separate hardware
+validation.
 
 ```@docs
 PrincipalStresses

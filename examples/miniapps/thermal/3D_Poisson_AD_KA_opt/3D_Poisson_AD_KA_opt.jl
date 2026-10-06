@@ -13,8 +13,8 @@ using FEMTools
 
 using CUDA
 
-# const backend   = CPU()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
-const backend   = CUDABackend()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
+# const backend   = CPU()   # swap for e.g. CUDABackend(); CPU() threads with julia -t
+const backend   = CUDABackend()   # swap for e.g. CUDABackend(); CPU() threads with julia -t
 const workgroup = 64
 
 # AD chunk size for the elemental Jacobian: the residual is re-evaluated

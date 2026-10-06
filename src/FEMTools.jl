@@ -36,11 +36,9 @@ Return the array constructor associated with `backend`.
 |:-------------- |:---------- |
 | `CPU()`        | `Array`    |
 | `CUDABackend()`| `CuArray`  |
-| `ROCBackend()` | `ROCArray` |
-| `MetalBackend()`| `MtlArray`|
 
-GPU backends are registered by the corresponding package extension and are only
-available when that package is loaded. For CUDA, load `CUDA` and pass
+CUDA is the only supported GPU backend and is registered by its package
+extension when CUDA is loaded. Load `CUDA` and pass
 `CUDA.CUDABackend()`; the extension maps it to `CUDA.CuArray`. This dispatch can
 be queried without a GPU, but allocating a `CuArray` requires a functional CUDA
 driver.

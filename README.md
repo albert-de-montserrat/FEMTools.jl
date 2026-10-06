@@ -143,8 +143,8 @@ physical models, solver-state fields, and worked examples.
 
 ## GPU backends
 
-GPU support is loaded on demand. Install the relevant package and load it
-alongside FEMTools to unlock the corresponding `TA` dispatch:
+CUDA is the only supported GPU backend. Install CUDA and load it
+alongside FEMTools to unlock its `TA` dispatch:
 
 ```julia
 using CUDA, FEMTools
@@ -154,5 +154,3 @@ mesh = Mesh(CUDABackend(), Ω, element, (64, 64))  # arrays live on the GPU
 | Package | Backend | Array type |
 |:--------|:--------|:-----------|
 | [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) | `CUDABackend()` | `CuArray` |
-| [AMDGPU.jl](https://github.com/JuliaGPU/AMDGPU.jl) | `ROCBackend()` | `ROCArray` |
-| [Metal.jl](https://github.com/JuliaGPU/Metal.jl) | `MetalBackend()` | `MtlArray` |

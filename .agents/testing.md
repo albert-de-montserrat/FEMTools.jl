@@ -29,12 +29,10 @@ The suite covers:
   tensor oracle plus device pressure, reuse, alias, and failure checks after
   loading a backend package and disabling scalar indexing. It does not add
   accelerator dependencies or automatic GPU execution to the default suite.
-  Metal Float32 is checked locally with Julia 1.13.1; CUDA and AMDGPU remain
-  unverified for this API. For the current examples manifest, prepend the root
-  to `LOAD_PATH` so FEMTools uses its current dependency map:
-  `pushfirst!(LOAD_PATH, pwd()); using FEMTools, Metal; Metal.allowscalar(false);
+  CUDA remains unverified for this API. Run the hardware gate with
+  `using FEMTools, CUDA; CUDA.allowscalar(false);
   include("test/test_principal_stresses.jl");
-  _principal_stress_backend_tests(MtlArray; types=(Float32,))`
+  _principal_stress_backend_tests(CuArray)`
   under `julia --project=examples` from the repository root.
   `test/test_type_stability.jl` also checks both public APIs with `@inferred`
   and JET for 2D/3D Float32/Float64 matrices, pressure, and a custom workgroup.
@@ -87,7 +85,7 @@ GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
-executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
+executes CUDA, examples, benchmarks, or multi-rank MPI.
 
 Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
 environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in

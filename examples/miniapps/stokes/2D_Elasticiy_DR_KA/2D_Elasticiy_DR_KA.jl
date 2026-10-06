@@ -18,7 +18,7 @@ using FEMTools
 # and diagonal preconditioner (PCx, PCy). Assembly is atomics-based only.
 # ---------------------------------------------------------------------------
 
-const backend   = CPU()   # swap for e.g. MetalBackend() / CUDABackend(); CPU() threads with julia -t
+const backend   = CPU()   # swap for e.g. CUDABackend(); CPU() threads with julia -t
 const workgroup = 64
 
 @inline function element_coordinate_matrix(coords, local_nodes::SVector{N, Int}) where {N}

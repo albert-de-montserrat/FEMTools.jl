@@ -139,6 +139,12 @@ orthogonality checks. Its native KA launch supplies the workgroup size at runtim
 to keep the kernel type concrete; fixed-size tuples preserve buffer-validation
 inference. See [`PRINCIPAL_STRESS_PLAN.md`](../PRINCIPAL_STRESS_PLAN.md).
 
+GPU alias-validation requirement: device wrappers over shared storage need
+backend-specific `dataids` so `Base.mightalias` detects overlapping views.
+Principal-stress in-place validation relies on this to enforce its no-alias
+contract; overlapping outputs/inputs can race or corrupt input fields. CUDA
+view-alias validation requires a hardware check.
+
 - Derived fields: `compute_strain_rate_stress_postprocess`,
   `compute_principal_stresses`, `compute_principal_stresses!`,
   `update_old_stress_from_cells!`.
@@ -255,8 +261,8 @@ those behaviors hide costly scientific errors.
 
 ## Backend and extension contract
 
-`TA(::CPU)` maps to `Array`. Optional package extensions in `ext/` add mappings
-for CUDA, AMDGPU, and Metal backends when those packages are loaded. Core code
+`TA(::CPU)` maps to `Array`. The optional CUDA extension in `ext/` adds the
+`CUDABackend` mapping when CUDA is loaded. CUDA is the only supported GPU backend. Core code
 must remain loadable without any GPU dependency.
 
 Extensions also carry optional non-backend capability. `FEMToolsTriangulateExt`

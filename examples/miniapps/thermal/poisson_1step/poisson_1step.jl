@@ -1,4 +1,4 @@
-using Metal
+using CUDA
 using KernelAbstractions
 using ForwardDiff, StaticArrays
 import KernelAbstractions as KA
@@ -89,11 +89,10 @@ function main(ncx)
     Gershgorin = :analytics
     Gershgorin = :enzyme
 
-    backend = CPU()
-    backend = MetalBackend()
+    backend = CUDABackend()
 
     # Resolution
-    nc  = ncx, ncx, ncx # here we need size in Int64 for Metal (at least)
+    nc  = ncx, ncx, ncx
     nce = nc .+ 2
     Δ   = (x=DAT(1/nc[1]), y=DAT(1/nc[2]), z=DAT(1/nc[3]))
 

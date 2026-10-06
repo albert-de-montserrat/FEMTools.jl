@@ -211,6 +211,9 @@ applications.
 | `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
 | `examples/miniapps/stokes/2D_Elasticity_stress_postprocess/2D_Elasticity_stress_postprocess.jl` | Includes the DR cantilever and projects quadrature stress to nodes |
 
+The examples environment supports CUDA as its only GPU backend. The
+`poisson_1step` thermal experiment selects CUDA.
+
 ## Miniapp contract
 
 New or polished primary miniapps should follow this shape:
