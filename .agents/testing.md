@@ -19,6 +19,23 @@ The suite covers:
 - parsing of maintained example scripts;
 - sparse and finite-difference reference oracles for selected solver/adjoint
   behavior.
+- `test/test_principal_stresses.jl` checks pointwise 2D/3D eigenpairs against
+  independent CPU symmetric eigendecomposition, eigenspace projections,
+  reconstruction, and orthonormality in Float32/Float64. It covers pressure
+  shifts, the `PrincipalStresses` return type and in-place buffer reuse,
+  tensor/tuple shear ordering, array shape, empty input, alias rejection,
+  and explicit nonfinite/overflow failures. Its optional hardware helper
+  `_principal_stress_backend_tests(array_constructor; types)` runs the same
+  tensor oracle plus device pressure, reuse, alias, and failure checks after
+  loading a backend package and disabling scalar indexing. It does not add
+  accelerator dependencies or automatic GPU execution to the default suite.
+  CUDA remains unverified for this API. Run the hardware gate with
+  `using FEMTools, CUDA; CUDA.allowscalar(false);
+  include("test/test_principal_stresses.jl");
+  _principal_stress_backend_tests(CuArray)`
+  under `julia --project=examples` from the repository root.
+  `test/test_type_stability.jl` also checks both public APIs with `@inferred`
+  and JET for 2D/3D Float32/Float64 matrices, pressure, and a custom workgroup.
 - `test/test_triangulate_mesh_ext.jl` exercises the Triangulate meshing
   extension. On a unit square: element orientation, the exact total area, the
   area constraint, midside and bubble placement, refinement under a smaller
@@ -68,7 +85,7 @@ GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
-executes CUDA, AMDGPU, Metal, examples, benchmarks, or multi-rank MPI.
+executes CUDA, examples, benchmarks, or multi-rank MPI.
 
 Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
 environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in

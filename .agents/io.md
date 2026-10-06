@@ -10,6 +10,12 @@ Core I/O is intentionally small:
 - Scalar point fields and cell fields are supported and length-validated.
 - `write_stokes_vtk` maps mixed pressure/velocity and derived stress/strain
   fields through the generic writer.
+- Principal-stress cell values and direction component tuples can be supplied
+  through existing scalar/vector `cell_data` support. Compute them from a cell
+  tensor and collocated physical pressure; integration-point eigenpairs retain
+  their `nq × nels` sampling and are not automatically projected to cells.
+  Eigenpairs of an averaged tensor differ from averages of pointwise eigenpairs;
+  directions should not be averaged.
 - Core has no mesh reader, checkpoint/restart format, parallel writer, or
   general result schema.
 - Examples create meshes with Gmsh.jl and sometimes depend on WriteVTK, but

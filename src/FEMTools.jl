@@ -36,11 +36,9 @@ Return the array constructor associated with `backend`.
 |:-------------- |:---------- |
 | `CPU()`        | `Array`    |
 | `CUDABackend()`| `CuArray`  |
-| `ROCBackend()` | `ROCArray` |
-| `MetalBackend()`| `MtlArray`|
 
-GPU backends are registered by the corresponding package extension and are only
-available when that package is loaded. For CUDA, load `CUDA` and pass
+CUDA is the only supported GPU backend and is registered by its package
+extension when CUDA is loaded. Load `CUDA` and pass
 `CUDA.CUDABackend()`; the extension maps it to `CUDA.CuArray`. This dispatch can
 be queried without a GPU, but allocating a `CuArray` requires a functional CUDA
 driver.
@@ -108,6 +106,7 @@ include("stokes/solvers/DR_adjoint.jl")
 
 # Post-processing: strain-rate/stress diagnostics and VTK output of solver results.
 include("postprocess/postprocess.jl")
+include("postprocess/principal_stresses.jl")
 
 # Public type hierarchy and constructors.
 export AbstractElement
@@ -164,7 +163,10 @@ export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, Druc
     commit_stokes_plastic_history!
 
 # Post-processing: strain-rate/stress diagnostics and VTK output.
-export compute_strain_rate_stress_postprocess,
+export PrincipalStresses,
+    compute_strain_rate_stress_postprocess,
+    compute_principal_stresses,
+    compute_principal_stresses!,
     update_old_stress_from_cells!,
     write_vtk,
     write_stokes_vtk

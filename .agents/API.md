@@ -119,7 +119,34 @@ difference until a concrete migration justifies changing user code.
 
 ### Results and output
 
+`compute_principal_stresses` and `compute_principal_stresses!` compute pointwise
+2D/3D eigenpairs in an exported `PrincipalStresses` container, preserving
+sampling shape, Float32/Float64, and backend. Its `values` and `directions`
+fields wrap tuples of arrays; the two-argument constructor borrows buffers
+without copying. The in-place method accepts this container, updates its
+existing arrays, and returns the same object. Only component tuples are passed
+to the kernel, so the result type needs no GPU adaptation dependency.
+They accept tensor containers by named fields or tuples in `stress(dr)` order
+(not the 3D tensor's `Tuple` order). Results contain descending `values` arrays
+and paired `directions[k][c]` arrays. Optional collocated physical pressure
+shifts values for `σ = τ - P I`. The 2D operation is in-plane; full plane-strain
+eigenpairs use a 3D tensor including `τzz`. Repeated values permit any
+orthonormal eigenspace basis. Mutating buffers may not alias inputs or each
+other. Both methods synchronize and raise `DomainError` on numerical failure;
+failed samples are NaN and output is partially updated. The implementation
+uses analytic 2D and scaled StaticArrays 3D eigenpairs with local residual and
+orthogonality checks. Its native KA launch supplies the workgroup size at runtime
+to keep the kernel type concrete; fixed-size tuples preserve buffer-validation
+inference. See [`PRINCIPAL_STRESS_PLAN.md`](../PRINCIPAL_STRESS_PLAN.md).
+
+GPU alias-validation requirement: device wrappers over shared storage need
+backend-specific `dataids` so `Base.mightalias` detects overlapping views.
+Principal-stress in-place validation relies on this to enforce its no-alias
+contract; overlapping outputs/inputs can race or corrupt input fields. CUDA
+view-alias validation requires a hardware check.
+
 - Derived fields: `compute_strain_rate_stress_postprocess`,
+  `compute_principal_stresses`, `compute_principal_stresses!`,
   `update_old_stress_from_cells!`.
 - Writers: `write_vtk`, `write_stokes_vtk`.
 
@@ -234,8 +261,8 @@ those behaviors hide costly scientific errors.
 
 ## Backend and extension contract
 
-`TA(::CPU)` maps to `Array`. Optional package extensions in `ext/` add mappings
-for CUDA, AMDGPU, and Metal backends when those packages are loaded. Core code
+`TA(::CPU)` maps to `Array`. The optional CUDA extension in `ext/` adds the
+`CUDABackend` mapping when CUDA is loaded. CUDA is the only supported GPU backend. Core code
 must remain loadable without any GPU dependency.
 
 Extensions also carry optional non-backend capability. `FEMToolsTriangulateExt`

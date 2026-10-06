@@ -34,8 +34,8 @@ meshes. It provides reference elements, quadrature, connectivity, geometry
 precomputation, mesh coloring, boundary conditions, matrix-free assembly, and
 pseudo-transient dynamic-relaxation solvers for heat diffusion, lithostatic
 pressure, and incompressible Stokes flow. KernelAbstractions makes compute paths
-backend-agnostic; CUDA, AMDGPU, and Metal array selection is supplied through
-package extensions. The package also contains discrete Stokes adjoints,
+backend-agnostic; CUDA array selection is supplied through a
+package extension. The package also contains discrete Stokes adjoints,
 post-processing, legacy ASCII VTK output, examples, and Documenter docs.
 
 ## Repository map
