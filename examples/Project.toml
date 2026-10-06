@@ -20,7 +20,7 @@ WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
 FEMTools = {path = ".."}
 
 [compat]
-CUDA = "6.4.1"
+DomainSets = "0.8.3"
 Enzyme = "0.13.199"
 ExactFieldSolutions = "0.2.3"
 TimerOutputs = "1.1.0"
