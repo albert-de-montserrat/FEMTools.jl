@@ -45,6 +45,11 @@ iterations. Dirichlet nodes `Γ_dofs` are pinned to `Γ_vals`, while the
 residual and rate are constrained with `Γ_zero` before each update so that
 boundary reaction forces do not corrupt the λ_min estimate.
 
+Pass a caller-owned `history` vector to append `(iter, residual, relative)` at
+convergence checks, including the final check. `residual` is `norm(R)/sqrt(nnodes)`;
+`relative` is normalized by the first residual of this solve. The default
+`history=nothing` records nothing and the return value remains `nothing`.
+
 Throws if the iteration produces NaNs, if the preconditioner admits no valid
 λmax, or if `iterMax` iterations pass without reaching the tolerance `ϵ`.
 """
@@ -54,6 +59,7 @@ function solve_dynamic_relaxation!(
         ncheck = 100,
         iterMax = 10_000,
         verbose = true,
+        history = nothing,
     )
     (; R, R0, ∂R∂u, PC, u, ∂u∂τ) = dr_fields(problem)
     name = dr_name(problem)
@@ -97,6 +103,7 @@ function solve_dynamic_relaxation!(
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β = (2 - c * Δτ) / (2 + c * Δτ)
             last_rel = nr / nr0
+            history === nothing || push!(history, (; iter = it, residual = nr / sqrt(nnodes), relative = last_rel))
             verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
             last_rel < problem.ϵ && return nothing
         end

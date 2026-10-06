@@ -93,3 +93,14 @@ For readers or checkpoints:
 - examples stop owning a conversion path and core/extension code takes it over;
 - distributed ownership changes output semantics;
 - persistence compatibility or versioning becomes supported behavior.
+
+## Benchmark convergence archives
+
+Standalone exact-field drivers use JLD2 from the examples environment; it is
+not a core package dependency or a mesh/state checkpoint API. Files contain
+raw convergence_history plus metadata (parameters, versions/backend strings,
+discretization, and dofs). Stokes counts vx/vy/p/total; scalar thermal counts
+T/total. Counts include constrained nodes and discontinuous pressure values.
+Archives are written after successful solves, before plotting, under each
+benchmark's output or output_quad folder. save_history=true is independent
+of optional PNG/VTK writes. No meshes or backend arrays are serialized.

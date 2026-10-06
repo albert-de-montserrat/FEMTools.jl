@@ -139,7 +139,8 @@ material factors are applied.
 
         # project parameters to integration point
         bulk = _select_pressure_bulk(ηb, K)
-        ηbq = interp2ip_phase(Nv, bulk, phase_loc)
+        # Signed P1 modes on quadrilaterals must not form 0*Inf or Inf-Inf.
+        ηbq = all(isinf, bulk) ? oftype(Nv[1], Inf) : interp2ip_phase(Nv, bulk, phase_loc)
         αq = interp2ip_phase(Nv, α, phase_loc)
         ∂P∂t = pressure_increment_at_ip(Nv, P_loc, P0loc, q) / (ηbq * Δt)
         ∂T∂t = αq * dot(Nv, Tloc - T0loc) / Δt

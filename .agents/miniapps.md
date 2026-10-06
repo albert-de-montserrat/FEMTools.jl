@@ -194,6 +194,34 @@ The `KA_sandbox/poisson_1step.jl` and `poisson_2step.jl` files are not in this
 inventory: they are 3-D finite-difference/KA experiments but do not use
 FEMTools.
 
+## Exact-field verification drivers
+
+The root `benchmarks/` tree also contains three maintained exact-field drivers:
+`stokes/solkz2D/SolKz2D_triangle.jl`,
+`stokes/solcx2D/SolCx2D_triangle.jl`, and
+`thermal/thermal_diffusion2D/ThermalDiffusion2D.jl`. Run them with
+`--project=examples`; they do not activate an environment internally.
+Each benchmark follows the SolVi2D script layout: top-level imports and one
+`main` with labeled mesh, geometry, state, boundary, solve, comparison, VTK, and
+visualization sections, followed by an unconditional call and completion message.
+Numerical sampling helpers are local to `main`; heatmaps are built inline. Running or including it
+executes the default solve with numerical/analytical/error heatmaps displayed.
+Plots use filled mesh polygons with quadrature-weighted cell averages, like
+SolVi2D; error colors average absolute pointwise error. Field panels share a
+color range and do not smooth the SolCx interface. Each script displays/saves
+one comparison figure: Stokes has pressure, x velocity, and y velocity rows, with numerical,
+analytical, and absolute-error columns. Thermal has one temperature row.
+Stokes PNG files are named `SolKz.png`/`SolCx.png` or their `_quad.png` variants.
+Set `FEMTOOLS_BENCHMARK_PLOTS=false` for headless execution; validation and
+refinement runners set this during includes. The local `main` still defaults
+to headless/no-output for customized calls. Optional output writes VTK and PNG
+and imports GLMakie at file load, like SolVi2D.
+`run_refinement.jl` includes the three scripts in isolated modules and records
+spatial/temporal errors and rates in CSV plus TOML versions. Validation runners
+use the same isolated-module approach and execute the default solves too.
+CPU Float64 correctness is validated, including 1e6 Stokes contrasts. CUDA has
+an explicit hardware check in `check_cuda.jl`; no local hardware pass is claimed.
+
 ## Benchmark and support files
 
 These belong to the miniapp ecosystem but are not independent showcase
@@ -280,6 +308,12 @@ does not cover this entire inventory. Update it when a miniapp becomes part of
 the maintained set; add a tiny execution test only when it can remain stable
 and reasonably fast.
 
+The same benchmark folders contain standalone `SolKz2D_quad.jl`,
+`SolCx2D_quad.jl`, and `ThermalDiffusion2D_quad.jl`, with the same one-main
+SolVi2D layout. Stokes uses Q2/P1; thermal uses scalar Q2 (no pressure), as its
+original Q9 driver already does. Quad outputs use `output_quad/` and `_quad`
+filenames, so running variants does not replace triangle outputs.
+
 ## Update this guide when
 
 - a 2-D/3-D example, benchmark, or support file is added, removed, renamed, or
@@ -290,3 +324,23 @@ and reasonably fast.
 - a script-local feature moves into the package or a package workflow moves
   into an example;
 - the supported miniapp set or standard run command changes.
+
+The six exact-field benchmark scripts also show a separate convergence figure
+in a new GLMakie Screen. Stokes overlays vx/vy/p on one logarithmic panel;
+thermal plots its scalar T residual across cumulative DR iterations. Both
+comparison and `_convergence.png` are written when output is enabled. Stokes
+returns records in stats.history; thermal returns convergence_history separately
+from its physical-time error history. Zero/tiny values are clamped only for plots.
+
+When showing and saving a figure, display it on its explicit GLMakie Screen
+before saving. Saving first can attach an offscreen Screen and GLMakie rejects
+subsequent display of that scene on a second Screen.
+
+All six standalone exact-field drivers save `*_convergence.jld2` by default
+(`save_history=true`), independently of show_plot/write_output. Dataset names
+are convergence_history and metadata; metadata includes portable version/backend
+strings, parameters, discretization, and per-field/total DoF counts. Counts
+include boundary constraints and cell-local pressure values. Return history_path
+is the filename, or nothing when disabled. The default entry point respects
+FEMTOOLS_BENCHMARK_HISTORY=false; validation/sweep runners suppress archives
+except serialization checks in temporary directories.

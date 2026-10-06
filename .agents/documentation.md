@@ -29,6 +29,17 @@ example is checked by Documenter doctests.
 
 GPU support documentation covers CUDA only; CPU remains the default backend.
 
+The manual includes `benchmarks.md` in the published page tree. It introduces
+SolKz, SolCx, and Gaussian thermal diffusion; `benchmarks/README.md` contains
+full run commands, forcing conventions, error definitions, refinement controls,
+and CUDA validation instructions. These benchmarks use `--project=examples`
+and follow SolVi2D’s one-main layout with inline visualization. They display
+comparison heatmaps by default: filled mesh elements colored by
+quadrature-weighted cell averages, with shared numerical/analytical color ranges. `FEMTOOLS_BENCHMARK_PLOTS=false`
+disables default displays; check/refinement runners suppress them automatically.
+Each benchmark emits one comparison figure; Stokes fields occupy separate rows
+with numerical/analytical/error columns, while thermal has one temperature row.
+
 ## Source of truth
 
 - Code and executable tests define behavior.
@@ -107,9 +118,22 @@ changed. Remove resolved gaps instead of appending a chronological log. Keep
 deep investigation records in a dedicated plan such as
 `ADJOINT_PERF_PLAN.md` only when their measurements and history remain useful.
 
+The benchmark manual and README also list all three `_quad.jl` scripts. The
+Stokes manual documents Q9 velocity with cell-local P1 pressure, pressure node
+locations, reference-square basis, and positive Jacobi pressure mass weights.
+
 ## Update this guide when
 
 - documentation structure, build, deployment, or environments change;
 - a new public manual section or internal subsystem guide is added;
 - source-of-truth or maintenance policy changes;
 - terminology or supported user workflows change.
+
+Benchmark docs describe separate convergence windows and `_convergence.png`
+outputs: vx/vy/p share one Stokes panel; T uses one thermal panel. Solver topic
+pages document Stokes component history and optional scalar caller-owned history.
+
+Benchmark docs describe default JLD2 history archives and metadata DoF counts,
+including constrained nodes and cell-local pressure unknowns. They document
+save_history/FEMTOOLS_BENCHMARK_HISTORY controls, history_path, dataset keys,
+and reading archives with JLD2.load. JLD2 is an examples dependency only.

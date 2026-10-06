@@ -568,6 +568,21 @@ adjoint sign convention.
 - Finite differences and sparse assembled systems remain independent validation
   oracles, not production solvers.
 
+## Exact-field forward benchmarks
+
+The standalone scripts under `benchmarks/stokes/solkz2D/` and `solcx2D/` run
+purely viscous T7/P1-disc SolKz and SolCx on a unit square with exact velocity
+prescribed on all boundaries.
+SolKz passes integration-point viscosity to the physical residual and pressure
+scaling. The conservative velocity preconditioner uses the element maximum.
+Both cases assemble exact gravitational loads once and pass `body_force`; the
+solver subtracts these before boundary constraints in outer and inner loops.
+SolKz uses vertical force `-ρ`, whereas SolCx uses `+sin(πy)cos(πx)`.
+SolCx requires an even structured resolution and element-local phase matrices
+so x=0.5 remains a conforming, unsmoothed interface. Error integration removes
+the volume-weighted pressure gauge independently from numerical and exact fields.
+The quadrature-viscosity API is forward-only and does not change `dr.η`.
+
 ## Invariants
 
 - Element residual functions are the mathematical source of truth. Atomic,
@@ -633,6 +648,16 @@ applicable:
 Do not loosen tolerances just to make a changed algorithm pass. Explain the
 scale and conditioning that justify any tolerance revision.
 
+## Q2/P1 forward quadrilateral benchmarks
+
+The `_quad.jl` SolKz/SolCx scripts use Q9 velocity and three cell-local P1
+pressure values on the reference square. Signed pressure functions require
+positive Jacobi mass weights `∫Nᵢ² dΩ`, while physical residuals retain signed
+shape functions. Fully infinite pressure bulk moduli bypass interpolation to
+avoid `0*Inf` and `Inf-Inf` in incompressible residuals. Finite-bulk interpolation
+retains its existing behavior. CPU refinement and 1e6 contrast checks exercise
+both triangular and quadrilateral discretizations.
+
 ## Update this guide when
 
 - a solver, state field, residual, rheology, convergence rule, or public return
@@ -641,3 +666,14 @@ scale and conditioning that justify any tolerance revision.
 - new benchmark evidence changes a performance decision;
 - distributed reductions or halo semantics enter a solve;
 - a solver limitation or required precondition changes.
+
+## Convergence history recording
+
+Stokes check history retains aggregate velocity and pressure fields and adds
+`err_v_components`. Outer records include initial/final physical residuals;
+inner records use the momentum and pressure residuals already assembled at
+that check, without extra assembly or changing solver convergence decisions.
+Scalar DR accepts `history=nothing` or a caller-owned vector; records contain
+iteration, absolute RMS residual, and relative residual. Optional recording
+does not change the scalar return value or numerical update. Thermal drivers
+combine per-step histories with cumulative iteration offsets.

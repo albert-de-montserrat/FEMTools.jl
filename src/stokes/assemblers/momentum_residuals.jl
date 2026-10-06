@@ -40,6 +40,7 @@ end
     end
     return out
 end
+@inline _element_max_phase_property(var::SVector, _) = maximum(var)
 @inline _element_max_phase_property(var, phase_loc) = map(_ -> _max_phase_value(var, phase_loc), var)
 @inline function _local_pressure_correction(
         v, P_loc, P0loc, T_loc, T0loc, geo_v_el, geo_P_el, phase_P, α, ηb, Δt, γ_eff, MP_loc, NqP,
@@ -93,15 +94,15 @@ Weak form per node `i`:
         τ_old_q = old_stress_at_ip(Nv, τ_old, T, q, Val(3))
         Pq = dot(NqP[q], P_loc)
         (τxx, τyy, τxy), Pq_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
+            v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Pq, plastic,
             _history_at_ip(γ_history, q),
         )
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy, Pq_local)
         λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Pq, plastic,
             )
         ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Pq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Pq, plastic,
             )
         store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         # x-momentum: ∫ (∂Nᵢ/∂x·(τxx−P) + ∂Nᵢ/∂y·τxy) dΩ
@@ -166,16 +167,16 @@ equation of state keep the total pressure. `nothing` means zero fluid pressure.
         # Plane strain: τzz = −(τxx + τyy) is carried by `deviatoric_stress`
         # and never enters the in-plane residual.
         (τxx, τyy, τxy), Pe_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+            v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             _history_at_ip(γ_history, q),
         )
         Pq_local = _total_pressure(Pe_local, Pfq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τxy, Pq_local)
         λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         τ = SMatrix{2, 2}(τxx, τxy, τxy, τyy)
@@ -235,16 +236,16 @@ With a [`DruckerPragerCap`](@ref) that pressure is the cap-corrected one, and
         Pfq = _fluid_pressure_at_ip(NqP[q], Pf_loc)
         Peq = _effective_pressure(Pq, Pfq)
         (τxx, τyy, τzz, τxy, τxz, τyz), Pe_local = deviatoric_stress_and_pressure(
-            v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+            v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             _history_at_ip(γ_history, q),
         )
         Pq_local = _total_pressure(Pe_local, Pfq)
         store_stress_at_ip!(τ_store, q, τxx, τyy, τzz, τxy, τxz, τyz, Pq_local)
         λ = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_multiplier(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         ε̇pl = λ_store === nothing || plastic === nothing ? zero(τxx) : plastic_strain_rate_invariant(
-                v, ∂N∂x, Nv, η, G, phase_loc, Δt, τ_old_q, Peq, plastic,
+                v, ∂N∂x, Nv, _viscosity_at_q(η, q), G, phase_loc, Δt, τ_old_q, Peq, plastic,
             )
         store_plastic_multiplier_at_ip!(λ_store, q, λ, ε̇pl)
         τ = SMatrix{3, 3}(τxx, τxy, τxz, τxy, τyy, τyz, τxz, τyz, τzz)
@@ -517,7 +518,8 @@ scatter.
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
     Re = integrate_momentum_residual(
         vloc, P_loc, Pnum_loc, T_loc, geo_v_el, phase_loc,
-        η, G, α, ρ0, K, g, Tref, Δt, Nq, NqP, τ_old_loc, plastic,
+        _element_viscosity(η, iel, quadrature_points_val(geo_v_el)),
+        G, α, ρ0, K, g, Tref, Δt, Nq, NqP, τ_old_loc, plastic,
         _stress_output(τ_store, iel),
         _plastic_multiplier_output(λ_store, iel),
         γ_loc, Pf_loc,
@@ -817,7 +819,9 @@ row sums provide a conservative smoother/preconditioner and spectral estimate.
     T_loc = _gather_local(T, local_nodes_P, Val(NP))
     τ_old_loc = _gather_old_stress(τ_old, local_nodes_v, iel, Val(NV), quadrature_points_val(geo_el))
     phase_loc = _gather_phase(phases, local_nodes_v, iel, Val(NV))
-    η_pc = _element_max_phase_property(η, phase_loc)
+    η_pc = _element_max_phase_property(
+        _element_viscosity(η, iel, quadrature_points_val(geo_el)), phase_loc
+    )
 
     J = _velocity_jacobian_blocks(
         v_arg -> integrate_momentum_residual(
@@ -947,7 +951,9 @@ end
     γ_loc = _gather_history(γ_history, iel, quadrature_points_val(geo_v_el))
     phase_v = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
     phase_P = _gather_phase(phases_P, local_nodes_P, iel, Val(NP))
-    η_pc = _element_max_phase_property(η, phase_v)
+    η_pc = _element_max_phase_property(
+        _element_viscosity(η, iel, quadrature_points_val(geo_v_el)), phase_v
+    )
 
     momentum = v_arg -> begin
         Pnum_loc = _local_pressure_correction(

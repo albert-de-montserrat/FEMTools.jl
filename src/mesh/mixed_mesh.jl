@@ -160,8 +160,8 @@ Construct a mixed velocity–pressure mesh from a pre-built velocity mesh and a
 pressure reference element.
 
 The pressure field is treated as **discontinuous linear** (P1-disc): each
-triangle gets its own three pressure DoFs, built internally via
-`generate_discontinuous_linear_mesh`. `mesh_v` supplies coordinates, velocity
+triangle or Q9 quadrilateral gets its own three pressure DoFs, built internally
+via `generate_discontinuous_linear_mesh`. `mesh_v` supplies coordinates, velocity
 DoF indices, and velocity connectivity; `element_P` supplies the pressure
 polynomial order stored in the `MixedMesh` type parameter.
 
@@ -311,10 +311,18 @@ function _fill_mixed_geometry!(
         geo_v, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
         ndrange = mesh.nels,
     )
-    precompute_geometry_kernel!(backend, workgroup)(
-        geo_P, coords, el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP);
-        ndrange = mesh.nels,
-    )
+    if NV == 9
+        # P1 is defined on the Q2 reference square; integrate on the velocity cell.
+        precompute_geometry_kernel!(backend, workgroup)(
+            geo_P, coords, el2n, ∂N∂ξq_v, ip_v.ω, Val(NV);
+            ndrange = mesh.nels,
+        )
+    else
+        precompute_geometry_kernel!(backend, workgroup)(
+            geo_P, coords, el2nP, ∂N∂ξq_P, ip_v.ω, Val(NP);
+            ndrange = mesh.nels,
+        )
+    end
     KA.synchronize(backend)
     return nothing
 end
@@ -393,11 +401,15 @@ end
 # pressure shape functions.
 #
 # Triangles: the P1 basis of `LinearElement{2, 3}` is nodal at the corners.
+# Q9: the basis (1-ξ-η, ξ, η) is nodal at the center and +x/+y edge midpoints.
 # T10/T11: the P1 basis is nodal at the four tetrahedron vertices.
 # Hex27: the four-mode basis (1, ξ, η, ζ) is nodal at the cell center and the
 # +x, +y and +z face centers.
-_pressure_node_rows(::Val{2}, nlocal::Integer) = nlocal >= 3 ? (1, 2, 3) :
+function _pressure_node_rows(::Val{2}, nlocal::Integer)
+    nlocal == 9 && return (9, 6, 7)
+    nlocal >= 3 && return (1, 2, 3)
     throw(ArgumentError("triangle connectivity needs at least 3 local nodes"))
+end
 function _pressure_node_rows(::Val{3}, nlocal::Integer)
     nlocal in (10, 11) && return (1, 2, 3, 4)
     nlocal == 27 && return (27, 23, 24, 26)
@@ -410,10 +422,10 @@ end
 Build the topology and element-to-DoF map for discontinuous linear pressure
 elements.
 
-`el2n` may be T3, T6 or T7 triangle connectivity, T10/T11 tetrahedral
-connectivity, or Hex27 connectivity. The returned `p_el2n` selects the velocity
+`el2n` may be T3, T6 or T7 triangle connectivity, Q9 quadrilateral connectivity,
+T10/T11 tetrahedral connectivity, or Hex27 connectivity. The returned `p_el2n` selects the velocity
 nodes at which the pressure basis is nodal: triangle/tetrahedron corners, or the
-cell center and +x, +y, +z face centers of a hexahedron. Each element receives
+cell center and positive edge/face centers of a Q9 quadrilateral or hexahedron. Each element receives
 its own `NP` pressure DoFs,
 `p_el2dof[:, iel] == NP(iel - 1) .+ (1:NP)`.
 
