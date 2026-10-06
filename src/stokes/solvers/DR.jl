@@ -1,3 +1,11 @@
+_subtract_body_force!(R, ::Nothing) = nothing
+function _subtract_body_force!(R, load)
+    for c in eachindex(R)
+        R[c] .-= load[c]
+    end
+    return nothing
+end
+
 # Apply one Dirichlet node set and value set per spatial direction.
 @inline function _apply_dirichlet_all!(fields::NTuple{D}, nodes, vals, backend, workgroup) where {D}
     ntuple(Val(D)) do c
@@ -159,6 +167,18 @@ stress history from `dr`, and one Dirichlet boundary-condition object per
 velocity component. Phase layouts and stress history may be overridden with
 the `phases_v`, `phases_P`, and `τ_old` keywords.
 
+`viscosity` defaults to `dr.η`. An `nq × nels` matrix overrides viscosity at
+velocity quadrature points for purely viscous 2-D flow without plasticity,
+coupling, or `measure_λmax`. Values must be finite, positive, and match the
+state precision and backend. Supply the same matrix as `η` to
+[`assemble_viscosity_weighted_pressure_scaling!`](@ref). The override does not
+change the material stored in `dr` and is not an adjoint or stress-history API.
+
+`body_force` optionally supplies one assembled nodal load vector per velocity
+component, `fᵢ = ∫Nᵢ b dΩ`. The solver subtracts this load from momentum residuals
+before Dirichlet constraints, in addition to the existing EOS/gravity load.
+Load vectors must be finite and match the velocity size, precision, and backend.
+
 The state, mesh, and velocity boundary conditions must have the same spatial dimension.
 """
 function solve_stokes_dyrel!(
@@ -222,7 +242,10 @@ the raw `geo_v`, `geo_P` arrays.
   plane-strain form takes these as `vx_nodes` and `vy_nodes`.
 - `verbose = true`: outer Powell-Hestenes progress; `verbose_inner = false`:
   inner dynamic-relaxation trace.
-- `collect_history = false`: record `(iter, err_v, err_P)` at every check.
+- `collect_history = false`: record `(iter, err_v, err_v_components, err_P)`
+  at outer and inner convergence checks. `err_v_components` stores one scaled
+  residual norm per velocity component; `err_P` uses the pressure residual
+  assembled at that check.
 - `measure_λmax = false`: experimentally replace the Gershgorin bound with
   power iteration on the symmetrically Jacobi-scaled velocity operator.
 - `freeze_jacobian = plastic === nothing`: reuse the constant linear momentum
@@ -314,8 +337,28 @@ function solve_stokes_dyrel!(
         Q2D = nothing,
         Qq = nothing,
         _thermal = nothing,
+        viscosity = dr.η,
+        body_force = nothing,
     ) where {D}
     ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
+    _validate_viscosity(viscosity, ip_size, dr.P)
+    if viscosity isa AbstractMatrix
+        D == 2 && all(isinf, G) || throw(ArgumentError("quadrature viscosity currently requires purely viscous 2-D flow"))
+        plastic === nothing || throw(ArgumentError("quadrature viscosity requires plastic=nothing"))
+        isnothing(_thermal) || throw(ArgumentError("quadrature viscosity is not supported by coupled solves"))
+        measure_λmax && throw(ArgumentError("quadrature viscosity requires measure_λmax=false"))
+    end
+    if body_force !== nothing
+        body_force isa NTuple{D, AbstractVector} ||
+            throw(ArgumentError("body_force must contain one assembled load vector per velocity component"))
+        for f in body_force
+            length(f) == mesh_stokes.nnodes || throw(DimensionMismatch("body_force must match velocity nodes"))
+            eltype(f) === eltype(dr.P) || throw(ArgumentError("body_force must match the state precision"))
+            typeof(KA.get_backend(f)) === typeof(backend) ||
+                throw(ArgumentError("body_force and state must use the same backend"))
+            all(isfinite, f) || throw(ArgumentError("body_force must contain finite values"))
+        end
+    end
     P_old isa AbstractMatrix && size(P_old) != ip_size && throw(
         DimensionMismatch(
             "integration-point P_old must be nq × nels = $ip_size, got $(size(P_old))"
@@ -372,7 +415,7 @@ function solve_stokes_dyrel!(
         assemble_velocity_operator(
             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk
+            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk, η = viscosity
         )
     else
         assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -380,7 +423,7 @@ function solve_stokes_dyrel!(
             v, dr.P, dr.P0, dr.T, dr.T0,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
             element_v, element_P, phases_v, phases_P,
-            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
+            viscosity, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, pressure_bulk, Δt, γP, M_P,
             backend, workgroup; τ_old, plastic,
             γ_history = _plastic_history_gamma(dr.plastic_history), Pf = dr.Pf,
         )
@@ -429,7 +472,7 @@ function solve_stokes_dyrel!(
     α_T = β_T = λmax_T = thermal_nr0 = zero(eltype(first(Rv)))
     shear_heating! = () -> assemble_shear_heating!(
         _thermal.Φ, v, dr.P, mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v,
-        phases_v, τ_old, plastic, dr.η, G, Δt, Nq_v, Nq_P, ∂N∂ξ_v,
+        phases_v, τ_old, plastic, viscosity, G, Δt, Nq_v, Nq_P, ∂N∂ξ_v,
         _plastic_history_gamma(dr.plastic_history), valNV, valNP,
         backend, workgroup, dr.Pf,
     )
@@ -458,14 +501,19 @@ function solve_stokes_dyrel!(
             v, dr.P, dr.T, nothing,
             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
             phases_v, τ_old, plastic, nothing,
-            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+            viscosity, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
             nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
         )
+        _subtract_body_force!(Rv, body_force)
         _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
 
         err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
         err_v = maximum(norm, Rv) / (2 * sqrt(mesh_stokes.nnodes))
+        if collect_history
+            err_v_components = ntuple(c -> norm(Rv[c]) / (2 * sqrt(mesh_stokes.nnodes)), Val(D))
+            push!(history, (; iter, err_v, err_v_components, err_P))
+        end
         if itPH == 1
             err_P0 = err_P + eps(err_P)
             err_v0 = err_v + eps(err_v)
@@ -585,11 +633,12 @@ function solve_stokes_dyrel!(
                 v, dr.P, dr.T, dr.Pnum,
                 mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, mesh_stokes.nels,
                 phases_v, τ_old, plastic, nothing,
-                dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
+                viscosity, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref, Δt,
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
                 nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
             )
 
+            _subtract_body_force!(Rv, body_force)
             _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
             _apply_dirichlet_all!(rate, v_nodes, zero_bc, backend, workgroup)
 
@@ -617,7 +666,11 @@ function solve_stokes_dyrel!(
                 isnan(err) && error("NaN detected in inner loop PH=$itPH PT=$itPT")
                 err > 1.0e10 && error("Kaboom! Error > 1e10 in inner loop PH=$itPH PT=$itPT")
 
-                collect_history && push!(history, (; iter, err_v = err_v_inner, err_P))
+                if collect_history
+                    err_v_components = ntuple(c -> norm(Rv[c]) / (2 * sqrt(mesh_stokes.nnodes)), Val(D))
+                    pressure_residual = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
+                    push!(history, (; iter, err_v = err_v_inner, err_v_components, err_P = pressure_residual))
+                end
 
                 verbose_inner && @printf("  it = %d, iter = %d, err = %.3e\n", itPT, iter, err)
 
@@ -631,7 +684,7 @@ function solve_stokes_dyrel!(
                         assemble_velocity_operator(
                             dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
                             phases_v, phases_P, τ_old, plastic, G, Δt, γP, backend, workgroup;
-                            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk
+                            γ_history = _plastic_history_gamma(dr.plastic_history), pressure_bulk, η = viscosity
                         )
                     else
                         assemble_augmented_momentum_jacobian_matrices_atomix!(
@@ -639,7 +692,7 @@ function solve_stokes_dyrel!(
                             v, dr.P, dr.P0, dr.T, dr.T0,
                             mesh_stokes.el2n, mesh_stokes.DoFsP, geo_v, geo_P, mesh_stokes.nels,
                             element_v, element_P, phases_v, phases_P,
-                            dr.η, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
+                            viscosity, G, dr.α, dr.ρ0, dr.K, dr.g, dr.Tref,
                             pressure_bulk, Δt, γP, M_P, backend, workgroup; τ_old, plastic,
                             γ_history = _plastic_history_gamma(dr.plastic_history), Pf = dr.Pf,
                         )

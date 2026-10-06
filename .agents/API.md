@@ -185,6 +185,16 @@ signed local source, or paired with nonnegative weights and signed `Q2D` to
 enforce the discrete area-rate identity `Σ Q dΩ = Q2D`. `P_old` accepts either
 a nodal pressure vector or accepted `nq × nels` integration-point pressure.
 
+The forward Stokes solver accepts `viscosity` as phase values or an
+`nq × nels` matrix for purely viscous 2-D flow. Matrix values are validated for
+shape, precision, backend, and finite positivity; matrix overrides exclude
+plasticity, coupling, and measured spectral estimates. Pressure scaling takes
+the same matrix through its existing `η` keyword. The override does not change
+the state material used by stress-history or adjoint APIs.
+`body_force` adds one finite assembled nodal load vector per velocity component
+before residual constraints in both forward loops. It is additive to EOS/gravity
+forcing; pointwise force densities must be integrated by the caller.
+
 ## Canonical user flows
 
 ### Single-field problem
@@ -315,6 +325,12 @@ is easier to document, optimize, and support across CPU/GPU/MPI backends.
 Resolve these only from real workflows. Do not create a universal problem or
 solver abstraction in anticipation of future backends.
 
+Q9 velocity mixed meshes now support discontinuous three-value P1 pressure
+using `LinearElement{2,3}` evaluated on the reference square. Pressure topology
+selects velocity nodes `(9,6,7)` (center, +x, +y), and pressure geometry uses
+velocity-cell quadrature. `assemble_viscosity_weighted_pressure_scaling!` uses
+positive Jacobi weights on Q9 cells, matching the signed pressure basis.
+
 ## Update this guide when
 
 - an exported/public name, signature, default, return value, mutation, or error
@@ -323,3 +339,13 @@ solver abstraction in anticipation of future backends.
 - an extension/backend or distributed API is added;
 - an internal type becomes supported API or a public name is deprecated;
 - tests/docs reveal a compatibility promise not recorded here.
+
+## Solver convergence histories
+
+`collect_history=true` enriches Stokes `stats.history` entries with a per-velocity
+`err_v_components` tuple while retaining `iter`, `err_v`, and `err_P`. Records
+now include outer and inner checks; pressure norms use the residual assembled
+at that check, and the final outer record matches returned convergence errors.
+Scalar DR `solver!` accepts a caller-owned `history` vector and appends
+`(iter,residual,relative)` at checks, including convergence. Its default is
+`nothing`, so default solves record nothing and still return `nothing`.

@@ -154,6 +154,15 @@ Run the full package suite after changing ordering, element definitions,
 geometry, or public mesh constructors because those contracts feed every
 solver and writer.
 
+## Q2/P1 quadrilateral mixed meshes
+
+`MixedMesh` with Q9 velocity and `LinearElement{2,3}` pressure stores three
+discontinuous pressure values per cell at local velocity nodes `(9,6,7)`.
+The basis `(1-ξ-η,ξ,η)` spans linear polynomials on the reference square.
+Pressure volume weights come from Q9 velocity geometry, including deformed
+cells; pressure coordinates are not a separate triangular integration domain.
+Triangle topology and geometry retain their existing paths.
+
 ## Update this guide when
 
 - an element family, ordering, mesh field, importer, tag model, or boundary

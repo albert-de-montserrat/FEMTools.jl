@@ -1,0 +1,235 @@
+using FEMTools
+using LinearAlgebra
+using DomainSets
+using KernelAbstractions
+using ExactFieldSolutions
+using JLD2
+using DomainSets: ×
+
+import GLMakie
+using GLMakie: Figure, Axis, Colorbar, poly!, Point2f, DataAspect
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+
+"""
+    main(; resolution=16, backend=CPU(), ...)
+
+Solve SolKz on a unit square using Q2/P1-disc elements. Compare velocity
+and mean-free pressure with ExactFieldSolutions; non-convergence throws.
+"""
+function main(;
+    resolution = 16,
+    contrast = 1e6,
+    backend = CPU(),
+    workgroup = 128,
+    tolerance = 1e-10,
+    total_iterMax = 200_000,
+    show_plot = false,
+    write_output = false,
+    save_history = true,
+    output_dir = joinpath(@__DIR__, "output_quad"),
+)
+    case = :SolKz
+    resolution isa Integer && resolution > 0 || throw(ArgumentError("resolution must be a positive integer"))
+    isfinite(contrast) && contrast > 1 || throw(ArgumentError("contrast must be finite and greater than one"))
+    isfinite(tolerance) && tolerance > 0 || throw(ArgumentError("tolerance must be finite and positive"))
+
+    # ---------------------------------------------------------------------------
+    # Meshes
+    # ---------------------------------------------------------------------------
+
+    element_v = ReferenceElement(QuadraticElement{2, 9, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (resolution, resolution))
+    mesh = MixedMesh(mesh_v, element_P; workgroup)
+    params = (; Δη = Float64(contrast), B = log(contrast) / 2, km = 1.6π, n = 3, σ = 1.0)
+    exact(x) = Stokes2D_SolKz_Zhong1996(x; params)
+    density(x) = -exact(x).ρ
+
+    # ---------------------------------------------------------------------------
+    # Geometry precompute (host samples for analytical comparison)
+    # ---------------------------------------------------------------------------
+
+    coords, connectivity = Array(mesh.coords), Array(mesh.el2n)
+    Nq = shape_function_values(element_v)
+    gradients = shape_function_gradients(element_v)
+    geo = Array(mesh.geometry.geo_v)
+    points = [sum(Nq[q][a] * coords[connectivity[a, e]] for a in axes(connectivity, 1))
+              for q in eachindex(Nq), e in 1:mesh.nels]
+    weights = [FEMTools.element_geometry(geo, e, gradients)[q][2]
+               for q in eachindex(Nq), e in 1:mesh.nels]
+    samples = (; points, weights)
+    NqP = shape_function_values(element_P, element_v.integration_points)
+    nq = length(Nq)
+    to_backend = FEMTools.TA(backend)
+
+    η = (1.0,)
+    zero_properties = map(zero, η)
+    infinite_properties = map(_ -> Inf, η)
+
+    # ---------------------------------------------------------------------------
+    # StokesDR struct
+    # ---------------------------------------------------------------------------
+
+    material = StokesMaterial(; η, ηb = infinite_properties, G = infinite_properties,
+        α = zero_properties, ρ0 = zero_properties, K = infinite_properties, g = (0.0, 0.0))
+    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material; stress_size = (nq, mesh.nels))
+    viscosity = to_backend(map(x -> exact(x).η, samples.points))
+    # ---------------------------------------------------------------------------
+    # Phase assignment
+    # ---------------------------------------------------------------------------
+
+    cell_phase = ones(Int, mesh.nels)
+    phases_v = to_backend(Int32.(repeat(reshape(cell_phase, 1, :), 9, 1)))
+    phases_P = to_backend(Int32.(repeat(reshape(cell_phase, 1, :), 3, 1)))
+    # Integrate the analytical vertical body force into a nodal load.
+    force = (zeros(mesh.nnodes), zeros(mesh.nnodes))
+    for e in 1:mesh.nels, q in 1:nq, a in 1:9
+        force[2][connectivity[a, e]] += Nq[q][a] * density(samples.points[q, e]) * samples.weights[q, e]
+    end
+    body_force = map(to_backend, force)
+
+    # ---------------------------------------------------------------------------
+    # Boundary conditions
+    # ---------------------------------------------------------------------------
+
+    boundary = Array(mesh_v.Γnodes)
+    boundary_values = [exact(coords[n]).V for n in boundary]
+    bc = ntuple(c -> DirichletBoundaryCondition(nothing, to_backend(boundary),
+        to_backend([v[c] for v in boundary_values])), 2)
+    γP = KernelAbstractions.zeros(backend, Float64, mesh.nnodesP)
+    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 50.0, 1.0;
+        workgroup, phases_v, η = viscosity)
+    # Start from zero interior velocity; the exact solution is only an oracle.
+    # ---------------------------------------------------------------------------
+    # Stokes solve
+    # ---------------------------------------------------------------------------
+
+    elapsed = @elapsed stats = solve_stokes_dyrel!(dr, mesh, bc, 1.0, γP;
+        phases_v, phases_P, viscosity, body_force, workgroup,
+        ncheck = 25, ϵ_tol = tolerance, total_iterMax, max_ph_iterations = 5000,
+        collect_history = true, verbose = false, verbose_inner = false)
+    stats.converged || error("$case did not converge: $(stats.err_abs), $(stats.iter) iterations")
+
+    # ---------------------------------------------------------------------------
+    # Analytical comparison
+    # ---------------------------------------------------------------------------
+
+    function sample_field(field, connectivity, shapes)
+        values = Array(field)
+        field_nodes = Array(connectivity)
+        return [sum(shapes[q][a] * values[field_nodes[a, e]] for a in axes(field_nodes, 1))
+                for q in eachindex(shapes), e in axes(field_nodes, 2)]
+    end
+
+    function field_error(numerical, exact, weights)
+        absolute = sqrt(sum(weights .* abs2.(numerical .- exact)))
+        reference = sqrt(sum(weights .* abs2.(exact)))
+        return (; absolute, relative = iszero(reference) ? NaN : absolute / reference)
+    end
+
+    velocity = (Array(dr.v.x), Array(dr.v.y))
+    numerical_v = map(v -> sample_field(v, mesh.el2n, Nq), velocity)
+    solutions = map(exact, samples.points)
+    analytical_v = ntuple(c -> map(s -> s.V[c], solutions), 2)
+    numerical_p = sample_field(dr.P, mesh.DoFsP, NqP)
+    analytical_p = map(s -> s.p, solutions)
+    numerical_p .-= sum(samples.weights .* numerical_p) / sum(samples.weights)
+    analytical_p .-= sum(samples.weights .* analytical_p) / sum(samples.weights)
+    velocity_error = sqrt(sum(samples.weights .* (abs2.(numerical_v[1] .- analytical_v[1]) .+
+                                                   abs2.(numerical_v[2] .- analytical_v[2]))))
+    velocity_reference = sqrt(sum(samples.weights .* (abs2.(analytical_v[1]) .+ abs2.(analytical_v[2]))))
+    errors = (; velocity = (; absolute = velocity_error, relative = velocity_error / velocity_reference),
+               pressure = field_error(numerical_p, analytical_p, samples.weights))
+
+    # ---------------------------------------------------------------------------
+    # Convergence history archive
+    # ---------------------------------------------------------------------------
+
+    dofs = (; vx = length(dr.v.x), vy = length(dr.v.y), p = length(dr.P),
+              total = length(dr.v.x) + length(dr.v.y) + length(dr.P))
+    metadata = (; julia = string(VERSION), exact_fields = string(pkgversion(ExactFieldSolutions)),
+                 backend = string(typeof(backend)), resolution, contrast, case, tolerance,
+                 discretization = :Q2P1, params, dofs)
+    history_path = nothing
+    if save_history
+        mkpath(output_dir)
+        history_path = joinpath(output_dir, "$(case)_quad_convergence.jld2")
+        jldsave(history_path; convergence_history = stats.history, metadata)
+    end
+
+    # ---------------------------------------------------------------------------
+    # VTK output
+    # ---------------------------------------------------------------------------
+
+    write_output && mkpath(output_dir)
+    if write_output
+        cell_p = vec(sum(samples.weights .* numerical_p; dims = 1) ./ sum(samples.weights; dims = 1))
+        cell_exact = vec(sum(samples.weights .* analytical_p; dims = 1) ./ sum(samples.weights; dims = 1))
+        write_vtk(joinpath(output_dir, "$(case)_quad.vtk"), mesh;
+            point_data = (; velocity), cell_data = (; pressure = cell_p, analytical = cell_exact))
+    end
+
+    # ---------------------------------------------------------------------------
+    # Visualisation
+    # ---------------------------------------------------------------------------
+
+    if show_plot || write_output
+        pts = [Point2f(c) for c in coords]
+        polys = [[pts[connectivity[a, e]] for a in 1:4] for e in 1:mesh.nels]
+        # Filled-element heatmaps preserve material interfaces, as in SolVi2D.
+        cell_average(field) = vec(sum(weights .* field; dims = 1) ./ sum(weights; dims = 1))
+        fig = Figure(size = (1200, 1200))
+        fields = (("Pressure", numerical_p, analytical_p),
+                  ("Velocity x", numerical_v[1], analytical_v[1]),
+                  ("Velocity y", numerical_v[2], analytical_v[2]))
+        for (row, (name, numerical_field, analytical_field)) in enumerate(fields)
+            el_num = cell_average(numerical_field)
+            el_anal = cell_average(analytical_field)
+            el_error = cell_average(abs.(numerical_field .- analytical_field))
+            clims = extrema(vcat(el_num, el_anal))
+            for (i, (label, field)) in enumerate((("FEMTools", el_num),
+                                                 ("analytics", el_anal),
+                                                 ("Absolute error", el_error)))
+                ax = Axis(fig[row, 2i - 1]; aspect = DataAspect(),
+                          title = "$name ($label)", xlabel = "x", ylabel = "y")
+                colorrange = i == 3 ? extrema(field) : clims
+                plot = poly!(ax, polys; color = field, colormap = :vik, colorrange, strokewidth = 0)
+                Colorbar(fig[row, 2i], plot)
+            end
+        end
+        show_plot && display(GLMakie.Screen(), fig)
+        write_output && GLMakie.save(joinpath(output_dir, "$(case)_quad.png"), fig)
+    end
+
+    # ---------------------------------------------------------------------------
+    # Convergence history (all fields in one panel, separate window)
+    # ---------------------------------------------------------------------------
+
+    if show_plot || write_output
+        convergence_fig = Figure(size = (900, 500))
+        ax = Axis(convergence_fig[1, 1]; title = "$(case)_quad convergence",
+                  xlabel = "DR iteration", ylabel = "Residual", yscale = log10)
+        iterations = [h.iter for h in stats.history]
+        for (label, residuals) in (("vx", [h.err_v_components[1] for h in stats.history]),
+                                    ("vy", [h.err_v_components[2] for h in stats.history]),
+                                    ("p", [h.err_P for h in stats.history]))
+            # Display exact zeros at the floating-point precision floor on log axes.
+            GLMakie.lines!(ax, iterations, max.(residuals, eps(Float64)); label)
+        end
+        GLMakie.axislegend(ax)
+        show_plot && display(GLMakie.Screen(), convergence_fig)
+        write_output && GLMakie.save(joinpath(output_dir, "$(case)_quad_convergence.png"), convergence_fig)
+    end
+
+    return (; mesh, velocity, pressure = Array(dr.P), samples, numerical_v, analytical_v,
+             numerical_p, analytical_p, errors, stats, elapsed, phases = cell_phase,
+             metadata, history_path)
+end
+
+result = main(; show_plot = get(ENV, "FEMTOOLS_BENCHMARK_PLOTS", "true") == "true",
+              save_history = get(ENV, "FEMTOOLS_BENCHMARK_HISTORY", "true") == "true")
+@info "SolKz exact-field comparison" result.errors iterations = result.stats.iter residual = result.stats.err_abs result.metadata
+println("Done.")

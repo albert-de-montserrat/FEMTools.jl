@@ -7,6 +7,15 @@ _example_has_parse_error(x) = x isa Expr &&
 @testset "maintained example scripts parse" begin
     repo_root = _EXAMPLE_REPO_ROOT
     scripts = [
+        "benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D_quad.jl",
+        "benchmarks/stokes/solcx2D/SolCx2D_quad.jl",
+        "benchmarks/stokes/solkz2D/SolKz2D_quad.jl",
+        "benchmarks/stokes/solkz2D/SolKz2D_triangle.jl",
+        "benchmarks/stokes/solcx2D/SolCx2D_triangle.jl",
+        "benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D.jl",
+        "benchmarks/run_refinement.jl",
+        "benchmarks/check_exact_fields.jl",
+        "benchmarks/check_cuda.jl",
         "examples/miniapps/thermal/1D_diffusion_FEMTools/1D_diffusion_FEMTools.jl",
         "examples/miniapps/thermal/1D_diffusion_FEMTools_color/1D_diffusion_FEMTools_color.jl",
         "examples/miniapps/thermal/2D_diffusion_FEMTools/2D_diffusion_FEMTools.jl",
@@ -65,7 +74,7 @@ end
     for (dir, _, files) in walkdir(docs_dir), file in files
         endswith(file, ".md") || continue
         path = joinpath(dir, file)
-        for m in eachmatch(r"examples/[A-Za-z0-9_./-]+\.jl", read(path, String))
+        for m in eachmatch(r"(?:examples|benchmarks)/[A-Za-z0-9_./-]+\.jl", read(path, String))
             @test isfile(joinpath(_EXAMPLE_REPO_ROOT, m.match))
         end
     end

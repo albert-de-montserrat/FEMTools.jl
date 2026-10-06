@@ -110,6 +110,23 @@ meshing/setup includes and documented paths. It uses only `Test`, so it can
 run before package instantiation:
 `julia --startup-file=no test/test_example_paths.jl`.
 
+## Exact-field benchmark checks
+
+`test/test_stokes_quadrature_viscosity.jl` covers integration-point viscosity,
+constant-field equivalence, a varying field, pressure scaling, independent
+hydrostatic pressure with an assembled load, and invalid shapes/values.
+The package suite parse-checks the standalone root benchmark scripts and runners.
+Check/refinement runners suppress default plot displays with
+`FEMTOOLS_BENCHMARK_PLOTS=false` while including the scripts.
+Refresh a stale examples development manifest with `Pkg.develop(path=".")`
+and `Pkg.instantiate()` from the repository root before external checks.
+ExactFieldSolutions remains an examples dependency rather than a core/test
+package dependency. Run `julia --project=examples benchmarks/check_exact_fields.jl`
+for refinement, gauge invariance, SolCx interface conformity, thermal timestep
+refinement, moderate and 1e6 contrasts, and non-convergence checks.
+`benchmarks/check_cuda.jl` compares CPU and CUDA with scalar indexing disabled
+and explicitly skips when `CUDA.functional()` is false. A skip is not coverage.
+
 ## Commands
 
 Full package test from the repository root:
@@ -187,6 +204,13 @@ need only the docs build and link review.
 - Coverage upload failure is currently non-fatal. Do not claim coverage gates
   that CI does not enforce.
 
+The external exact-field check covers triangle and Q2/P1 Stokes refinement,
+interface conformity, and 1e6 contrasts, plus parity between the two Q2 thermal
+scripts. The focused core viscosity test also verifies Q2/P1 topology, positive
+pressure mass/scaling, pressure quadrature volumes, and hydrostatic convergence.
+The CUDA agreement runner includes both Stokes discretizations; hardware
+execution remains required before claiming CUDA coverage.
+
 ## Update this guide when
 
 - test discovery, dependencies, commands, or suite structure changes;
@@ -194,3 +218,13 @@ need only the docs build and link review.
 - a new supported subsystem needs a standard oracle or test category;
 - a flaky or expensive check is moved out of the default suite;
 - benchmark methodology becomes part of a performance decision.
+
+Convergence-history regressions cover Stokes component/aggregate consistency,
+initial/final records, current pressure residuals, and optional scalar history
+preserving the field and nothing return contract. External benchmark checks
+also cover finite component records and thermal cumulative step histories.
+
+The external exact-field runner round-trips convergence archives for all six
+scripts. It checks exact history/metadata equality, actual per-field/total DoF
+counts, and JLD2-only output with PNG/VTK disabled. Includes and routine checks
+set FEMTOOLS_BENCHMARK_HISTORY=false / save_history=false to avoid artifacts.

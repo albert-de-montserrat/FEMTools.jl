@@ -36,6 +36,8 @@ the pressure field enter this quadrature.
 
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
+`η` also accepts an `nq × nels` viscosity matrix sampled at velocity quadrature
+points, matching the forward solver's `viscosity` keyword.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
         γP,
@@ -51,6 +53,7 @@ function assemble_viscosity_weighted_pressure_scaling!(
         η = dr.η,
         K = dr.K,
     )
+    _validate_viscosity(η, (length(element_v.integration_points.ω), mesh.nels), dr.P)
     return assemble_viscosity_weighted_pressure_scaling!(
         dr.M_P, γP,
         mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
@@ -77,7 +80,7 @@ The pressure residual assembled by FEMTools is weak/integrated,
     RP_i = ∫ N_i (-∇⋅v) dΩ,
 
 so nodal pressure spaces on triangles and tetrahedra use `MP_i = ∫ N_i dΩ`.
-On `QuadraticElement{3, 27}` cells the linear pressure functions are signed
+On `QuadraticElement{2, 9}` and `QuadraticElement{3, 27}` cells the linear pressure functions are signed
 modes with zero or negative lumped integrals, so those cells use the positive
 Jacobi diagonal `MP_i = ∫ N_i² dΩ`.
 For the Arrow-Hurwicz/DYREL pressure update, this helper also computes a local
@@ -153,7 +156,7 @@ At each quadrature point `q` in element `iel`, accumulates
 `MP_a += N_a(q) dΩ` and `γP_a += N_a(q) γ_eff(q) dΩ` for every
 pressure DoF `a`. Atomix atomics are used unconditionally for correctness
 when pressure DoFs are shared across elements (continuous pressure spaces).
-`QuadraticElement{3, 27}` cells use the positive Jacobi weight `N_a² dΩ`;
+`QuadraticElement{2, 9}` and `QuadraticElement{3, 27}` cells use the positive Jacobi weight `N_a² dΩ`;
 their linear pressure modes have zero or negative lumped integrals.
 """
 @kernel function viscosity_weighted_pressure_scaling_kernel!(
@@ -169,12 +172,13 @@ their linear pressure modes have zero or negative lumped integrals.
     local_dofs_P = local_nodes_of(dofs_P, iel, Val(NP))
     phase_loc = _gather_phase(phases_v, local_nodes_v, iel, Val(NV))
     geo_P_el = geo_P[iel]
+    ηloc = _element_viscosity(η, iel, Val(length(NqV)))
 
     for q in eachindex(geo_P_el)
         dΩ = geo_P_el[q]
         Nv = NqV[q]
         NPq = NqP[q]
-        ηq = interp2ip_phase(Nv, η, phase_loc)
+        ηq = _phase_viscosity(Nv, _viscosity_at_q(ηloc, q), phase_loc)
         γq = pressure_scale_at_ip(Nv, ηq, phase_loc, γfact, K, Δt)
 
         for a in 1:NP
@@ -191,6 +195,7 @@ end
 # consistent mass from above; the Jacobi diagonal ∫Nᵢ² underestimates it by up
 # to 2.5× on tetrahedra, which makes the pressure update overshoot.
 @inline _pressure_mass_weight(N, ::Val) = N
+@inline _pressure_mass_weight(N, ::Val{9}) = abs2(N)
 @inline _pressure_mass_weight(N, ::Val{27}) = abs2(N)
 
 @inline pressure_scale_at_ip(_, ηq, _, γfact, ::Nothing, _) = γfact * ηq / 2

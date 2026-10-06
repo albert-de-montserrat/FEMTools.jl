@@ -152,3 +152,12 @@ FEMTools.element_residual
 FEMTools.element_jacobian
 FEMTools.integrate_residual
 ```
+
+## Recording convergence history
+
+Pass a caller-owned vector, for example `history=NamedTuple[]`, to `solver!`.
+It appends `(iter, residual, relative)` at each convergence check, including the
+final check, and still returns `nothing`. The absolute residual is
+`norm(R)/sqrt(nnodes)` and the relative residual is normalized by the first
+residual of the current solve. Iteration numbers restart for each physical step.
+The [thermal benchmarks](benchmarks.md) plot these records across time steps.

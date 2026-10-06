@@ -56,6 +56,24 @@ The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
 *discrete* objective rather than a separately discretised continuous adjoint.
 
+## Prescribed viscosity and assembled loads
+
+For purely viscous 2-D forward flow, `solve_stokes_dyrel!` accepts
+`viscosity=ηq`, an `nq × nels` matrix of positive finite viscosity values at
+velocity quadrature points. It must match the state backend and precision.
+Pass the same matrix as `η=ηq` to `assemble_viscosity_weighted_pressure_scaling!`.
+The physical residual uses sampled viscosity; the conservative preconditioner
+uses its element maximum. This override excludes plasticity, viscoelasticity,
+coupled solves, and measured spectral estimates, and does not alter the material
+stored in `dr` for subsequent stress-history or adjoint operations.
+
+`body_force=(fx, fy)` adds assembled velocity-node loads,
+``f_i = \int N_i b\,d\Omega``, to the existing EOS/gravity forcing. Supply load
+vectors, not pointwise force densities. The solver subtracts them from both
+outer and inner momentum residuals before applying Dirichlet constraints.
+Loads must be finite and match the velocity size, backend, and precision.
+The [SolKz and SolCx benchmarks](benchmarks.md) exercise these inputs.
+
 ## Solver state
 
 ```@docs
@@ -750,3 +768,23 @@ rotate_stress!
 update_old_stress_from_cells!
 write_stokes_vtk
 ```
+
+## Q2/P1 quadrilateral meshes
+
+Use `ReferenceElement(QuadraticElement{2, 9, Float64})` for velocity and
+`ReferenceElement(LinearElement{2, 3, Float64})` for pressure in `MixedMesh`.
+For Q9 velocity cells, the three pressure values are cell-local at the center
+and positive x/y edge midpoints. The pressure basis `(1-ξ-η, ξ, η)` is evaluated
+on the reference square, so this is P1 pressure, not bilinear Q1 pressure.
+Pressure integration uses velocity-cell geometry; pressure scaling uses positive
+`∫Nᵢ² dΩ` weights. The [quadrilateral benchmarks](benchmarks.md) show complete runs.
+
+## Recording component convergence histories
+
+With `collect_history=true`, `solve_stokes_dyrel!` returns check records in
+`stats.history` with `iter`, `err_v`, `err_v_components`, and `err_P`.
+`err_v_components` contains a scaled residual norm for each velocity component;
+its maximum equals `err_v`. Both outer and inner checks record the pressure
+residual assembled at that check. The final outer record corresponds to the
+returned convergence errors. The [Stokes benchmarks](benchmarks.md) overlay
+`vx`, `vy`, and `p` in one separate convergence figure.

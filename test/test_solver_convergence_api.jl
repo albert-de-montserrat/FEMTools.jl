@@ -1,4 +1,5 @@
 using Test
+using LinearAlgebra
 using DomainSets
 using DomainSets: ×
 using FEMTools
@@ -402,4 +403,20 @@ end
     @test all(≈(-ηb * Δt * ε̇; rtol = 1.0e-6), Array(dr.P))
     @test all(≈(ε̇; rtol = 1.0e-6), post.εxx .+ post.εyy)
     @test maximum(abs, Array(dr.v.y)) < 1.0e-12
+end
+
+@testset "scalar DR convergence history preserves the solve" begin
+    (; mesh) = _tiny_triangle_mesh()
+    material = ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, material)
+    fill!(thermal.source, 1.0)
+    baseline = deepcopy(thermal)
+    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+    history = NamedTuple[]
+    @test solver!(thermal, 1.0, mesh, bc; ncheck = 10, verbose = false, history) === nothing
+    solver!(baseline, 1.0, mesh, bc; ncheck = 10, verbose = false)
+    @test thermal.T ≈ baseline.T
+    @test first(history).iter == 1 && issorted([h.iter for h in history])
+    @test last(history).relative < thermal.ϵ
+    @test last(history).residual ≈ norm(thermal.R) / sqrt(mesh.nnodes)
 end

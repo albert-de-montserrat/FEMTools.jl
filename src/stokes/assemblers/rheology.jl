@@ -1,3 +1,24 @@
+# Phase tuples retain their existing interpolation; scalar values are sampled
+# viscosities supplied by an integration-point field.
+@inline _phase_viscosity(Nv, η, phase) = interp2ip_phase(Nv, η, phase)
+@inline _phase_viscosity(_, η::Number, _) = η
+@inline _viscosity_at_q(η, _) = η
+@inline _viscosity_at_q(η::SVector, q) = η[q]
+@inline _element_viscosity(η, _, _) = η
+@inline _element_viscosity(η::AbstractMatrix, iel, ::Val{NQ}) where {NQ} =
+    SVector{NQ}(ntuple(q -> η[q, iel], Val(NQ)))
+
+function _validate_viscosity(η::AbstractMatrix, shape, field)
+    size(η) == shape || throw(DimensionMismatch("viscosity must be nq × nels = $shape"))
+    eltype(η) === eltype(field) || throw(ArgumentError("viscosity must match the state precision"))
+    typeof(KA.get_backend(η)) === typeof(KA.get_backend(field)) ||
+        throw(ArgumentError("viscosity and state must use the same backend"))
+    all(x -> isfinite(x) && x > zero(x), η) ||
+        throw(ArgumentError("viscosity must contain finite positive values"))
+    return nothing
+end
+_validate_viscosity(η::Tuple, _, _) = nothing
+
 @inline effective_viscosity(η, G, Δt) = inv(inv(η) + inv(G * Δt))
 
 """
@@ -12,7 +33,7 @@ viscous limit `G = Inf` stays numerically stable, including at quadratic
 integration points where shape functions can be negative.
 """
 @inline function viscoelastic_coefficients_phase(Nv, η, G, phase_loc, Δt)
-    ηq = interp2ip_phase(Nv, η, phase_loc)
+    ηq = _phase_viscosity(Nv, η, phase_loc)
     # Interpolate compliance so G=Inf stays finite at quadratic IPs.
     invGq = interp2ip_phase(Nv, map(inv, G), phase_loc)
     ηve = inv(inv(ηq) + invGq / Δt)
