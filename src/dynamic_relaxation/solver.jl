@@ -33,36 +33,44 @@ function dr_name end
 """
     solve_dynamic_relaxation!(problem, assemble!, nnodes,
                               Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-                              ncheck=100, iterMax=10_000, verbose=true)
+                              check_interval=100, max_iterations=10_000,
+                              tolerance=problem.ϵ, verbose=true,
+                              collect_history=false, throw_on_failure=true)
 
 Advance `problem` to steady state with a Chebyshev-accelerated
-pseudo-transient iteration, and return `nothing` on convergence.
+pseudo-transient iteration and return the statistics
+`(; converged, iterations, residual, history)`. `residual` is the last relative
+residual, `‖R‖/‖R⁰‖` with `R⁰` the first residual of this solve, and the solve
+converges when it falls below `tolerance`.
 
 `assemble!(compute_jacobian::Bool)` fills the problem's residual, and its
 Jacobian diagnostics when asked. Spectral estimates and convergence are
-recomputed every `ncheck` iterations; the Jacobian is assembled only on those
+recomputed every `check_interval` iterations; the Jacobian is assembled only on those
 iterations. Dirichlet nodes `Γ_dofs` are pinned to `Γ_vals`, while the
 residual and rate are constrained with `Γ_zero` before each update so that
 boundary reaction forces do not corrupt the λ_min estimate.
 
-Pass a caller-owned `history` vector to append `(iter, residual, relative)` at
-convergence checks, including the final check. `residual` is `norm(R)/sqrt(nnodes)`;
-`relative` is normalized by the first residual of this solve. The default
-`history=nothing` records nothing and the return value remains `nothing`.
+With `collect_history=true`, `history` holds `(iter, residual, relative)` at each
+convergence check, including the final one. Its `residual` is `norm(R)/sqrt(nnodes)`
+and `relative` is the statistic above; otherwise `history` is empty.
 
-Throws if the iteration produces NaNs, if the preconditioner admits no valid
-λmax, or if `iterMax` iterations pass without reaching the tolerance `ϵ`.
+Throws if the iteration produces NaNs or if the preconditioner admits no valid
+λmax. Exhausting `max_iterations` without reaching `tolerance` throws unless
+`throw_on_failure=false`, which returns statistics with `converged=false`.
 """
 function solve_dynamic_relaxation!(
         problem::AbstractDRProblem, assemble!, nnodes,
         Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
-        ncheck = 100,
-        iterMax = 10_000,
+        check_interval = 100,
+        max_iterations = 10_000,
+        tolerance = problem.ϵ,
         verbose = true,
-        history = nothing,
+        collect_history = false,
+        throw_on_failure = true,
     )
     (; R, R0, ∂R∂u, PC, u, ∂u∂τ) = dr_fields(problem)
     name = dr_name(problem)
+    history = NamedTuple[]
 
     # α_dr, β: Chebyshev step and momentum, distinct from any material property
     # the problem happens to call α or β.
@@ -72,8 +80,8 @@ function solve_dynamic_relaxation!(
     last_rel = NaN
     λmax = zero(eltype(R))
 
-    for it in 1:iterMax
-        do_jacobian = (mod(it, ncheck) == 0) || (it == 1)
+    for it in 1:max_iterations
+        do_jacobian = (mod(it, check_interval) == 0) || (it == 1)
         do_jacobian && copyto!(R0, R)
 
         assemble!(do_jacobian)
@@ -103,16 +111,18 @@ function solve_dynamic_relaxation!(
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β = (2 - c * Δτ) / (2 + c * Δτ)
             last_rel = nr / nr0
-            history === nothing || push!(history, (; iter = it, residual = nr / sqrt(nnodes), relative = last_rel))
+            collect_history && push!(history, (; iter = it, residual = nr / sqrt(nnodes), relative = last_rel))
             verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
-            last_rel < problem.ϵ && return nothing
+            last_rel < tolerance &&
+                return (; converged = true, iterations = it, residual = last_rel, history)
         end
     end
-    error("$(uppercasefirst(name)) DR solver did not converge after $iterMax pseudo-transient iterations (relative residual = $last_rel)")
+    throw_on_failure && error("$(uppercasefirst(name)) DR solver did not converge after $max_iterations pseudo-transient iterations (relative residual = $last_rel)")
+    return (; converged = false, iterations = max_iterations, residual = last_rel, history)
 end
 
 # Geometry, element, and boundary arrays a `Mesh`/`DirichletBoundaryCondition`
-# pair supplies to the low-level `solver!` methods.
+# pair supplies to the low-level solve methods.
 @inline function _mesh_solver_arguments(mesh::Mesh, bc::DirichletBoundaryCondition, workgroup)
     isnothing(mesh.geometry) && throw(ArgumentError("mesh has no geometry; construct it with Mesh(backend, coords, el2n, element)"))
     return (
@@ -136,7 +146,7 @@ end
 
 Overwrite `v[dofs[i]] = vals[i]` for all `i` on the target backend.
 
-Used inside `solver!` to pin boundary nodes at Dirichlet values before and
+Used inside the DR solves to pin boundary nodes at Dirichlet values before and
 after pseudo-transient updates. Returns `nothing`.
 """
 function apply_dirichlet!(v, dofs, vals, backend, workgroup)

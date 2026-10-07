@@ -41,7 +41,7 @@ function main(; max_area = 1 / 32^2, show_plot = true, CFL = 0.9,
     tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][2]) ≤ tol]
     bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
-    solver!(dr, mesh, bc; workgroup, ncheck, verbose, Tref, g)
+    solve!(dr, mesh, bc; workgroup, check_interval = ncheck, verbose, Tref, g)
 
     P = Array(dr.P)
     show_plot || return (; coords, el2n, P, phases = Array(dr.phases))

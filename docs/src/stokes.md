@@ -44,8 +44,9 @@ historical pressure formulation, while `K` is the elastic bulk modulus in the
 equation of state and in the finite-compressibility pressure storage term.
 `finite_K` selects the latter explicitly; plastic-model dispatch does not.
 
-The saddle-point system is exposed through `solve_stokes_dyrel!`. For the 2-D
-mixed-mesh state, an outer Arrow–Hurwicz pressure update wraps an inner
+For the 2-D mixed-mesh state the saddle-point system is solved by `solve!`, which
+wraps `solve_stokes_dyrel!`. An
+outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
 3-D T11/P1-discontinuous and Hex27/Q2--P1 discretisations are available through
 a `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic problems. The
@@ -141,19 +142,44 @@ method instead takes caller-owned arrays positionally and does not consume a
 
 ### Compact setup
 
+Material properties accept scalars or phase tuples. For example,
+`StokesMaterial(; η = (1f0, 10f0), ηb = Inf32)` creates two Float32 phases;
+omitted shear modulus and bulk modulus are infinite, expansivity is zero,
+density is one, and gravity is zero. Bulk viscosity still defaults to one;
+set `ηb = Inf32` explicitly for the incompressible limit. Scalars apply to
+every phase. Supplied properties, gravity, and `Tref` must share precision.
+
+`StokesDR(mesh, material)` infers the backend, velocity and pressure node
+counts, and integration-point stress layout from the mixed mesh. Material
+precision and gravity dimension must match the coordinates. Use `stress_size`
+to override the history layout, including `:none` for no stress history.
+
+For cell-wise materials, pass the same backend-resident `1 × nels` phase array
+as `phases_v` and `phases_P`. Each column holds one phase index; repeating it
+for every local node is unnecessary. Omit both keywords for a uniform phase.
+
+For cell-wise materials, pass the same backend-resident `1 × nels` phase array
+as `phases_v` and `phases_P`. Each column holds one phase index; repeating it
+for every local node is unnecessary. Omit both keywords for a uniform phase.
+
 ```julia
 material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
-dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
-              stress_size=(nq, mesh.nels))
+dr = StokesDR(mesh, material)
 
-bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
-bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, vy_vals)
+bc_vx = DirichletBoundaryCondition(vx_nodes, vx_vals)
+bc_vy = DirichletBoundaryCondition(vy_nodes, vy_vals)
 
-assemble_viscosity_weighted_pressure_scaling!(
-    γP, dr, mesh, γfact, Δt; workgroup,
-)
-solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP; workgroup)
+stats = solve!(dr, mesh, bc_vx, bc_vy; dt = Δt, pressure_factor = γfact, workgroup)
 ```
+
+The solve assembles the pressure scale into `dr.γP` itself and returns statistics
+with `converged`, `iterations`, `residual`, and `history`; it throws when the
+iteration does not converge unless `throw_on_failure = false`. `tolerance`,
+`max_iterations`, and `check_interval` replace `ϵ_tol`, `total_iterMax`, and
+`ncheck` of the positional form. Pass
+`scaling_viscosity` to scale pressure with a different viscosity than the
+momentum solve. Adjoint workflows still prepare `γP` with
+`assemble_viscosity_weighted_pressure_scaling!` and use the `γP` positional form.
 
 `mesh.geometry` retains the reference elements alongside both geometry arrays,
 so the high-level assembly and solver calls infer elements and backend. The
@@ -500,7 +526,9 @@ headless accelerator runs.
 
 ```@docs
 solve_coupled_dyrel!
+solve!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
 solve_stokes_dyrel!
+solve_adjoint!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
 solve_stokes_adjoint_dyrel!
 solve_stokes_3d!
 solve_stokes_adjoint_3d!
@@ -514,6 +542,21 @@ FEMTools.update_plastic_history!
 ```
 
 ## Discrete adjoint and material sensitivities
+
+After a converged mesh-based `solve!`, the 2-D adjoint is one call that reuses the
+forward pressure scale left in the state:
+
+```julia
+stats = solve!(dr, mesh, bc_vx, bc_vy; dt, pressure_factor)
+λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+solve_adjoint!(dr, mesh, bc_vx, bc_vy; dt, objective_vx, objective_vy,
+               λvx = λ[1], λvy = λ[2], λP = λ[3])
+```
+
+The inputs `λ` are the initial iterate, so pass the previous design iteration's
+fields to warm-start. `dt`, `plastic`, and the phase layouts must match the forward
+solve. `solve_adjoint!` throws if the state's `γP` was never assembled, and, like
+`solve!`, on non-convergence unless `throw_on_failure = false`.
 
 For an objective `J(u)` and forward residual `R(u, m) = 0`, the adjoint solves
 

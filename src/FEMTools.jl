@@ -146,7 +146,7 @@ export eval_shape_function,
     gauss_legendre_triangle
 
 # Solver types and user-facing entry points.
-export ThermalMaterial, ThermalDiffusionDR, solver!
+export ThermalMaterial, ThermalDiffusionDR, solve!
 export LithostaticPressureDR
 export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, DruckerPrager,
     DruckerPragerCap,
@@ -159,6 +159,7 @@ export StokesMaterial, StokesDR, Stokes3DWorkspace, StokesAdjointWorkspace, Druc
     solve_stokes_adjoint_3d!,
     stokes_material_gradient_3d,
     solve_stokes_adjoint_dyrel!,
+    solve_adjoint!,
     update_stokes_current_stress!,
     commit_stokes_plastic_history!
 

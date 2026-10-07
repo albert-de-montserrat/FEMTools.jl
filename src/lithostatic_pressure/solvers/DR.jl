@@ -1,25 +1,7 @@
-"""
-    solver!(dr::LithostaticPressureDR, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
-
-Run the pseudo-transient dynamic-relaxation (DR) solver for the
-lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ`.
-
-`dr.T` must be set to the current temperature field before calling. Geometry,
-element, boundary arrays, backend, and workgroup size are supplied explicitly.
-`Tref` and `g` control the density equation of state and body-force vector.
-`g` is the gravitational acceleration vector; either an `SVector` or a plain
-`Tuple` of matching length (e.g. `SVector(0, -9.81)` or `(0.0, -9.81)` for
-2-D). The default is only appropriate for 2-D problems.
-`ncheck` controls how often spectral estimates and convergence are recomputed.
-`iterMax` is the maximum number of pseudo-transient iterations before a
-non-convergence error.
-Set `verbose = false` to suppress per-iteration residual output.
-
-Modifies `dr.P` in-place. Returns `nothing` on convergence.
-
-"""
-function solver!(
+# Low-level lithostatic solve with explicitly supplied geometry, element,
+# boundary arrays, backend, and workgroup size; `solve!` is the user-facing
+# entry point.
+function _solve_lithostatic!(
         dr::LithostaticPressureDR, mesh, geo, element,
         Γ_dofs, Γ_zero, Γ_vals,
         backend, workgroup;
@@ -39,14 +21,24 @@ function solver!(
 end
 
 """
-    solver!(dr, mesh, bc; workgroup=256, kwargs...)
+    solve!(dr::LithostaticPressureDR, mesh, bc; tolerance=dr.ϵ,
+           max_iterations=10_000, check_interval=100, verbose=true,
+           collect_history=false, throw_on_failure=true,
+           workgroup=256, Tref=273, g=(0, -9.81))
 
-Solve for lithostatic pressure using the element and geometry stored in `mesh`
-and the prescribed values in `bc`. The backend is inferred from `mesh.coords`;
-remaining keywords are forwarded to the low-level solver.
+Solve the lithostatic-pressure problem `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ` with the
+element and geometry stored in `mesh` and the Dirichlet values in `bc`. The
+backend is inferred from `mesh.coords`. `dr.T` must hold the current
+temperature; `dr.P` is updated in place.
+
+`Tref` and `g` control the density equation of state and the body force. `g` is
+an `SVector` or a plain `Tuple` of matching length; the default is only
+appropriate for 2-D problems. The iteration controls and returned statistics
+`(; converged, iterations, residual, history)` are those of
+`solve_dynamic_relaxation!`.
 """
-solver!(
+solve!(
     dr::LithostaticPressureDR, mesh::Mesh, bc::DirichletBoundaryCondition;
     workgroup = 256, kwargs...
 ) =
-    solver!(dr, _mesh_solver_arguments(mesh, bc, workgroup)...; kwargs...)
+    _solve_lithostatic!(dr, _mesh_solver_arguments(mesh, bc, workgroup)...; kwargs...)

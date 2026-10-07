@@ -39,10 +39,10 @@ function _thermal_output(; verbose)
     empty_i = Int32[]
     empty_v = Float64[]
     return _capture_stdout() do
-        solver!(
+        FEMTools._solve_thermal!(
             dr, 1.0, mesh, geo, element, empty_i, empty_v, empty_v,
             backend, workgroup;
-            ncheck = 1,
+            check_interval = 1,
             verbose,
         )
     end

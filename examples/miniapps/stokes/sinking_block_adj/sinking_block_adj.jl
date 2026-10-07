@@ -411,7 +411,7 @@ function main(;
     bc_litho = DirichletBoundaryCondition(
         nothing, TDev(top_nodes_litho), KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho)),
     )
-    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
+    solve!(lp_dr, mesh_litho, bc_litho; workgroup, check_interval = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)

@@ -69,7 +69,7 @@ function main(; mesh_size = 0.12, nz = 8, CFL = 0.9, c_fact = 0.9,
     tol = max(Lx, Ly, Lz) * eps(Float64) * 32
     top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][3] - Lz) ≤ tol]
     bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
-    solver!(dr, mesh, bc; workgroup, ncheck, verbose, Tref, g)
+    solve!(dr, mesh, bc; workgroup, check_interval = ncheck, verbose, Tref, g)
 
     P, phases = Array(dr.P), Array(dr.phases)
     if write_output

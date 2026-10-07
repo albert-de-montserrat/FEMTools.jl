@@ -32,9 +32,9 @@ using StaticArrays
     Γnodes = thermal_mesh.Γnodes
     zero_bc = zeros(length(Γnodes))
     bc_T = DirichletBoundaryCondition(nothing, Γnodes, zero_bc)
-    solver!(
-        thermal_ref, Δt, thermal_mesh, bc_T;
-        workgroup, ncheck = 1, iterMax = 2000, verbose = false,
+    solve!(
+        thermal_ref, thermal_mesh, bc_T;
+        dt = Δt, workgroup, check_interval = 1, max_iterations = 2000, verbose = false,
     )
 
     stokes = StokesDR(

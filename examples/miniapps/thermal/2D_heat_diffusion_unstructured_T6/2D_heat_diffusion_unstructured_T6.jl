@@ -155,7 +155,7 @@ function main(; max_area=1e5 / 2)
     bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 10, Tref = Tref, g = g)
+    @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 10, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK setup -----------------------------------------------------------
@@ -230,11 +230,11 @@ function main(; max_area=1e5 / 2)
         fill!(dr.∂T∂τ, 0)
 
         @printf("--- SOLVING TEMPERATURE ---")
-        @timeit to "solver" solver!(dr, Δt, mesh, bc_T; workgroup, ncheck = 100, Tref = Tref)
+        @timeit to "solver" solve!(dr, mesh, bc_T; dt = Δt, workgroup, check_interval = 100, Tref = Tref)
         copyto!(lp_dr.T, dr.T)
     
         @printf("--- SOLVING LITHOSTATIC PRESSURE ---")
-        @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
+        @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 50, verbose = false, Tref = Tref, g = g)
         copyto!(dr.P, lp_dr.P)
 
         t_phys += Δt

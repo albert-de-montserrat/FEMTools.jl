@@ -389,6 +389,8 @@ function solve_stokes_adjoint_dyrel!(
         err_v,
         err_P,
         converged = converged || err < adjoint_tol,
+        iterations = iter,
+        residual = err,
         λmax = first(λmax_v),
         λmax_gershgorin,
         λmax_iterations,
@@ -407,6 +409,81 @@ solve_stokes_adjoint_dyrel!(
     phases_v, phases_P, τ_old, plastic, G, Δt, γP,
     (objective_vx, objective_vy), (λvx, λvy), λP, backend, workgroup;
     v_nodes = (vx_nodes, vy_nodes), kwargs...,
+)
+
+"""
+    solve_adjoint!(dr::StokesDR, mesh::MixedMesh, bc_v; dt, objective_v, λv, λP,
+                   tolerance=1e-6, max_iterations=50_000, check_interval=50,
+                   throw_on_failure=true, plastic=nothing, workgroup=256, kwargs...)
+    solve_adjoint!(dr, mesh, bc_vx, bc_vy; dt, objective_vx, objective_vy, λvx, λvy, λP, kwargs...)
+
+Solve the discrete Stokes adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` of a converged forward
+[`solve!`](@ref) on the same state. Geometry and elements come from
+`mesh.geometry`, and the pressure scale `dr.γP` and mass `dr.M_P` the forward solve
+left in `dr` are reused, so the adjoint transposes the augmented residual that was
+actually solved. `dt`, `plastic`, `phases_v`, `phases_P`, and `τ_old` must match the
+forward solve. `bc_v` supplies the constrained velocity nodes; the adjoint
+conditions are homogeneous, so its values are not used.
+
+`objective_v` holds the velocity part of `∂J/∂u`, one array per direction, and
+`λv` and `λP` are the adjoint outputs. Their input values are the initial iterate:
+pass zeros for a cold solve or the previous design iteration's fields to warm-start.
+`tolerance`, `max_iterations`, and `check_interval` map to `adjoint_tol`,
+`total_iterMax`, and `ncheck` of [`solve_stokes_adjoint_dyrel!`](@ref), whose other
+keywords (`operator`, `workspace`, `measure_λmax`, …) pass through. Returns its
+statistics, which include `converged`, `iterations`, `residual`, and `history`; a
+solve that does not converge throws unless `throw_on_failure=false`.
+
+The adjoint is exact only in the incompressible gauge `K = Inf`; see the solver
+notes for the finite-storage approximation.
+"""
+function solve_adjoint!(
+        dr::StokesDR{<:Any, D},
+        mesh::MixedMesh{D},
+        bc_v::NTuple{D, DirichletBoundaryCondition};
+        dt,
+        objective_v::NTuple{D, AbstractVector},
+        λv::NTuple{D, AbstractVector},
+        λP,
+        phases_v = dr.phases_v,
+        phases_P = dr.phases_P,
+        τ_old = stress_old(dr),
+        plastic = nothing,
+        tolerance = 1.0e-6,
+        max_iterations = 50_000,
+        check_interval = 50,
+        throw_on_failure = true,
+        workgroup = 256,
+        kwargs...,
+    ) where {D}
+    all(iszero, dr.γP) && throw(
+        ArgumentError(
+            "dr.γP is unassembled; run the forward solve! on this state before solve_adjoint!"
+        )
+    )
+    cache = _mesh_geometry(mesh)
+    stats = solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, cache.element_v, cache.element_P,
+        phases_v, phases_P, τ_old, plastic, dr.G, dt, dr.γP,
+        objective_v, λv, λP, KA.get_backend(mesh.coords), workgroup;
+        v_nodes = map(bc -> bc.DoFs, bc_v), adjoint_tol = tolerance,
+        total_iterMax = max_iterations, ncheck = check_interval, kwargs...,
+    )
+    stats.converged || !throw_on_failure || error(
+        "Stokes adjoint solve did not converge after $(stats.iter) iterations " *
+        "(residual = $(stats.residual), tolerance = $tolerance)",
+    )
+    return stats
+end
+
+solve_adjoint!(
+    dr::StokesDR{<:Any, 2}, mesh::MixedMesh,
+    bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition;
+    objective_vx, objective_vy, λvx, λvy, λP, kwargs...
+) =
+    solve_adjoint!(
+    dr, mesh, (bc_vx, bc_vy);
+    objective_v = (objective_vx, objective_vy), λv = (λvx, λvy), λP, kwargs...
 )
 
 """

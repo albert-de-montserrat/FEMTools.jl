@@ -2,18 +2,22 @@
     ThermalMaterial(; k=(1.0,), Cp=(1.0,), ρ0=(1.0,), α=(1.0,), K=(1.0,))
 
 Per-phase thermal conductivity, heat capacity, reference density, thermal
-expansivity, and bulk modulus. All properties use the same floating-point type
-and number of phases; mismatched tuple lengths throw `DimensionMismatch`.
+expansivity, and bulk modulus. Properties accept scalars or phase tuples.
+The first supplied tuple determines phase count and precision; without tuples,
+the first supplied scalar determines precision. Scalars apply to every phase.
+Omitted properties are unit-valued in that precision and phase count.
+Supplied properties must share a floating-point type; incompatible precisions
+are not promoted. Mismatched tuple lengths throw `DimensionMismatch`.
 
 Fields use `NTuple{nphases, FP}` so phase count and precision remain available
 to the compiler. The defaults describe one unit-valued `Float64` phase.
 """
-@kwdef struct ThermalMaterial{nphases, FP}
-    k::NTuple{nphases, FP} = (1.0e0,)
-    Cp::NTuple{nphases, FP} = (1.0e0,)
-    ρ0::NTuple{nphases, FP} = (1.0e0,)
-    α::NTuple{nphases, FP} = (1.0e0,)
-    K::NTuple{nphases, FP} = (1.0e0,)
+struct ThermalMaterial{nphases, FP}
+    k::NTuple{nphases, FP}
+    Cp::NTuple{nphases, FP}
+    ρ0::NTuple{nphases, FP}
+    α::NTuple{nphases, FP}
+    K::NTuple{nphases, FP}
 
     function ThermalMaterial(
             k::Tuple{FP, Vararg{FP}}, Cp::Tuple{FP, Vararg{FP}},
@@ -25,6 +29,15 @@ to the compiler. The defaults describe one unit-valued `Float64` phase.
             throw(DimensionMismatch("material property tuples must have the same length"))
         return new{nphases, FP}(k, Cp, ρ0, α, K)
     end
+end
+
+function ThermalMaterial(; k = nothing, Cp = nothing, ρ0 = nothing, α = nothing, K = nothing)
+    reference = _material_reference((k, Cp, ρ0, α, K), nothing)
+    return ThermalMaterial(
+        _material_property(k, reference, 1), _material_property(Cp, reference, 1),
+        _material_property(ρ0, reference, 1), _material_property(α, reference, 1),
+        _material_property(K, reference, 1),
+    )
 end
 
 """
@@ -56,13 +69,13 @@ pseudo-transient dynamic-relaxation (DR) scheme.
 `phases` defaults to all ones (single phase). Overwrite with `copyto!(dr.phases, ...)` to assign multi-phase configurations.
 
 Dirichlet boundary conditions (DOF indices and prescribed values) are
-problem-specific and are therefore passed directly to `solver!` rather than
+problem-specific and are therefore passed directly to `solve!` rather than
 stored here.
 
 # Material properties
 Properties are supplied together through [`ThermalMaterial`](@ref) and stored
 as `NTuple{nphases, FP}` fields in the solver state.
-The reference temperature `Tref` for the density EOS is passed to `solver!`.
+The reference temperature `Tref` for the density EOS is passed to `solve!`.
 
 # Solver parameters
 `CFL`, `c_fact`, `ϵ` (convergence tolerance).
@@ -135,3 +148,15 @@ ThermalDiffusionDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
     ThermalDiffusionDR(backend, nnodes, material.k, material.Cp, material.ρ0, material.α, material.K; kwargs...)
 ThermalDiffusionDR(nnodes, material::ThermalMaterial; kwargs...) =
     ThermalDiffusionDR(CPU(), nnodes, material; kwargs...)
+
+"""
+    ThermalDiffusionDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+
+Allocate thermal fields on the mesh backend, using its node count. Material
+properties must have the same scalar type as the mesh coordinates. Solver
+control keywords are forwarded to the count-based constructor.
+"""
+function ThermalDiffusionDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+    _check_material_precision(mesh, material.k)
+    return ThermalDiffusionDR(KernelAbstractions.get_backend(mesh.coords), mesh.nnodes, material; kwargs...)
+end

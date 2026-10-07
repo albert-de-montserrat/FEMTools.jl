@@ -224,6 +224,12 @@ an explicit hardware check in `check_cuda.jl`; no local hardware pass is claimed
 
 ## Benchmark and support files
 
+`benchmarks/api_inventory.jl` is a host-only development inventory of public
+methods and textual references. `benchmarks/api_baseline.jl` runs small thermal
+and heterogeneous Stokes correctness smokes; `--cuda` requires CUDA and compares
+CPU/device fields in both precisions with scalar indexing disabled. Both run
+their entry points unconditionally and need no plotting dependencies.
+
 These belong to the miniapp ecosystem but are not independent showcase
 applications.
 
@@ -344,3 +350,20 @@ include boundary constraints and cell-local pressure values. Return history_path
 is the filename, or nothing when disabled. The default entry point respects
 FEMTOOLS_BENCHMARK_HISTORY=false; validation/sweep runners suppress archives
 except serialization checks in temporary directories.
+
+The six maintained exact-field drivers use mesh-based state constructors and
+two-argument Dirichlet construction. Stokes stress dimensions are inferred.
+Material defaults remove explicit unit, zero, and infinite property tuples.
+SolKz uses default nodal phases without all-one cell matrices. SolCx shares
+one backend-resident cell-phase row across velocity and pressure, preserving
+the discontinuous interface. Pressure scaling remains explicit pending later
+API work.
+
+## Owned pressure scaling in drivers
+
+SolKz/SolCx (verified by running), Solvi, sinking block (benchmark and miniapp,
+`scaling_viscosity` = mean viscosity), shear bands, ice bridge and Popov
+extension call `solve!(…; dt, pressure_factor)`. The
+Gmsh-based ones were only parse-checked: Gmsh is unavailable on this Windows
+setup. The elastic build-up and pure-shear-hole drivers and the adjoint
+miniapps still use low-level/positional forms.

@@ -142,7 +142,6 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     phases_v = ones(Int, length(element_v), mesh_stokes.nels)
     phases_P = ones(Int, length(element_P), mesh_stokes.nels)
     Δt_max = Float64(Δt_kyr) * KYR
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
 
     # End supports: vertical velocity is zero on two bottom pier patches.  One
     # left-support node also fixes horizontal translation without overconstraining
@@ -191,16 +190,13 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
         end
         dt_step = min(dt_step, t_end - t)
         t += dt_step
-        assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, 20.0, dt_step;
-            workgroup, phases_v,
-        )
-        stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, bc_vx, bc_vy, dt_step, γP;
+        stats = solve!(
+            dr, mesh_stokes, bc_vx, bc_vy; dt = dt_step,
+            pressure_factor = 20.0,
             phases_v, phases_P, τ_old,
-            iterMax = 5_000, total_iterMax = 100_000,
-            max_ph_iterations = 20, ϵ_tol = 1.0e-6,
-            rel_drop0 = 0.75, verbose, verbose_inner = false,
+            iterMax = 5_000, max_iterations = 100_000,
+            max_ph_iterations = 20, tolerance = 1.0e-6,
+            rel_drop0 = 0.75, verbose, verbose_inner = false, throw_on_failure = false,
         )
         stats.converged || @warn "Ice-bridge step did not fully converge" istep stats
 

@@ -7,7 +7,7 @@ pseudo-transient dynamic-relaxation (DR) scheme.
 The weak form is `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ` (steady-state Poisson),
 so no time-step arrays are needed. Temperature `T` enters only as a known
 coefficient for the density EOS `ρ = ρ0(1 − α(T−Tref) + P/K)`.
-`Tref` and `g` are passed to `solver!`, so callers can choose the reference
+`Tref` and `g` are passed to `solve!`, so callers can choose the reference
 temperature and body-force vector without rebuilding the solver state.
 
 # Type parameters
@@ -42,7 +42,7 @@ same material definition to be shared with `ThermalDiffusionDR`.
 The tuple-based constructors remain available for compatibility.
 
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
-`T` should be filled via `copyto!(dr.T, ...)` before calling `solver!`.
+`T` should be filled via `copyto!(dr.T, ...)` before calling `solve!`.
 """
 struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     # preallocated work arrays
@@ -98,3 +98,15 @@ LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
     LithostaticPressureDR(backend, nnodes, material.ρ0, material.α, material.K; kwargs...)
 LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, material; kwargs...)
+
+"""
+    LithostaticPressureDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+
+Allocate pressure fields on the mesh backend, using its node count. Material
+properties must have the same scalar type as the mesh coordinates. Solver
+control keywords are forwarded to the count-based constructor.
+"""
+function LithostaticPressureDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+    _check_material_precision(mesh, material.ρ0)
+    return LithostaticPressureDR(KernelAbstractions.get_backend(mesh.coords), mesh.nnodes, material; kwargs...)
+end

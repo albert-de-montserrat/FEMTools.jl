@@ -67,24 +67,20 @@ function main(;
     to_backend = FEMTools.TA(backend)
 
     η = (1.0, Float64(contrast))
-    zero_properties = map(zero, η)
-    infinite_properties = map(_ -> Inf, η)
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
     # ---------------------------------------------------------------------------
 
-    material = StokesMaterial(; η, ηb = infinite_properties, G = infinite_properties,
-        α = zero_properties, ρ0 = zero_properties, K = infinite_properties, g = (0.0, 0.0))
-    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material; stress_size = (nq, mesh.nels))
+    material = StokesMaterial(; η, ηb = Inf, ρ0 = 0.0)
+    dr = StokesDR(mesh, material)
     viscosity = dr.η
     # ---------------------------------------------------------------------------
     # Phase assignment
     # ---------------------------------------------------------------------------
 
     cell_phase = [coords[connectivity[7, e]][1] < 0.5 ? 1 : 2 for e in 1:mesh.nels]
-    phases_v = to_backend(Int32.(repeat(reshape(cell_phase, 1, :), 7, 1)))
-    phases_P = to_backend(Int32.(repeat(reshape(cell_phase, 1, :), 3, 1)))
+    phases_v = phases_P = to_backend(reshape(Int32.(cell_phase), 1, :))
     # Integrate the analytical vertical body force into a nodal load.
     force = (zeros(mesh.nnodes), zeros(mesh.nnodes))
     for e in 1:mesh.nels, q in 1:nq, a in 1:7
@@ -98,19 +94,16 @@ function main(;
 
     boundary = Array(mesh_v.Γnodes)
     boundary_values = [exact(coords[n]).V for n in boundary]
-    bc = ntuple(c -> DirichletBoundaryCondition(nothing, to_backend(boundary),
+    bc = ntuple(c -> DirichletBoundaryCondition(to_backend(boundary),
         to_backend([v[c] for v in boundary_values])), 2)
-    γP = KernelAbstractions.zeros(backend, Float64, mesh.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 50.0, 1.0;
-        workgroup, phases_v, η = viscosity)
     # Start from zero interior velocity; the exact solution is only an oracle.
     # ---------------------------------------------------------------------------
     # Stokes solve
     # ---------------------------------------------------------------------------
 
-    elapsed = @elapsed stats = solve_stokes_dyrel!(dr, mesh, bc, 1.0, γP;
-        phases_v, phases_P, viscosity, body_force, workgroup,
-        ncheck = 25, ϵ_tol = tolerance, total_iterMax, max_ph_iterations = 5000,
+    elapsed = @elapsed stats = solve!(dr, mesh, bc; dt = 1.0,
+        pressure_factor = 50.0, phases_v, phases_P, viscosity, body_force, workgroup,
+        check_interval = 25, tolerance, max_iterations = total_iterMax, max_ph_iterations = 5000,
         collect_history = true, verbose = false, verbose_inner = false)
     stats.converged || error("$case did not converge: $(stats.err_abs), $(stats.iter) iterations")
 

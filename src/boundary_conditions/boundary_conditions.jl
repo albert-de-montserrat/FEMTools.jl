@@ -10,9 +10,13 @@ abstract type AbstractBoundaryCondition end
 ###
 
 """
+    DirichletBoundaryCondition(DoFs, vals)
     DirichletBoundaryCondition(Γ, DoFs, vals)
 
 Container for Dirichlet boundary data.
+
+The two-argument form leaves the optional boundary marker `Γ` as `nothing`.
+The supplied index and value arrays are retained without copying.
 
 `DoFs` and `vals` must have the same length: `vals[i]` is the prescribed value
 for degree of freedom `DoFs[i]`.
@@ -30,9 +34,12 @@ struct DirichletBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     zero_vals::V
 
     function DirichletBoundaryCondition(Γ::D, DoFs::T, vals::V) where {D, T, V}
+        length(DoFs) == length(vals) || throw(DimensionMismatch("boundary indices and values must have the same length"))
         return new{D, T, V}(Γ, DoFs, vals, zero(vals))
     end
 end
+
+DirichletBoundaryCondition(DoFs, vals) = DirichletBoundaryCondition(nothing, DoFs, vals)
 
 """
     TangentialFreeSlipBoundaryCondition(Γ, DoFs, vals)

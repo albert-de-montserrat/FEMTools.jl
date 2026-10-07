@@ -167,6 +167,16 @@ stress history from `dr`, and one Dirichlet boundary-condition object per
 velocity component. Phase layouts and stress history may be overridden with
 the `phases_v`, `phases_P`, and `τ_old` keywords.
 
+Phase vectors use each field's node numbering. A `1 × nels` phase matrix
+assigns one phase per cell and may be shared by velocity and pressure;
+full element-local matrices remain supported. Omitted phases use the state's
+all-one defaults.
+
+Phase vectors use each field's node numbering. A `1 × nels` phase matrix
+assigns one phase per cell and may be shared by velocity and pressure;
+full element-local matrices remain supported. Omitted phases use the state's
+all-one defaults.
+
 `viscosity` defaults to `dr.η`. An `nq × nels` matrix overrides viscosity at
 velocity quadrature points for purely viscous 2-D flow without plasticity,
 coupling, or `measure_λmax`. Values must be finite, positive, and match the
@@ -210,6 +220,74 @@ solve_stokes_dyrel!(
     Δt, γP; kwargs...
 ) =
     solve_stokes_dyrel!(dr, mesh, (bc_vx, bc_vy), Δt, γP; kwargs...)
+
+"""
+    solve!(dr::StokesDR, mesh::MixedMesh, bc_v; dt, pressure_factor=50,
+           viscosity=dr.η, scaling_viscosity=viscosity, tolerance=1e-6,
+           max_iterations=50_000, check_interval=50, verbose=true,
+           collect_history=false, throw_on_failure=true,
+           plastic=nothing, workgroup=256, kwargs...)
+    solve!(dr, mesh, bc_vx, bc_vy; dt, kwargs...)
+
+Solve one Stokes step of size `dt` with the Powell-Hestenes/DYREL iteration of
+[`solve_stokes_dyrel!`](@ref), taking geometry and elements from `mesh.geometry`
+and one Dirichlet condition per velocity component in `bc_v`. The previous-time
+pressure, temperature, and stress history stay caller-owned and are not advanced.
+
+The pressure mass `dr.M_P` and pressure scale `dr.γP` are assembled into
+storage owned by `dr` before the solve, recomputed on every call from
+`pressure_factor`, `dt`, the bulk modulus `K`, and the phase layout `phases_v`.
+`scaling_viscosity` defaults to the `viscosity` the momentum equation uses
+(`dr.η` when omitted); pass another phase tuple or `nq × nels` matrix to scale
+the pressure update with a different viscosity than the one solved for.
+
+`tolerance`, `max_iterations`, `check_interval`, `verbose`, and `collect_history`
+map to `ϵ_tol`, `total_iterMax`, `ncheck`, `verbose`, and `collect_history` of
+[`solve_stokes_dyrel!`](@ref); its remaining keywords (`iterMax`,
+`max_ph_iterations`, `rel_drop0`, `phases_P`, `τ_old`, `body_force`, …) pass
+through. Returns its statistics, which include the common `converged`,
+`iterations`, `residual` (the combined absolute residual `err_abs`), and
+`history`. A solve that does not converge throws unless `throw_on_failure=false`.
+Adjoint workflows prepare their own scale and call
+[`solve_stokes_dyrel!`](@ref) with `γP`.
+"""
+function solve!(
+        dr::StokesDR{<:Any, D},
+        mesh::MixedMesh{D},
+        bc_v::NTuple{D, DirichletBoundaryCondition};
+        dt,
+        pressure_factor = 50,
+        viscosity = dr.η,
+        scaling_viscosity = viscosity,
+        phases_v = dr.phases_v,
+        tolerance = 1.0e-6,
+        max_iterations = 50_000,
+        check_interval = 50,
+        throw_on_failure = true,
+        workgroup = 256,
+        kwargs...,
+    ) where {D}
+    assemble_viscosity_weighted_pressure_scaling!(
+        dr.γP, dr, mesh, pressure_factor, dt; workgroup, phases_v, η = scaling_viscosity,
+    )
+    stats = solve_stokes_dyrel!(
+        dr, mesh, bc_v, dt, dr.γP;
+        viscosity, phases_v, workgroup, ϵ_tol = tolerance,
+        total_iterMax = max_iterations, ncheck = check_interval, kwargs...,
+    )
+    stats.converged || !throw_on_failure || error(
+        "Stokes solve did not converge after $(stats.iter) iterations " *
+        "(residual = $(stats.residual), tolerance = $tolerance)",
+    )
+    return stats
+end
+
+solve!(
+    dr::StokesDR{<:Any, 2}, mesh::MixedMesh,
+    bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition;
+    kwargs...
+) =
+    solve!(dr, mesh, (bc_vx, bc_vy); kwargs...)
 
 """
     solve_stokes_dyrel!(dr, mesh_stokes, cache, element_v, element_P,
@@ -268,7 +346,8 @@ the raw `geo_v`, `geo_P` arrays.
 # Return value
 A `NamedTuple` with `itPH` (outer iterations), `iter` (cumulative inner
 iterations), `err`, `err_abs`, `err_rel`, `err_v`, `err_P`,
-`converged::Bool`, `reached_total_iter::Bool`, and `history` (empty unless
+`converged::Bool`, `iterations` (alias of `iter`), `residual` (alias of `err_abs`),
+`reached_total_iter::Bool`, and `history` (empty unless
 `collect_history`). `converged` is true only when the outer test
 `min(err_abs, err_rel) < ϵ_tol` passed (and, when coupled, the thermal state
 converged), so a run that ends on `total_iterMax` or `max_ph_iterations` is
@@ -744,6 +823,8 @@ function solve_stokes_dyrel!(
         err_v,
         err_P,
         converged,
+        iterations = iter,
+        residual = err_abs,
         reached_total_iter = iter > total_iterMax,
         λmax = maximum(λmax_v),
         λmax_gershgorin,

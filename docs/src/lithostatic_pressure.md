@@ -138,10 +138,10 @@ parameters are
 element = ReferenceElement(LinearElement{2, 3, Float64})
 mesh = Mesh(backend, coords, el2n, element; workgroup)
 
-dr = LithostaticPressureDR(backend, mesh.nnodes, material;
+dr = LithostaticPressureDR(mesh, material;
                            CFL=0.9, c_fact=0.9, ϵ=1e-6)
-bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
-solver!(dr, mesh, bc; workgroup, ncheck=25, Tref=0.0, g=(0.0, -1.0))
+bc = DirichletBoundaryCondition(top_nodes, zeros(length(top_nodes)))
+solve!(dr, mesh, bc; workgroup, check_interval=25, Tref=0.0, g=(0.0, -1.0))
 ```
 
 ![Two-dimensional lithostatic-pressure solution on the unstructured T3 mesh](assets/lithostatic_pressure_2d.png)
@@ -170,9 +170,9 @@ element = ReferenceElement(LinearElement{3, 8, Float64})
 mesh = Mesh(backend, coords, el2n, element; workgroup)
 
 g = SA[0.0, 0.0, -1.0]
-dr = LithostaticPressureDR(backend, mesh.nnodes, material;
+dr = LithostaticPressureDR(mesh, material;
                            CFL=0.9, c_fact=0.9, ϵ=1e-6)
-solver!(dr, mesh, bc; workgroup, ncheck=25, Tref=0.0, g=g)
+solve!(dr, mesh, bc; workgroup, check_interval=25, Tref=0.0, g=g)
 ```
 
 ![Two vertical volume slices through the three-dimensional lithostatic-pressure solution](assets/lithostatic_pressure_3d.png)
@@ -196,15 +196,15 @@ Set `dr.T` before solving when thermal density variations are active.
 
 ```julia
 material = ThermalMaterial(; k, Cp, ρ0, α, K)
-dr = LithostaticPressureDR(backend, mesh.nnodes, material)
+dr = LithostaticPressureDR(mesh, material)
 copyto!(dr.T, temperature)
-solver!(dr, mesh, bc; Tref=273.0, g=(0.0, -9.81))
+solve!(dr, mesh, bc; Tref=273.0, g=(0.0, -9.81))
 P = Array(pressure(dr))
 ```
 
 ```@docs
 LithostaticPressureDR
-solver!(::LithostaticPressureDR, ::Mesh, ::DirichletBoundaryCondition)
+solve!(::LithostaticPressureDR, ::Mesh, ::DirichletBoundaryCondition)
 FEMTools.assemble_lithostatic_pressure_matrices_atomix!
 FEMTools.assemble_lithostatic_pressure_matrices_colored!
 FEMTools.lp_element_residual

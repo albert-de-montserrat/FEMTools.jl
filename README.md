@@ -118,8 +118,8 @@ primitives, each using a pseudo-transient dynamic-relaxation (DR) scheme:
 
 | Solver | State type | Entry point |
 |:-------|:-----------|:------------|
-| Transient multi-phase heat diffusion | `ThermalDiffusionDR` | `solver!` |
-| Lithostatic pressure | `LithostaticPressureDR` | `solver!` |
+| Transient multi-phase heat diffusion | `ThermalDiffusionDR` | `solve!` |
+| Lithostatic pressure | `LithostaticPressureDR` | `solve!` |
 | Incompressible visco-elasto-plastic Stokes flow | `StokesDR` | `solve_stokes_dyrel!` |
 | Coupled thermal–Stokes flow with optional shear heating | `ThermalDiffusionDR` + `StokesDR` | `solve_coupled_dyrel!` |
 

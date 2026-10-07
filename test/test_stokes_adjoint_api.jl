@@ -221,3 +221,56 @@ end
     grad_reverse = dot(λvx, ∂R∂ρ2_x) + dot(λvy, ∂R∂ρ2_y)
     @test grad_reverse ≈ grad_fd rtol = 1.0e-4
 end
+
+@testset "solve_adjoint! reuses the forward scaling of the mesh-based solve" begin
+    (; backend, wg, element_v, element_P, mesh, geo_v, geo_P, phases,
+        vx_nodes, vy_nodes, bcx, bcy, obs) = _adjoint_gradient_case()
+    material = StokesMaterial(; η = (1.0, 1.0), ηb = Inf, ρ0 = (1.0, 2.0), g = (0.0, -1.0))
+    dr = StokesDR(mesh, material; CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bcx)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bcy)
+    objective_vx = zeros(mesh.nnodes)
+    objective_vy = zeros(mesh.nnodes)
+    objective_vy[obs] .= -1.0
+    adjoint_kwargs = (; dt = 1.0, phases_v = phases, phases_P = phases, workgroup = wg,
+        tolerance = 1.0e-10, check_interval = 100, rel_drop = 0.1, verbose = false)
+
+    # The adjoint needs the scale the forward solve assembled.
+    @test_throws ArgumentError solve_adjoint!(
+        dr, mesh, bc_vx, bc_vy; objective_vx, objective_vy,
+        λvx = zeros(mesh.nnodes), λvy = zeros(mesh.nnodes), λP = zeros(mesh.nnodesP),
+        adjoint_kwargs...)
+
+    forward = solve!(dr, mesh, bc_vx, bc_vy; dt = 1.0, pressure_factor = 20.0,
+        phases_v = phases, phases_P = phases, workgroup = wg, tolerance = 1.0e-10,
+        check_interval = 100, iterMax = 200_000, max_iterations = 200_000, verbose = false)
+    @test forward.converged
+
+    λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+    stats = solve_adjoint!(dr, mesh, bc_vx, bc_vy; objective_vx, objective_vy,
+        λvx = λ[1], λvy = λ[2], λP = λ[3], iterMax = 200_000, max_iterations = 200_000,
+        max_ph_iterations = 200, adjoint_kwargs...)
+    @test stats.converged && stats.iterations == stats.iter && stats.residual == stats.err
+
+    # Same discrete problem as the expanded call with the state-owned scale.
+    τ_old = FEMTools.stress_old(dr)
+    ref = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+    solve_stokes_adjoint_dyrel!(
+        dr, mesh, geo_v, geo_P, element_v, element_P, phases, phases, τ_old, nothing,
+        dr.G, 1.0, dr.γP, objective_vx, objective_vy, ref..., backend, wg;
+        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200, verbose = false)
+    @test all(map((a, b) -> isapprox(a, b; rtol = 1.0e-8, atol = 1.0e-12), λ, ref))
+    @test any(!iszero, λ[2])
+
+    # An unreachable budget throws by default and reports failure on request.
+    cold = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
+    budget = (; max_iterations = 2, check_interval = 1, iterMax = 2, max_ph_iterations = 1)
+    @test_throws ErrorException solve_adjoint!(dr, mesh, bc_vx, bc_vy; objective_vx, objective_vy,
+        λvx = cold[1], λvy = cold[2], λP = cold[3], budget..., adjoint_kwargs..., tolerance = 1.0e-14,
+        check_interval = 1)
+    failed = solve_adjoint!(dr, mesh, bc_vx, bc_vy; objective_vx, objective_vy,
+        λvx = cold[1], λvy = cold[2], λP = cold[3], throw_on_failure = false, budget...,
+        adjoint_kwargs..., tolerance = 1.0e-14, check_interval = 1)
+    @test !failed.converged
+end

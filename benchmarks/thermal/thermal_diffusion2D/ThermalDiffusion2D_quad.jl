@@ -80,8 +80,8 @@ function main(;
     # ThermalDiffusionDR struct
     # ---------------------------------------------------------------------------
 
-    material = ThermalMaterial(; k = (diffusivity,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,))
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, material; ϵ = tolerance)
+    material = ThermalMaterial(; k = diffusivity, α = 0.0, K = Inf)
+    dr = ThermalDiffusionDR(mesh, material; ϵ = tolerance)
     to_backend = FEMTools.TA(backend)
 
     # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ function main(;
 
     copyto!(dr.T, to_backend([exact(x, 0.0) for x in coords]))
     nodes = Array(mesh.Γnodes)
-    bc = DirichletBoundaryCondition(nothing, to_backend(nodes), to_backend([exact(coords[n], 0.0) for n in nodes]))
+    bc = DirichletBoundaryCondition(to_backend(nodes), to_backend([exact(coords[n], 0.0) for n in nodes]))
     Δt = final_time / nsteps
     history = NamedTuple[]
     convergence_history = NamedTuple[]
@@ -105,13 +105,12 @@ function main(;
         fill!(dr.∂T∂τ, 0)
         time = step * Δt
         copyto!(bc.vals, to_backend([exact(coords[n], time) for n in nodes]))
-        step_history = NamedTuple[]
-        solver!(dr, Δt, mesh, bc; workgroup, ncheck = 10, iterMax = 50_000,
-                history = step_history, verbose = false)
-        for h in step_history
+        stats = solve!(dr, mesh, bc; dt = Δt, workgroup, check_interval = 10,
+                       max_iterations = 50_000, collect_history = true, verbose = false)
+        for h in stats.history
             push!(convergence_history, (; iter = iteration_offset + h.iter, step, time, h.residual, h.relative))
         end
-        iteration_offset += last(step_history).iter
+        iteration_offset += stats.iterations
         numerical = sample_field(dr.T, mesh.el2n, shape_function_values(element))
         analytical = map(x -> exact(x, time), samples.points)
         push!(history, (; time, residual = norm(Array(dr.R)) / sqrt(mesh.nnodes),

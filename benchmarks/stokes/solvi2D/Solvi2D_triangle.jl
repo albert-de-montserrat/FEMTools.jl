@@ -169,24 +169,7 @@ function main(;
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
-    # FEM pressure residuals are assembled in weak form:
-    #
-    #     RP_i = ∫ N_i (-∇⋅v) dΩ
-    #
-    # The Arrow-Hurwicz pressure step and numerical pressure
-    # correction are calibrated for that pointwise residual.  If we feed the weak
-    # residual directly into Pnum or P += γP*RP/M_P, the update is scaled by element
-    # volume and pressure convergence stalls/refines incorrectly.
-    #
-    # Use the helper to assemble both:
-    #   dr.M_P = ∫ N_i dΩ
-    #   γP      = local viscosity-weighted pressure update scale
-    # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
-    # adapts the pressure step to viscosity contrasts.
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δt; workgroup, phases_v = phases_v_cpu,
-    )
+    # Pressure scaling is assembled by the solve into dr.γP.
 
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
@@ -222,13 +205,14 @@ function main(;
         copyto!(dr.T0, dr.T)
         @info "Physical time step" istep nsteps t
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
+        solve_stats = solve!(
+            dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
+            pressure_factor = γfact,
             phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
-            ncheck,
-            ϵ_tol,
+            check_interval = ncheck,
+            tolerance = ϵ_tol,
             iterMax,
-            total_iterMax,
+            max_iterations = total_iterMax,
             rel_drop0,
             verbose = verbose_PH,
             verbose_inner = verbose_DR,

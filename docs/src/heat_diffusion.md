@@ -21,7 +21,7 @@ where the per-phase density follows a linearised equation of state
 Material properties (`k`, `Cp`, `ρ0`, `α`, `K`) are grouped in a
 `ThermalMaterial`. Each field is an `NTuple{nphases, FP}`, so phase count and
 precision remain compile-time information. The reference temperature `Tref` is
-passed to `solver!` when advancing the thermal field.
+passed to `solve!` when advancing the thermal field.
 
 ```@docs
 ThermalMaterial
@@ -38,17 +38,23 @@ ThermalDiffusionDR
 ```julia
 material = ThermalMaterial(; k, Cp, ρ0, α, K)
 
-# CPU (default)
-dr = ThermalDiffusionDR(nnodes, material)
-
-# Explicit backend (e.g. GPU)
-using CUDA
-dr = ThermalDiffusionDR(CUDABackend(), nnodes, material)
+# Node count and backend come from the mesh (CPU or GPU).
+dr = ThermalDiffusionDR(mesh, material)
 ```
 
 All keyword arguments (`CFL`, `c_fact`, `ϵ`) are converted to the float type
 inferred from the phase-property tuples, so mixing `Float32` properties with
 `Float64` literals in keyword arguments is safe.
+
+The mesh constructor requires material properties and coordinates to have the
+same scalar type. Count-based constructors remain available for custom layouts.
+
+For one phase, scalars are enough: `ThermalMaterial(; k = 2f0, α = 0f0,
+K = Inf32)` keeps Float32 conductivity and fills omitted heat capacity and
+density with `1f0`. A supplied phase tuple sets phase count and precision;
+scalar properties apply to every phase. For example,
+`ThermalMaterial(; k = (2f0, 3f0), Cp = 4f0)` stores `Cp = (4f0, 4f0)`.
+Explicit floating-point properties must share precision; they are not promoted.
 
 ### Example — two-phase problem
 
@@ -69,7 +75,7 @@ Tref = FP(273.0)               # K
 
 element = ReferenceElement(LinearElement{1, 2})
 mesh = Mesh(0.0..1.0, element, 100)
-dr   = ThermalDiffusionDR(CPU(), mesh.nnodes, material; CFL=0.9)
+dr   = ThermalDiffusionDR(mesh, material; CFL=0.9)
 ```
 
 ## Structured 2-D Example
@@ -98,11 +104,11 @@ material = ThermalMaterial(;
 )
 Tref = FP(273.0)
 
-dr = ThermalDiffusionDR(backend, mesh.nnodes, material; CFL=FP(0.9))
+dr = ThermalDiffusionDR(mesh, material; CFL=FP(0.9))
 ```
 
 The full example applies Dirichlet boundary conditions at the top and bottom,
-then advances the field with `solver!` for 50 time steps. Run it from the
+then advances the field with `solve!` for 50 time steps. Run it from the
 examples environment:
 
 ```sh
@@ -115,7 +121,7 @@ The resulting temperature field is:
 
 ## Coupling to Stokes flow
 
-`solver!` advances temperature on its own. To relax temperature and an
+`solve!` advances temperature on its own. To relax temperature and an
 incompressible Stokes flow together within one time step, use
 [`solve_coupled_dyrel!`](@ref), which interleaves one thermal DR iteration with
 every inner Stokes velocity iteration and feeds the resulting temperature into
@@ -138,11 +144,11 @@ operate on element-local `SVector`s inside KernelAbstractions kernels:
 
 ## Reference
 
-`solver!` advances the field for one time step; the pseudo-transient update
+`solve!` advances the field for one time step; the pseudo-transient update
 kernels and Dirichlet enforcement are shared by all dynamic-relaxation solvers.
 
 ```@docs
-solver!
+solve!(::ThermalDiffusionDR, ::Mesh, ::DirichletBoundaryCondition)
 FEMTools.apply_dirichlet!
 FEMTools.update_rate_kernel!
 FEMTools.update_variable_kernel!
@@ -155,9 +161,10 @@ FEMTools.integrate_residual
 
 ## Recording convergence history
 
-Pass a caller-owned vector, for example `history=NamedTuple[]`, to `solver!`.
-It appends `(iter, residual, relative)` at each convergence check, including the
-final check, and still returns `nothing`. The absolute residual is
+Pass `collect_history=true` to `solve!`. The returned statistics
+`(; converged, iterations, residual, history)` then hold
+`(iter, residual, relative)` at each convergence check, including the
+final check. The absolute residual is
 `norm(R)/sqrt(nnodes)` and the relative residual is normalized by the first
 residual of the current solve. Iteration numbers restart for each physical step.
 The [thermal benchmarks](benchmarks.md) plot these records across time steps.

@@ -11,21 +11,6 @@ const backend   = CPU()
 const workgroup = 128
 
 # ---------------------------------------------------------------------------
-# Geometry precomputation  (local helper — wraps FEMTools kernel)
-# ---------------------------------------------------------------------------
-
-function precompute_geometry(coords, el2n, nels, element::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
-    ip    = element.integration_points
-    NQ    = length(ip.ω)
-    ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = KernelAbstractions.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 2, Float64, 2N}, Float64}}, nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(N); ndrange = nels)
-    KernelAbstractions.synchronize(backend)
-    return geo
-end
-
-# ---------------------------------------------------------------------------
 
 function main(nels)
     TDev = FEMTools.TA(backend)
@@ -55,10 +40,7 @@ function main(nels)
 
     Γ_dofs = TDev(vcat(mesh_cpu.DoFs[Γb], mesh_cpu.DoFs[Γt]))
     Γ_vals = TDev(vcat(fill(T_bot, length(Γb)), fill(T_top, length(Γt))))
-    Γ_zero = zero(Γ_vals)
-
-    # --- precompute geometry (∂N∂x, dΩ per element per quadrature point) ---
-    geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
+    bc = DirichletBoundaryCondition(Γ_dofs, Γ_vals)
 
     # --- ThermalDiffusionDR bundles all solver state and material properties ---
     dr = ThermalDiffusionDR(backend, mesh.nnodes, material; CFL=0.9, ϵ=1e-8)
@@ -84,7 +66,7 @@ function main(nels)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
 
-        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; Tref = Tref)
+        solve!(dr, mesh, bc; dt = Δt, workgroup, Tref = Tref)
     end
     
     fig = Figure(size = (600, 600))

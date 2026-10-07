@@ -79,10 +79,10 @@ end
     fill!(thermal.source, 1.0)
     copyto!(thermal.T0, thermal.T)
     thermal_err = _caught_error() do
-        solver!(
+        FEMTools._solve_thermal!(
             thermal, 1.0, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
-            ncheck = 1,
-            iterMax = 1,
+            check_interval = 1,
+            max_iterations = 1,
             verbose = false,
         )
     end
@@ -91,10 +91,10 @@ end
 
     litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,); ϵ = 0.0)
     litho_err = _caught_error() do
-        solver!(
+        FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
-            ncheck = 1,
-            iterMax = 1,
+            check_interval = 1,
+            max_iterations = 1,
             verbose = false,
             g = SVector(0.0, -1.0),
         )
@@ -113,13 +113,13 @@ end
 
     thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
     thermal_err = _caught_error() do
-        solver!(thermal, 1.0, mesh, bc; workgroup = 1, verbose = false)
+        solve!(thermal, mesh, bc; dt = 1.0, workgroup = 1, verbose = false)
     end
     @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
 
     litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
     litho_err = _caught_error() do
-        solver!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
+        solve!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
     end
     @test occursin("lithostatic pressure preconditioner produced invalid λmax", sprint(showerror, litho_err))
 end
@@ -131,7 +131,7 @@ end
 
     thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
     thermal_err = _caught_error() do
-        solver!(
+        FEMTools._solve_thermal!(
             thermal, 1.0, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
             verbose = false,
         )
@@ -141,7 +141,7 @@ end
 
     litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
     litho_err = _caught_error() do
-        solver!(
+        FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
             verbose = false,
             g = SVector(0.0, -1.0),
@@ -412,11 +412,21 @@ end
     fill!(thermal.source, 1.0)
     baseline = deepcopy(thermal)
     bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
-    history = NamedTuple[]
-    @test solver!(thermal, 1.0, mesh, bc; ncheck = 10, verbose = false, history) === nothing
-    solver!(baseline, 1.0, mesh, bc; ncheck = 10, verbose = false)
+    stats = solve!(thermal, mesh, bc; dt = 1.0, check_interval = 10, verbose = false, collect_history = true)
+    plain = solve!(baseline, mesh, bc; dt = 1.0, check_interval = 10, verbose = false)
+    history = stats.history
+    @test isempty(plain.history)
     @test thermal.T ≈ baseline.T
+    @test stats.converged && stats.iterations == plain.iterations
+    @test stats.residual == last(history).relative < thermal.ϵ
     @test first(history).iter == 1 && issorted([h.iter for h in history])
-    @test last(history).relative < thermal.ϵ
+    @test last(history).iter == stats.iterations
     @test last(history).residual ≈ norm(thermal.R) / sqrt(mesh.nnodes)
+
+    # Non-convergence throws by default and reports failed statistics on request.
+    failing = ThermalDiffusionDR(CPU(), mesh.nnodes, material; ϵ = 0.0)
+    fill!(failing.source, 1.0)
+    @test_throws ErrorException solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false)
+    failed = solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false, throw_on_failure = false)
+    @test !failed.converged && failed.iterations == 3
 end

@@ -71,7 +71,7 @@ end
     fixed = Int32.(vcat(groups.surface, groups.bottom))
     bc = DirichletBoundaryCondition(nothing, fixed, zeros(length(fixed)))
 
-    solver!(thermal, 1.0e-4, mesh, bc; workgroup = 1, verbose = false, iterMax = 20_000)
+    solve!(thermal, mesh, bc; dt = 1.0e-4, workgroup = 1, verbose = false, max_iterations = 20_000)
 
     @test all(isfinite, thermal.T)
     @test maximum(abs, thermal.T) < 1.1

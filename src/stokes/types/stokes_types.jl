@@ -3,21 +3,27 @@
                    ρ0=(1.0,), K=(Inf,), g=(0.0, 0.0), Tref=0.0)
 
 Typed per-phase material properties and body-force parameters for `StokesDR`.
-All property tuples must have the same length and floating-point type.
+Properties accept scalars or phase tuples. The first supplied property tuple
+determines phase count and precision; without tuples, the first supplied scalar
+does. Scalars apply to every phase. Omitted properties keep the documented
+defaults in that precision and phase count. Supplied floating-point values,
+including gravity and reference temperature, must have matching precision;
+incompatible precisions are not promoted. With no phase properties supplied,
+`Tref` or gravity determines precision. With no inputs, precision is Float64.
 
 The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
 [`StokesDR`](@ref) built from this material inherits it. Pass a three-component
 `g` for a three-dimensional problem, `(0.0, 0.0, 0.0)` included.
 """
-@kwdef struct StokesMaterial{nphases, ndim, FP}
-    η::NTuple{nphases, FP} = (1.0,)
-    ηb::NTuple{nphases, FP} = (1.0,)
-    G::NTuple{nphases, FP} = (Inf,)
-    α::NTuple{nphases, FP} = (0.0,)
-    ρ0::NTuple{nphases, FP} = (1.0,)
-    K::NTuple{nphases, FP} = (Inf,)
-    g::NTuple{ndim, FP} = (0.0, 0.0)
-    Tref::FP = 0.0
+struct StokesMaterial{nphases, ndim, FP}
+    η::NTuple{nphases, FP}
+    ηb::NTuple{nphases, FP}
+    G::NTuple{nphases, FP}
+    α::NTuple{nphases, FP}
+    ρ0::NTuple{nphases, FP}
+    K::NTuple{nphases, FP}
+    g::NTuple{ndim, FP}
+    Tref::FP
 
     function StokesMaterial(
             η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
@@ -32,6 +38,24 @@ The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
             throw(ArgumentError("gravity must have 2 or 3 components, got $ndim"))
         return new{nphases, ndim, FP}(η, ηb, G, α, ρ0, K, g, Tref)
     end
+end
+
+function StokesMaterial(;
+        η = nothing, ηb = nothing, G = nothing, α = nothing,
+        ρ0 = nothing, K = nothing, g = nothing, Tref = nothing,
+    )
+    gravity = g === nothing ? nothing : _material_tuple(g)
+    reference = _material_reference(
+        (η, ηb, G, α, ρ0, K, Tref, gravity === nothing ? nothing : first(gravity)), nothing,
+    )
+    FP = eltype(reference)
+    return StokesMaterial(
+        _material_property(η, reference, 1), _material_property(ηb, reference, 1),
+        _material_property(G, reference, Inf), _material_property(α, reference, 0),
+        _material_property(ρ0, reference, 1), _material_property(K, reference, Inf),
+        gravity === nothing ? (zero(FP), zero(FP)) : gravity,
+        Tref === nothing ? zero(FP) : float(Tref),
+    )
 end
 
 # Storage extents accept either a node count or an explicit dimension tuple, so
@@ -116,7 +140,7 @@ array.
 |:---------- |:----------------------------------------- |
 | `P`        | Pressure (current iterate)                |
 | `P0`       | Pressure at previous time step            |
-| `∂P∂τ`    | Pseudo-transient rate for pressure         |
+| `γP`       | Pressure scale `γ_eff` owned by the high-level solve |
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
 | `Q`        | Volumetric source/sink in continuity      |
@@ -198,7 +222,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # pressure-node solution fields
     P::_TP
     P0::_TP
-    ∂P∂τ::_TP
+    γP::_TP
     T::_TP
     T0::_TP
     Q::_TP
@@ -283,7 +307,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             newiv(),                                  # phases_v
             newτfield(), newτfield(),                 # τ, τ_old
             newhistory(),                              # optional cap history
-            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
+            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, γP, T, T0, Q
             newP(),                                   # Pf
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
@@ -351,6 +375,27 @@ StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
 )
 StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, material; kwargs...)
+
+"""
+    StokesDR(mesh::MixedMesh, material::StokesMaterial; stress_size, kwargs...)
+
+Allocate velocity and pressure fields on the mesh backend. By default, stress
+history has one entry per velocity integration point and element. Override
+`stress_size` for a different layout, or use `:none` to omit stress history.
+The mesh must have cached geometry; material precision and gravity dimension
+must match its coordinates. Remaining keywords control the count-based constructor.
+"""
+function StokesDR(
+        mesh::MixedMesh{D}, material::StokesMaterial;
+        stress_size = (length(_mesh_geometry(mesh).element_v.integration_points.ω), mesh.nels),
+        kwargs...,
+    ) where {D}
+    _check_material_precision(mesh, material.η)
+    length(material.g) == D || throw(DimensionMismatch("material gravity must have $D components"))
+    _mesh_geometry(mesh)
+    return StokesDR(KernelAbstractions.get_backend(mesh.coords), mesh.nnodes, mesh.nnodesP,
+        material; stress_size, kwargs...)
+end
 
 """
     DruckerPrager{nphases, FP}

@@ -9,24 +9,9 @@ function _assemble_thermal!(
     )
 end
 
-"""
-    solver!(dr::ThermalDiffusionDR, Δt, mesh, geo, element,
-            Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; kwargs...)
-
-Run the pseudo-transient dynamic-relaxation (DR) solver on `dr` for one time
-step of size `Δt` using explicitly supplied geometry, element, boundary arrays,
-backend, and workgroup size.
-
-`ncheck` controls how often spectral
-estimates and convergence are recomputed, and `iterMax` limits the number of
-pseudo-transient iterations. Set `verbose=false` to suppress residual output.
-`Tref` is the reference temperature used by the density equation of state.
-
-The solver modifies `dr.T` in-place. `dr.T0` must be set to the temperature at
-the previous physical time step before calling.
-
-"""
-function solver!(
+# Low-level thermal solve with explicitly supplied geometry, element, boundary
+# arrays, backend, and workgroup size; `solve!` is the user-facing entry point.
+function _solve_thermal!(
         dr::ThermalDiffusionDR, Δt, mesh, geo, element,
         Γ_dofs, Γ_zero, Γ_vals,
         backend, workgroup;
@@ -43,14 +28,27 @@ function solver!(
 end
 
 """
-    solver!(dr, Δt, mesh, bc; workgroup=256, kwargs...)
+    solve!(dr::ThermalDiffusionDR, mesh, bc; dt, tolerance=dr.ϵ,
+           max_iterations=10_000, check_interval=100, verbose=true,
+           collect_history=false, throw_on_failure=true,
+           workgroup=256, Tref=273)
 
-Solve one thermal-diffusion time step using the element and geometry stored in
-`mesh` and the prescribed values in `bc`. The backend is inferred from
-`mesh.coords`; remaining keywords are forwarded to the low-level solver.
+Solve one backward-Euler thermal-diffusion step of size `dt` with the element
+and geometry stored in `mesh` and the Dirichlet values in `bc`. The backend is
+inferred from `mesh.coords`. `dr.T` is updated in place; `dr.T0` must hold the
+temperature of the previous physical time step, and this call does not advance
+it.
+
+`Tref` is the reference temperature of the density equation of state. The
+iteration controls and the returned statistics
+`(; converged, iterations, residual, history)` are those of
+`solve_dynamic_relaxation!`: spectral estimates and convergence are
+refreshed every `check_interval` iterations, `residual` is the relative residual
+that `tolerance` bounds, and exhausting `max_iterations` throws unless
+`throw_on_failure=false`.
 """
-solver!(
-    dr::ThermalDiffusionDR, Δt, mesh::Mesh, bc::DirichletBoundaryCondition;
-    workgroup = 256, kwargs...
+solve!(
+    dr::ThermalDiffusionDR, mesh::Mesh, bc::DirichletBoundaryCondition;
+    dt, workgroup = 256, kwargs...
 ) =
-    solver!(dr, Δt, _mesh_solver_arguments(mesh, bc, workgroup)...; kwargs...)
+    _solve_thermal!(dr, dt, _mesh_solver_arguments(mesh, bc, workgroup)...; kwargs...)

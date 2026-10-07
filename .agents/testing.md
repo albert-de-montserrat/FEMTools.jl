@@ -112,6 +112,15 @@ run before package instantiation:
 
 ## Exact-field benchmark checks
 
+API simplification starts with `benchmarks/api_inventory.jl` (public names,
+runtime methods, textual references) and `benchmarks/api_baseline.jl` (small
+thermal and heterogeneous mixed Stokes CPU/optional CUDA correctness smokes).
+Run the latter with `--cuda` in an environment containing CUDA; it requires a
+functional device and disables scalar indexing. These tools do not replace
+the full suite or representative performance benchmarks. See
+[`API_SIMPLIFICATION_BASELINE.md`](../API_SIMPLIFICATION_BASELINE.md) for initial
+coverage and outstanding gates.
+
 `test/test_stokes_quadrature_viscosity.jl` covers integration-point viscosity,
 constant-field equivalence, a varying field, pressure scaling, independent
 hydrostatic pressure with an assembled load, and invalid shapes/values.
@@ -228,3 +237,21 @@ The external exact-field runner round-trips convergence archives for all six
 scripts. It checks exact history/metadata equality, actual per-field/total DoF
 counts, and JLD2-only output with PNG/VTK disabled. Includes and routine checks
 set FEMTOOLS_BENCHMARK_HISTORY=false / save_history=false to avoid artifacts.
+
+## Mesh-based constructor checks
+
+`test_material_defaults.jl` checks scalar normalization, uniform phase
+properties, inferred layouts/precision, gravity-only precision, existing
+physical defaults, empty inputs, and incompatible explicit floating types.
+Mesh constructor and CPU/CUDA solve checks now use simplified material calls
+in both precisions. External exact-field/CUDA checks cover default phases
+(SolKz) and shared cell-wise phase rows (SolCx) for both discretizations.
+
+`test_mesh_state_constructors.jl` checks inferred construction, Float32/Float64,
+backend placement, 2-D/3-D stress layouts, explicit omission of stress history,
+material incompatibility, and borrowing/length validation of Dirichlet arrays.
+Its `check_mesh_state_constructors(backend)` helper also runs with CUDA and
+scalar indexing disabled; CPU execution alone is the default package test.
+Windows Julia 1.13 with gmsh_jll 4.15.2 currently fails Gmsh initialization
+and dependent tetrahedral gates. Missing user-deleted benchmark scripts also
+fail documentation-path checks; these are independent of constructor changes.

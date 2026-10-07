@@ -89,7 +89,7 @@ function main(; max_area=1e5)
     bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 50, Tref = Tref, g = g)
+    @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 50, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK time-series setup -----------------------------------------------
@@ -153,7 +153,7 @@ function main(; max_area=1e5)
         @printf("─── time step %2d / %d ───\n", step, nsteps)
         copyto!(dr.T0, dr.T)
         fill!(dr.∂T∂τ, 0)
-        @timeit to "solver" solver!(dr, Δt, mesh, bc_T; workgroup, ncheck = 100, Tref = Tref)
+        @timeit to "solver" solve!(dr, mesh, bc_T; dt = Δt, workgroup, check_interval = 100, Tref = Tref)
         t_phys += Δt
 
         @timeit to "update obs" begin

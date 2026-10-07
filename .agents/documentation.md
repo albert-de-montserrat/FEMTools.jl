@@ -137,3 +137,12 @@ Benchmark docs describe default JLD2 history archives and metadata DoF counts,
 including constrained nodes and cell-local pressure unknowns. They document
 save_history/FEMTOOLS_BENCHMARK_HISTORY controls, history_path, dataset keys,
 and reading archives with JLD2.load. JLD2 is an examples dependency only.
+
+Heat, lithostatic, Stokes, and boundary-condition topic pages present mesh-based
+state construction and two-argument Dirichlet data. Precision compatibility,
+inferred backend/stress layout, and explicit layout overrides are documented.
+
+Thermal and Stokes topic pages document scalar material properties, typed
+multi-phase defaults, and uniform scalar phase properties. Stokes setup also
+documents shared one-row cell phases and omitted uniform phases. Bulk viscosity
+still defaults to one; incompressible workflows must explicitly set it infinite.
