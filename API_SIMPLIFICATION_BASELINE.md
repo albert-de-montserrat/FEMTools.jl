@@ -159,3 +159,19 @@ iteration at roughly 350 B each for the task, `NDRange`, and argument pack.
 No FEMTools array is allocated inside the loop; removing the cost would mean
 fewer launches, not a local fix.
 
+## CPU/CUDA agreement after the API changes
+
+NVIDIA GeForce RTX 3080, driver 580.173.02, CUDA runtime 13.4, Julia 1.12.7,
+`CUDA.allowscalar(false)`. Every case converged on both backends with equal
+iteration counts; relative field differences are maxima over the field.
+
+| Path | Float32 | Float64 |
+| --- | --- | --- |
+| `benchmarks/api_baseline.jl --cuda` (thermal, heterogeneous T7/P1 Stokes) | 16 of 16 checks pass (both precisions) | same |
+| `solve_coupled!` with shear heating (T7/P1, 4×4) | T 1.8e-7, v 6.0e-8 | T 3.3e-16, v 1.1e-16 |
+| `solve!` then `solve_adjoint!` (T7/P1, 6×6, contrast 10) | v 3.5e-5, λ 1.5e-4 | v 1.0e-13, λ 1.7e-13 |
+| `CellPressureStokesDR` `solve!` (Hex27, 3×3×3, contrast 100) | vz 1.0e-6 | vz 3.1e-15 |
+
+The coupled pressure is zero analytically; both backends return roundoff
+(|P| ≤ 4e-7 in Float32), so its relative difference carries no information.
+

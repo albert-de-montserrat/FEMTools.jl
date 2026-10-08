@@ -1,7 +1,9 @@
 # API and source simplification plan
 
-Status: implementation started on `refactor/api-simplification`; baseline and
-caller inventory come first. Breaking API changes are allowed. The goal
+Status: stages 1–5 implemented on `refactor/api-simplification`, with CPU/CUDA
+agreement and warmed timings recorded in the baseline. `advance!` is deferred:
+time-stepping miniapps differ in which history they accept between steps.
+Breaking API changes are allowed. The goal
 is fewer concepts, fewer caller responsibilities, and clearer numerical code.
 Implementation should proceed in small independently verified changes.
 
