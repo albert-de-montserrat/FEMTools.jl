@@ -263,37 +263,3 @@ output_dir = joinpath(@__DIR__, "output_ice_bridge")
 verbose = true
 
 main()
-
-
-function foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode])
-    end
-
-    FEMTools.straighten_t7_geometry!(mesh_stokes.coords, mesh_stokes.el2n)
-    copyto!(mesh_v.coords, mesh_stokes.coords)
-    copyto!(mesh_stokes.coords, mesh_stokes.coords)
-    return update_geometry!(mesh_stokes)
-end
-
-function move_mesh!(mesh_stokes::MixedMesh{2}, dr, dt)
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode])
-    end
-end
-
-function move_mesh!(mesh_stokes::MixedMesh{3}, dr, dt)
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode], dr.vz[inode])
-    end
-end
-
-foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-@code_warntype foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-
-move_mesh!(mesh_stokes, dr, dt)
-
-struct SymmetricTensor{T, N} where {T, N}
-    data::SVector{N * (N + 1) ÷ 2, T}
-end

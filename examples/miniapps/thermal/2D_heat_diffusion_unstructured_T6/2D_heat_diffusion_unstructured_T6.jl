@@ -138,7 +138,7 @@ function main(; max_area=1e5 / 2)
 
     # Solver state --------------------------------------------------------
     dr = ThermalDiffusionDR(mesh, material;
-                            CFL = 1.25, ϵ = 1e-8)
+                            CFL = 1.0, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
