@@ -153,5 +153,9 @@ Three warmed runs each:
 
 Timings agree within run-to-run variation; allocations grow by a fixed 128 B
 (Stokes) and 32 B (thermal) per call. Both versions allocate about 5 KB per
-Stokes pseudo-iteration, which is a pre-existing hot-path cost, not a change.
+Stokes pseudo-iteration. An allocation profile (`Profile.Allocs`, 8×8 T7/P1)
+attributes all of it to KernelAbstractions CPU launches: about 14 launches per
+iteration at roughly 350 B each for the task, `NDRange`, and argument pack.
+No FEMTools array is allocated inside the loop; removing the cost would mean
+fewer launches, not a local fix.
 
