@@ -213,6 +213,9 @@ lithostatic, and mixed Stokes states from meshes. `solve_stokes_dyrel!` keeps
 only its mesh-owned forms; the array-positional core is internal
 (`_solve_stokes_dyrel!`, per-direction node sets positional) and its
 `MixedMeshCache` and split-component forwarding methods are removed.
+Atomic and colored scalar assembly already share element mathematics through
+`assemble_dr_matrices_{atomix,colored}!`; only the scatter differs. Warmed
+Stokes and thermal timings match `main` (see the baseline record).
 State constructors take a typed material: the property-positional
 `ThermalDiffusionDR`, `LithostaticPressureDR`, and `StokesDR` forms are removed,
 and `StokesMaterial` accepts any two- or three-element gravity collection.

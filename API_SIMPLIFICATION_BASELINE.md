@@ -138,3 +138,20 @@ Runtime is comparable and allocations differ by at most 224 bytes out of about
 claimed. These constructors run during setup, outside established hot loops.
 Removal of old entry points follows caller migration and completed baseline
 gates, not the inventory count alone.
+
+## Warmed performance against `main`
+
+Julia 1.12.7, CPU, same script on `main` (`babe3b4`) and on this branch, using
+calls that exist in both: a heterogeneous T7/P1 Stokes inclusion (24×24 cells,
+viscosity contrast 100, `ϵ_tol = 1e-8`) and one Q9 thermal step (48×48 cells).
+Three warmed runs each:
+
+| Case | `main` time (s) | Branch time (s) | `main` bytes | Branch bytes | Iterations / result |
+| --- | --- | --- | ---: | ---: | --- |
+| Stokes | 20.09, 20.02, 19.12 | 18.45, 19.11, 18.79 | 144 995 592 | 144 995 720 | 29 250 in both; `err_abs` identical |
+| Thermal | 0.785, 0.755, 0.769 | 0.847, 0.756, 0.767 | 20 415 008 | 20 415 040 | `maximum(T)` identical |
+
+Timings agree within run-to-run variation; allocations grow by a fixed 128 B
+(Stokes) and 32 B (thermal) per call. Both versions allocate about 5 KB per
+Stokes pseudo-iteration, which is a pre-existing hot-path cost, not a change.
+
