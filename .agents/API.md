@@ -105,9 +105,8 @@ parameters and nonpositive `Kb`, and requires positive cap radius at both
   `StokesAdjointWorkspace`, `DruckerPrager`, `DruckerPragerCap`.
 - Scalar entry point: `solve!(dr, mesh, bc; dt, ...)` for thermal diffusion and
   `solve!(dr, mesh, bc; ...)` for lithostatic pressure (`dt` is thermal only).
-- Stokes entry points: `solve_stokes_dyrel!`,
-  `solve_coupled!`,
-  `solve_stokes_adjoint_dyrel!`; `solve!`/`solve_adjoint!` for mixed `StokesDR`
+- Stokes entry points: `solve_stokes_dyrel!` (prepared scale),
+  `solve_coupled!`; `solve!`/`solve_adjoint!` for mixed `StokesDR`
   and Hex27 `CellPressureStokesDR`.
 - Stokes operations: `assemble_viscosity_weighted_pressure_scaling!`,
   `pressure_mass`, `rotate_stress!`, `update_stokes_current_stress!`,
@@ -411,8 +410,9 @@ adjoint: geometry and elements come from the mesh and the forward scale `dr.γP`
 is reused, with an `ArgumentError` when it was never assembled. Names map
 `tolerance`→`adjoint_tol`, `max_iterations`→`total_iterMax`,
 `check_interval`→`ncheck`; `λ` inputs are the warm start; non-convergence throws
-unless `throw_on_failure=false`. The 3-D Hex27 adjoint and
-`solve_stokes_adjoint_dyrel!` positional forms are unchanged.
+unless `throw_on_failure=false`. `solve_adjoint!` is the only public mixed-mesh
+adjoint; its array-positional core is internal (`_solve_stokes_adjoint_dyrel!`).
+A caller that prepares its own scale writes it into `dr.γP` before both solves.
 
 ## Hex27 cell-pressure state
 

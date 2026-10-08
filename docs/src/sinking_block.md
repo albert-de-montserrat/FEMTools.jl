@@ -176,7 +176,7 @@ density, used only for the summary plot.
 
 `test/test_stokes_adjoint_api.jl` builds a small T7/P1-disc buoyancy case —
 the same element pair, free-slip walls, and observation-window objective as
-this example — and checks that `solve_stokes_adjoint_dyrel!` reproduces the
+this example — and checks that `solve_adjoint!` reproduces the
 density gradient obtained from centred finite differences on the same
 discrete objective, directly validating the transpose-consistency argument
 above without a separate sparse reference assembly.

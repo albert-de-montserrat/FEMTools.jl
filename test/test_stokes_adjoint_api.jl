@@ -44,7 +44,7 @@ function _adjoint_gradient_case()
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs)
 end
 
-@testset "solve_stokes_adjoint_dyrel! — gradient matches finite differences" begin
+@testset "solve_adjoint! — gradient matches finite differences" begin
     case = _adjoint_gradient_case()
     (; backend, wg, element_v, element_P, mesh, geo_v, geo_P, phases,
         Γ, vx_nodes, vy_nodes, bcx, bcy, obs) = case
@@ -68,7 +68,8 @@ end
             StokesMaterial(; η, ηb, α, ρ0 = (1.0, ρ2), K, g, Tref);
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
         )
-        γP = zeros(Float64, mesh.nnodesP)
+        # The adjoint reuses the state-owned scale, so assemble it there.
+        γP = dr.γP
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
             γP, dr, mesh, geo_P, element_v, element_P, 20.0, Δt, backend, wg;
             phases_v = phases, η)
@@ -85,6 +86,11 @@ end
     ρ2 = 2.0
     dr, γP, τ_old, fwd = solve_forward(ρ2)
     @test fwd.converged
+    bc_v = (DirichletBoundaryCondition(vx_nodes, bcx), DirichletBoundaryCondition(vy_nodes, bcy))
+    adjoint!(λ; kwargs...) = solve_adjoint!(
+        dr, mesh, bc_v; dt = Δt, objective_v = (objective_vx, objective_vy),
+        λv = (λ[1], λ[2]), λP = λ[3], phases_v = phases, phases_P = phases, τ_old,
+        workgroup = wg, verbose = false, verbose_inner = false, kwargs...)
 
     # Adjoint solve: (∂R/∂u)ᵀλ = -∂J/∂u with the velocity objective load.
     objective_vx = zeros(mesh.nnodes)
@@ -93,13 +99,8 @@ end
     λvx = zeros(mesh.nnodes)
     λvy = zeros(mesh.nnodes)
     λP = zeros(mesh.nnodesP)
-    adj = solve_stokes_adjoint_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
-        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
-        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
-        verbose = false, verbose_inner = false)
+    adj = adjoint!((λvx, λvy, λP); check_interval = 100, tolerance = 1.0e-10, rel_drop = 0.1,
+        iterMax = 200_000, max_iterations = 200_000, max_ph_iterations = 200)
     @test adj.converged
     @test any(!iszero, λvy)          # nontrivial adjoint field
     @test adj.λmax_iterations > 0
@@ -107,12 +108,7 @@ end
 
     # Nonzero input fields are a warm start, not reset by the solver.
     λ_before = (copy(λvx), copy(λvy), copy(λP))
-    warm = solve_stokes_adjoint_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
-        vx_nodes, vy_nodes, adjoint_tol = 1.0e-9,
-        measure_λmax = false, verbose = false, verbose_inner = false)
+    warm = adjoint!((λvx, λvy, λP); tolerance = 1.0e-9, measure_λmax = false)
     @test warm.converged
     @test warm.iter == 0
     @test warm.λmax_iterations == 0
@@ -125,12 +121,7 @@ end
     workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes)
     cold_solve() = begin
         λ = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
-        stats = solve_stokes_adjoint_dyrel!(
-            dr, mesh, geo_v, geo_P, element_v, element_P,
-            phases, phases, τ_old, nothing, G, Δt, γP,
-            objective_vx, objective_vy, λ..., backend, wg;
-            vx_nodes, vy_nodes, adjoint_tol = 1.0e-9, measure_λmax = false,
-            verbose = false, verbose_inner = false, workspace)
+        stats = adjoint!(λ; tolerance = 1.0e-9, measure_λmax = false, workspace)
         return stats, λ
     end
     first_stats, first_λ = cold_solve()
@@ -140,34 +131,22 @@ end
     @test second_stats.iter == first_stats.iter
     @test all(map((a, b) -> isapprox(a, b; rtol = 1.0e-12), second_λ, first_λ))
     short_workspace = StokesAdjointWorkspace(dr, vx_nodes[2:end], vy_nodes)
-    @test_throws "vx boundary values" solve_stokes_adjoint_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
-        vx_nodes, vy_nodes, verbose = false, workspace = short_workspace)
+    @test_throws "vx boundary values" adjoint!((λvx, λvy, λP); workspace = short_workspace)
 
     # The matrix-free operator drives the same solve while storing no element
     # blocks, so it must land on the same adjoint field.
     λvx_mf = zeros(mesh.nnodes)
     λvy_mf = zeros(mesh.nnodes)
     λP_mf = zeros(mesh.nnodesP)
-    mf = solve_stokes_adjoint_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
-        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
-        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
-        verbose = false, verbose_inner = false, operator = :matrix_free)
+    mf = adjoint!((λvx_mf, λvy_mf, λP_mf); check_interval = 100, tolerance = 1.0e-10,
+        rel_drop = 0.1, iterMax = 200_000, max_iterations = 200_000, max_ph_iterations = 200,
+        operator = :matrix_free)
     @test mf.converged
     @test mf.λmax ≈ adj.λmax rtol = 1.0e-6
     @test maximum(abs, λvy_mf .- λvy) / maximum(abs, λvy) < 1.0e-6
 
-    @test_throws "operator must be :blocks, :matrix_free, or :enzyme" (
-        solve_stokes_adjoint_dyrel!(
-            dr, mesh, geo_v, geo_P, element_v, element_P,
-            phases, phases, τ_old, nothing, G, Δt, γP,
-            objective_vx, objective_vy, λvx_mf, λvy_mf, λP_mf, backend, wg;
-            vx_nodes, vy_nodes, verbose = false, operator = :frozen))
+    @test_throws "operator must be :blocks, :matrix_free, or :enzyme" adjoint!(
+        (λvx_mf, λvy_mf, λP_mf); operator = :frozen)
 
     # ∂R/∂ρ₂ is exact from a residual difference: the momentum residual is linear
     # in the density, so R(ρ₂=1) - R(ρ₂=0) at the frozen forward state is the
@@ -204,15 +183,10 @@ end
     fill!(λvx, 0)
     fill!(λvy, 0)
     fill!(λP, 0)
-    adj_rev = solve_stokes_adjoint_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        objective_vx, objective_vy, λvx, λvy, λP, backend, wg;
-        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
-        iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200,
+    adj_rev = adjoint!((λvx, λvy, λP); check_interval = 100, tolerance = 1.0e-10,
+        rel_drop = 0.1, iterMax = 200_000, max_iterations = 200_000, max_ph_iterations = 200,
         operator = :enzyme, measure_λmax = false,
-        workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme = true),
-        verbose = false, verbose_inner = false)
+        workspace = StokesAdjointWorkspace(dr, vx_nodes, vy_nodes; enzyme = true))
     @test adj_rev.converged
     @test adj_rev.λmax_iterations == 0        # power iteration needs the frozen operator
     @test adj_rev.λmax == adj_rev.λmax_gershgorin
@@ -254,13 +228,13 @@ end
         max_ph_iterations = 200, adjoint_kwargs...)
     @test stats.converged && stats.iterations == stats.iter && stats.residual == stats.err
 
-    # Same discrete problem as the expanded call with the state-owned scale.
+    # Same discrete problem as the positional core with the state-owned scale.
     τ_old = FEMTools.stress_old(dr)
     ref = (zeros(mesh.nnodes), zeros(mesh.nnodes), zeros(mesh.nnodesP))
-    solve_stokes_adjoint_dyrel!(
+    FEMTools._solve_stokes_adjoint_dyrel!(
         dr, mesh, geo_v, geo_P, element_v, element_P, phases, phases, τ_old, nothing,
-        dr.G, 1.0, dr.γP, objective_vx, objective_vy, ref..., backend, wg;
-        vx_nodes, vy_nodes, ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
+        dr.G, 1.0, dr.γP, (objective_vx, objective_vy), ref[1:2], ref[3], backend, wg;
+        v_nodes = (vx_nodes, vy_nodes), ncheck = 100, adjoint_tol = 1.0e-10, rel_drop = 0.1,
         iterMax = 200_000, total_iterMax = 200_000, max_ph_iterations = 200, verbose = false)
     @test all(map((a, b) -> isapprox(a, b; rtol = 1.0e-8, atol = 1.0e-12), λ, ref))
     @test any(!iszero, λ[2])

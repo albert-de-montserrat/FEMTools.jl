@@ -44,7 +44,6 @@ import FEMTools
         :solve_coupled!,
         :solve_stokes_dyrel!,
         :stokes_material_gradient_3d,
-        :solve_stokes_adjoint_dyrel!,
         :solve_adjoint!,
         :commit_stokes_plastic_history!,
         :LithostaticPressureDR,

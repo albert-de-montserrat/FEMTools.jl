@@ -156,7 +156,6 @@ export StokesMaterial, StokesDR, CellPressureStokesDR, StokesAdjointWorkspace, D
     solve_coupled!,
     solve_stokes_dyrel!,
     stokes_material_gradient_3d,
-    solve_stokes_adjoint_dyrel!,
     solve_adjoint!,
     update_stokes_current_stress!,
     commit_stokes_plastic_history!

@@ -1,80 +1,6 @@
-"""
-    solve_stokes_adjoint_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                                phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                                objective_v, λv, λP, backend, workgroup;
-                                v_nodes, kwargs...) -> NamedTuple
-    solve_stokes_adjoint_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                                phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                                objective_vx, objective_vy, λvx, λvy, λP,
-                                backend, workgroup; vx_nodes, vy_nodes, kwargs...)
-
-Solve the discrete Stokes adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` with the same
-Powell-Hestenes / DYREL iteration used by [`solve_stokes_dyrel!`](@ref), and
-store the adjoint fields in `λv` (one array per direction) and `λP`, modified in
-place. The second form is the plane-strain spelling with the components passed
-separately.
-
-The adjoint is assembled on the *same* mixed velocity/pressure spaces, quadrature,
-and element operators as the forward problem and transposed exactly. With this
-method's sign convention, the total derivative is `∂J/∂m + λᵀ ∂R/∂m`, where `R`
-is the residual the forward solve drives to zero with the Powell-Hestenes
-augmentation folded into the momentum residual as `Pnum = γP·RP/M_P`. Its forward
-state must already be converged: the transpose Jacobian, its diagonal
-preconditioner, and λmax are frozen at that state, so only λmin (hence the
-Chebyshev pair) is re-estimated during the solve.
-
-`objective_v` carries the velocity part of `∂J/∂u`, one array per direction (the
-consistently assembled objective load); the pressure adjoint has no explicit
-objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
-forward solve. Homogeneous Dirichlet conditions are applied to each adjoint
-velocity component on the matching entry of `v_nodes`.
-
-The input values of `λv` and `λP` are preserved as the initial iterate.
-Pass zero-filled arrays for a cold solve, or fields from the previous design
-iteration to warm-start an optimization loop.
-
-Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
-keyword to reuse mesh-sized scratch across solves. The default constructs a
-fresh workspace for compatibility. A workspace used with `operator = :enzyme`
-must have been constructed with `enzyme=true`.
-
-Because the forward state is frozen, the adjoint residual is affine in `λ` with a
-constant operator, and `operator` chooses how that operator is applied:
-
-- `:blocks` (the default) assembles it once as per-element blocks and applies
-  them as dense element products, so no rheology is evaluated and no primal
-  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
-  for the blocks and their memory cost. It is the only operator in three
-  dimensions, and the only one that supports a plastic model together with a
-  nonzero fluid pressure `dr.Pf`.
-- `:matrix_free` stores nothing per element and rebuilds the same products by
-  forward-mode directional differentiation on every apply, at roughly three
-  element residual evaluations apiece. It requires `plastic === nothing`, whose
-  symmetric tangent is what lets a directional derivative stand in for a
-  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
-- `:enzyme` also stores nothing per element and rebuilds the products by
-  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
-  three and the only one that handles a plastic tangent without stored blocks.
-
-With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
-largest eigenvalue of the preconditioned velocity block is measured by power
-iteration rather than bounded by Gershgorin row sums. The bound is correct but
-loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
-
-Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
-inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
-`err`, `err_v`, `err_P`, `converged`, the `λmax` actually used alongside the
-`λmax_gershgorin` bound and the `λmax_iterations` spent measuring it, and (when
-`collect_history`) `history`.
-
-All arrays read or written by kernels—including `mesh_stokes` connectivity,
-`geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
-arrays—must reside on `backend`. Construct unstructured meshes with
-`Mesh(backend, coords, el2n, element_v)`; a `MixedMesh` built from it computes
-`mesh.geometry` on the same backend. The Enzyme transpose assemblers execute on the backend inferred
-from their output buffers.
-"""
-function solve_stokes_adjoint_dyrel!(
+# Positional core of `solve_adjoint!`; `v_nodes` holds one constrained node set
+# per velocity component, and `M_P = dr.M_P` and `γP` must match the forward solve.
+function _solve_stokes_adjoint_dyrel!(
         dr::StokesDR{<:Any, D},
         mesh_stokes,
         geo_v,
@@ -398,19 +324,6 @@ function solve_stokes_adjoint_dyrel!(
     )
 end
 
-solve_stokes_adjoint_dyrel!(
-    dr::StokesDR{<:Any, 2}, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-    objective_vx::AbstractVector, objective_vy::AbstractVector,
-    λvx::AbstractVector, λvy::AbstractVector, λP, backend, workgroup;
-    vx_nodes, vy_nodes, kwargs...,
-) = solve_stokes_adjoint_dyrel!(
-    dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-    (objective_vx, objective_vy), (λvx, λvy), λP, backend, workgroup;
-    v_nodes = (vx_nodes, vy_nodes), kwargs...,
-)
-
 """
     solve_adjoint!(dr::StokesDR, mesh::MixedMesh, bc_v; dt, objective_v, λv, λP,
                    tolerance=1e-6, max_iterations=50_000, check_interval=50,
@@ -428,11 +341,54 @@ conditions are homogeneous, so its values are not used.
 `objective_v` holds the velocity part of `∂J/∂u`, one array per direction, and
 `λv` and `λP` are the adjoint outputs. Their input values are the initial iterate:
 pass zeros for a cold solve or the previous design iteration's fields to warm-start.
-`tolerance`, `max_iterations`, and `check_interval` map to `adjoint_tol`,
-`total_iterMax`, and `ncheck` of [`solve_stokes_adjoint_dyrel!`](@ref), whose other
-keywords (`operator`, `workspace`, `measure_λmax`, …) pass through. Returns its
-statistics, which include `converged`, `iterations`, `residual`, and `history`; a
-solve that does not converge throws unless `throw_on_failure=false`.
+`tolerance`, `max_iterations`, and `check_interval` set the adjoint tolerance,
+the cumulative inner-iteration budget, and the convergence-check cadence;
+`iterMax`, `max_ph_iterations`, `rel_drop`, `verbose_inner`, `collect_history`,
+`operator`, `workspace`, and `measure_λmax` are also accepted. Returns
+statistics with `itPH`, `iter`, `err`, `err_v`, `err_P`, `converged`,
+`iterations`, `residual`, the `λmax` used alongside the `λmax_gershgorin` bound
+and the `λmax_iterations` spent measuring it, and `history`; a solve that does
+not converge throws unless `throw_on_failure=false`.
+
+The adjoint is assembled on the *same* mixed velocity/pressure spaces, quadrature,
+and element operators as the forward problem and transposed exactly. With this
+method's sign convention, the total derivative is `∂J/∂m + λᵀ ∂R/∂m`, where `R`
+is the residual the forward solve drives to zero with the Powell-Hestenes
+augmentation folded into the momentum residual as `Pnum = γP·RP/M_P`. Its forward
+state must already be converged: the transpose Jacobian, its diagonal
+preconditioner, and λmax are frozen at that state, so only λmin (hence the
+Chebyshev pair) is re-estimated during the solve.
+
+Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
+keyword to reuse mesh-sized scratch across solves. The default constructs a
+fresh workspace for compatibility. A workspace used with `operator = :enzyme`
+must have been constructed with `enzyme=true`.
+
+Because the forward state is frozen, the adjoint residual is affine in `λ` with a
+constant operator, and `operator` chooses how that operator is applied:
+
+- `:blocks` (the default) assembles it once as per-element blocks and applies
+  them as dense element products, so no rheology is evaluated and no primal
+  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
+  for the blocks and their memory cost. It is the only operator in three
+  dimensions, and the only one that supports a plastic model together with a
+  nonzero fluid pressure `dr.Pf`.
+- `:matrix_free` stores nothing per element and rebuilds the same products by
+  forward-mode directional differentiation on every apply, at roughly three
+  element residual evaluations apiece. It requires `plastic === nothing`, whose
+  symmetric tangent is what lets a directional derivative stand in for a
+  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
+- `:enzyme` also stores nothing per element and rebuilds the products by
+  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
+  three and the only one that handles a plastic tangent without stored blocks.
+
+With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
+largest eigenvalue of the preconditioned velocity block is measured by power
+iteration rather than bounded by Gershgorin row sums. The bound is correct but
+loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
+
+Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
+inner dynamic-relaxation trace.
 
 The adjoint is exact only in the incompressible gauge `K = Inf`; see the solver
 notes for the finite-storage approximation.
@@ -462,7 +418,7 @@ function solve_adjoint!(
         )
     )
     cache = _mesh_geometry(mesh)
-    stats = solve_stokes_adjoint_dyrel!(
+    stats = _solve_stokes_adjoint_dyrel!(
         dr, mesh, cache.geo_v, cache.geo_P, cache.element_v, cache.element_P,
         phases_v, phases_P, τ_old, plastic, dr.G, dt, dr.γP,
         objective_v, λv, λP, KA.get_backend(mesh.coords), workgroup;

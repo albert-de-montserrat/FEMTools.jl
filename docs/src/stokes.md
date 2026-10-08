@@ -510,7 +510,6 @@ solve_coupled!
 solve!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
 solve_stokes_dyrel!
 solve_adjoint!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
-solve_stokes_adjoint_dyrel!
 solve!(::CellPressureStokesDR, ::Mesh, ::NTuple{3, DirichletBoundaryCondition})
 solve_adjoint!(::CellPressureStokesDR, ::Mesh, ::NTuple{3, DirichletBoundaryCondition})
 stokes_material_gradient_3d

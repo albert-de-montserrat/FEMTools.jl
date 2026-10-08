@@ -621,7 +621,7 @@ set of constrained velocity nodes per direction in `v_nodes`, e.g.
 The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
 boundary-value buffers that would otherwise be allocated on every adjoint
 solve. Pass it as the `workspace` keyword of
-[`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
+[`solve_adjoint!`](@ref) to reuse those buffers across an
 optimization loop. Set `enzyme=true` when the workspace will be used with
 `operator = :enzyme`, which is available in two dimensions only; the block and
 matrix-free paths do not allocate those additional reverse-mode buffers.
