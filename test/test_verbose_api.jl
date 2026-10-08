@@ -26,7 +26,8 @@ function _thermal_case()
     mesh = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element, (1, 1))
     geo = _thermal_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
     dr = ThermalDiffusionDR(
-        backend, mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,);
+        backend, mesh.nnodes,
+        ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,));
         ϵ = 2.0,
     )
     fill!(dr.source, 1.0)

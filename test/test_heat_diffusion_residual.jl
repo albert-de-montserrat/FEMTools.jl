@@ -64,7 +64,7 @@ end
     element = ReferenceElement(QuadraticElement{3, 11, Float64})
     coords, el2n, groups = build_tet11_inclusion_mesh()
     mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     hot = Set(el2n[:, findall(==(2), groups.phase)])
     copyto!(thermal.T, [n in hot ? 1.0 : 0.0 for n in eachindex(coords)])
     copyto!(thermal.T0, thermal.T)

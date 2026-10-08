@@ -33,17 +33,20 @@ for FP in (FP32, FP64)
         # --- construction ---
 
         @testset "default constructor (CPU, $FP)" begin
-            dr = ThermalDiffusionDR(CPU(), nnodes, k, Cp, ρ0, α, K)
+            dr = ThermalDiffusionDR(CPU(), nnodes, ThermalMaterial(; k, Cp, ρ0, α, K))
             @test dr isa ThermalDiffusionDR{nphases}
         end
 
         @testset "convenience constructor (no backend, $FP)" begin
-            dr = ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K)
+            dr = ThermalDiffusionDR(nnodes, ThermalMaterial(; k, Cp, ρ0, α, K))
             @test dr isa ThermalDiffusionDR{nphases}
         end
 
-        dr = ThermalDiffusionDR(CPU(), nnodes, k, Cp, ρ0, α, K;
-                                 CFL=FP(0.98), c_fact=FP(0.9), ϵ=FP(1e-6))
+        dr = ThermalDiffusionDR(
+            CPU(), nnodes,
+            ThermalMaterial(; k, Cp, ρ0, α, K);
+            CFL=FP(0.98), c_fact=FP(0.9), ϵ=FP(1e-6),
+        )
 
         # --- solver scalar parameters ---
 
@@ -54,8 +57,11 @@ for FP in (FP32, FP64)
         end
 
         @testset "custom solver parameters" begin
-            dr2 = ThermalDiffusionDR(nnodes, k, Cp, ρ0, α, K;
-                                      CFL=FP(0.5), c_fact=FP(0.75), ϵ=FP(1e-8))
+            dr2 = ThermalDiffusionDR(
+                nnodes,
+                ThermalMaterial(; k, Cp, ρ0, α, K);
+                CFL=FP(0.5), c_fact=FP(0.75), ϵ=FP(1e-8),
+            )
             @test dr2.CFL    === FP(0.5)
             @test dr2.c_fact === FP(0.75)
             @test dr2.ϵ      === FP(1e-8)

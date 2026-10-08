@@ -213,6 +213,9 @@ lithostatic, and mixed Stokes states from meshes. `solve_stokes_dyrel!` keeps
 only its mesh-owned forms; the array-positional core is internal
 (`_solve_stokes_dyrel!`, per-direction node sets positional) and its
 `MixedMeshCache` and split-component forwarding methods are removed.
+State constructors take a typed material: the property-positional
+`ThermalDiffusionDR`, `LithostaticPressureDR`, and `StokesDR` forms are removed,
+and `StokesMaterial` accepts any two- or three-element gravity collection.
 
 Remove forwarding layers made unnecessary by the new API. Derive backend and
 sizes once at the owning boundary. Avoid rebuilding or passing reference

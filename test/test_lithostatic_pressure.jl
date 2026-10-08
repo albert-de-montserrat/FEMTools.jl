@@ -121,8 +121,11 @@ for FP in (FP32, FP64)
             @test dr isa LithostaticPressureDR{nphases}
         end
 
-        dr = LithostaticPressureDR(CPU(), nnodes, ρ0, α, K;
-                                    CFL=FP(0.98), c_fact=FP(0.9), ϵ=FP(1e-6))
+        dr = LithostaticPressureDR(
+            CPU(), nnodes,
+            ThermalMaterial(; ρ0, α, K);
+            CFL=FP(0.98), c_fact=FP(0.9), ϵ=FP(1e-6),
+        )
 
         @testset "default solver parameters" begin
             @test dr.CFL    === FP(0.98)
@@ -131,8 +134,11 @@ for FP in (FP32, FP64)
         end
 
         @testset "custom solver parameters" begin
-            dr2 = LithostaticPressureDR(nnodes, ρ0, α, K;
-                                         CFL=FP(0.5), c_fact=FP(0.75), ϵ=FP(1e-8))
+            dr2 = LithostaticPressureDR(
+                nnodes,
+                ThermalMaterial(; ρ0, α, K);
+                CFL=FP(0.5), c_fact=FP(0.75), ϵ=FP(1e-8),
+            )
             @test dr2.CFL    === FP(0.5)
             @test dr2.c_fact === FP(0.75)
             @test dr2.ϵ      === FP(1e-8)

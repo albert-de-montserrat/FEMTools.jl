@@ -137,17 +137,9 @@ function main(;
     (; geo_v) = mesh_stokes.geometry
 
     dr = StokesDR(
-        backend,
-        mesh_stokes.nnodes,
-        mesh_stokes.nnodesP,
-        η, ηb, α;
-        ρ0,
-        K,
-        G,
-        g,
-        Tref,
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
-        stress_size = (NQ_v, mesh_stokes.nels),
+        backend, mesh_stokes.nnodes, mesh_stokes.nnodesP,
+        StokesMaterial(; η, ηb, α, ρ0, K, G, g, Tref);
+        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9, stress_size = (NQ_v, mesh_stokes.nels),
     )
     τ = (dr.τ.xx, dr.τ.yy, dr.τ.xy)
     τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)

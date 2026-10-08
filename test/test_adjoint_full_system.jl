@@ -68,7 +68,8 @@ using DomainSets: ×
 
     function setup(K, G, ηb, augmented)
         dr = StokesDR(
-            backend, nn, nnP, η, ηb, α; ρ0 = (1.0, 2.0), K, g, Tref,
+            backend, nn, nnP,
+            StokesMaterial(; η, ηb, α, ρ0 = (1.0, 2.0), K, g, Tref);
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, nels),
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, nels), 3)
@@ -161,7 +162,8 @@ end
 
     function operator(K, G)
         dr = StokesDR(
-            backend, nn, nnP, η, (Inf, Inf), α; ρ0 = (1.0, 2.0), K, g, Tref,
+            backend, nn, nnP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α, ρ0 = (1.0, 2.0), K, g, Tref);
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, nels),
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, nels), 3)

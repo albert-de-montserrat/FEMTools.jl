@@ -66,8 +66,8 @@ _stokes_geo_weights(dΩ) = (dΩ,)
 end
 
 @testset "StokesDR spatial dimension follows gravity" begin
-    dr2 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,))
-    dr3 = StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = (0.0, 0.0, -9.81))
+    dr2 = StokesDR(CPU(), 9, 4, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,)))
+    dr3 = StokesDR(CPU(), 9, 4, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), g = (0.0, 0.0, -9.81)))
 
     @test dr2 isa StokesDR{1, 2}
     @test dr3 isa StokesDR{1, 3}
@@ -100,8 +100,8 @@ end
     @test all(iszero, dr3.v.z) && all(iszero, dr3.τ.yz)
 
     # gravity may arrive as any 2- or 3-element container
-    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, -1.0]) isa StokesDR{1, 2}
-    @test StokesDR(CPU(), 9, 4, (1.0,), (1.0,), (0.0,); g = SA[0.0, 0.0, -1.0]) isa StokesDR{1, 3}
+    @test StokesDR(CPU(), 9, 4, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), g = SA[0.0, -1.0])) isa StokesDR{1, 2}
+    @test StokesDR(CPU(), 9, 4, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), g = SA[0.0, 0.0, -1.0])) isa StokesDR{1, 3}
 
     # a 3-D state is built from a 3-D material too
     @test StokesDR(CPU(), 9, 4, StokesMaterial(; g = (0.0, 0.0, -1.0))) isa StokesDR{1, 3}
@@ -136,7 +136,7 @@ end
         η = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
         α = NTuple{2, FP}((0.0, 0.0))
-        dr = StokesDR(CPU(), 10, 12, η, ηb, α)
+        dr = StokesDR(CPU(), 10, 12, StokesMaterial(; η, ηb, α))
 
         @test dr.ρ0 == NTuple{2, FP}((1.0, 1.0))
         @test dr.K == NTuple{2, FP}((Inf, Inf))
@@ -186,7 +186,7 @@ end
         η = NTuple{2, FP}((1.0, 10.0))
         ηb = NTuple{2, FP}((1.0, 10.0))
         α = NTuple{2, FP}((0.0, 0.0))
-        dr = StokesDR(CPU(), 10, 12, η, ηb, α; stress_size = (3, 4))
+        dr = StokesDR(CPU(), 10, 12, StokesMaterial(; η, ηb, α); stress_size = (3, 4))
 
         @test size(dr.τ.xx) == (3, 4)
         @test size(dr.τ.yy) == (3, 4)
@@ -200,8 +200,9 @@ end
         @test dr.plastic_history === nothing
 
         drh = StokesDR(
-            CPU(), 10, 12, η, ηb, α;
-            plastic_history_size = (3, 4)
+            CPU(), 10, 12,
+            StokesMaterial(; η, ηb, α);
+            plastic_history_size = (3, 4),
         )
         @test size(drh.plastic_history.γ) == (3, 4)
         @test size(drh.plastic_history.θ) == (3, 4)
@@ -209,7 +210,7 @@ end
         @test all(iszero, Array(drh.plastic_history.γ))
         @test all(iszero, Array(drh.plastic_history.θ))
 
-        dr3 = StokesDR(CPU(), 10, 12, η, ηb, α; g = (FP(0), FP(0), FP(0)), stress_size = (3, 4))
+        dr3 = StokesDR(CPU(), 10, 12, StokesMaterial(; η, ηb, α, g = (FP(0), FP(0), FP(0))); stress_size = (3, 4))
         @test size(dr3.τ.xy) == (3, 4)
         @test size(dr3.τ.II) == size(dr3.τ_old.II) == (0, 0)
     end
@@ -224,7 +225,7 @@ end
         K = NTuple{2, FP}((1.0e10, 2.0e10))
         g = (FP(0), FP(-9.81))
         Tref = FP(1600)
-        dr = StokesDR(CPU(), 10, 12, η, ηb, α; ρ0, K, g, Tref)
+        dr = StokesDR(CPU(), 10, 12, StokesMaterial(; η, ηb, α, ρ0, K, g, Tref))
 
         @test dr.ρ0 == ρ0
         @test dr.K == K
@@ -424,9 +425,9 @@ end
     mesh = MixedMesh(mesh_v, element_P; workgroup = 1)
     nq = length(element_v.integration_points.ω)
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
-        K = (100.0,), G = (Inf,), g = (0.0, 0.0),
-        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), K = (100.0,), G = (Inf,), g = (0.0, 0.0));
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels),
     )
     dr.v.x .= [10.0 * c[1] for c in mesh.coords]
     dr.v.y .= 0.0
@@ -477,9 +478,9 @@ end
     mesh = MixedMesh(Mesh(backend, coords, el2n, element_v; workgroup = 1), element_P)
     nq = length(element_v.integration_points.ω)
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,);
-        K = (100.0,), G = (Inf,), g = (0.0, 0.0, 0.0),
-        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), K = (100.0,), G = (Inf,), g = (0.0, 0.0, 0.0));
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels),
     )
     dr.v.x .= [10.0 * c[1] for c in mesh.coords]
     dr.P .= -20.0
@@ -511,9 +512,9 @@ end
     nq = length(element_v.integration_points.ω)
     Δt, K, ε̇ = 1.0, 4.0, 0.1
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0,), (K,), (0.0,);
-        K = (K,), G = (1.0,), g = (0.0, 0.0),
-        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η = (1.0,), ηb = (K,), α = (0.0,), K = (K,), G = (1.0,), g = (0.0, 0.0));
+        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels),
     )
     cap = DruckerPragerCap(
         (deg2rad(30.0),), (deg2rad(5.0),), (1.0,), (-0.5,), (0.1,), (K,);
@@ -594,9 +595,9 @@ end
     # the effective pressure P − Pf and no fluid pressure.
     function update(P_total, P_fluid)
         dr = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, (1.0,), (K,), (0.0,);
-            K = (K,), G = (1.0,), g = (0.0, 0.0),
-            stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels)
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η = (1.0,), ηb = (K,), α = (0.0,), K = (K,), G = (1.0,), g = (0.0, 0.0));
+            stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels),
         )
         dr.v.x .= [ε̇ * c[1] for c in coords]
         fill!(dr.P, P_total)
@@ -1018,7 +1019,7 @@ end
     geo_P = _stokes_geo_P(mesh.coords, mesh.el2n, mesh.nels, element_v)
 
     γP = zeros(FP, mesh.nnodesP)
-    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (6.0, 99.0), (1.0, 1.0), (0.0, 0.0))
+    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, StokesMaterial(; η = (6.0, 99.0), ηb = (1.0, 1.0), α = (0.0, 0.0)))
 
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
@@ -1038,7 +1039,7 @@ end
     element_P = ReferenceElement(LinearElement{3, 4, Float64})
     coords, el2n, _ = build_tet11_inclusion_mesh()
     mesh = MixedMesh(Mesh(CPU(), coords, el2n, element_v; workgroup = 1), element_P)
-    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, (1.0,), (1.0,), (0.0,); g = (0.0, 0.0, 0.0))
+    dr = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), g = (0.0, 0.0, 0.0)))
     γP = zeros(mesh.nnodesP)
 
     assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 2.0, 1.0; workgroup = 1)

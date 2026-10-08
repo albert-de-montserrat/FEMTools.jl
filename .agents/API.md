@@ -383,7 +383,9 @@ These dispatch on mesh type, infer backend and field sizes, and reject material
 precision mismatches. Stokes also checks gravity dimension and requires cached
 geometry, defaulting stress history to velocity quadrature points × elements.
 Explicit stress layouts (including `:none`) and count-based constructors remain
-available for custom layouts; maintained examples and benchmarks use the mesh forms. Dirichlet construction accepts
+available for custom layouts; maintained examples and benchmarks use the mesh forms.
+Every state constructor takes a typed material (`ThermalMaterial` or
+`StokesMaterial`); property-positional tuple forms do not exist. Dirichlet construction accepts
 `(nodes, values)`, borrows both arrays, and rejects unequal lengths in both forms.
 
 ## Owned pressure scaling

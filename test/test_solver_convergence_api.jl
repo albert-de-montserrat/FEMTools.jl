@@ -75,7 +75,7 @@ end
     empty_i = Int32[]
     empty_v = Float64[]
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,); ϵ = 0.0)
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)); ϵ = 0.0)
     fill!(thermal.source, 1.0)
     copyto!(thermal.T0, thermal.T)
     thermal_err = _caught_error() do
@@ -89,7 +89,7 @@ end
     @test thermal_err isa ErrorException
     @test occursin("Thermal diffusion DR solver did not converge", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,); ϵ = 0.0)
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)); ϵ = 0.0)
     litho_err = _caught_error() do
         FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
@@ -111,13 +111,13 @@ end
     mesh = Mesh(CPU(), coords, reshape(Int32[1, 2, 3], 3, 1), element; workgroup = 1)
     bc = DirichletBoundaryCondition(Int32[], Float64[])
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     thermal_err = _caught_error() do
         solve!(thermal, mesh, bc; dt = 1.0, workgroup = 1, verbose = false)
     end
     @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     litho_err = _caught_error() do
         solve!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
     end
@@ -129,7 +129,7 @@ end
     empty_i = Int32[]
     empty_v = Float64[]
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     thermal_err = _caught_error() do
         FEMTools._solve_thermal!(
             thermal, 1.0, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
@@ -139,7 +139,7 @@ end
     @test thermal_err isa ErrorException
     @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     litho_err = _caught_error() do
         FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
@@ -203,9 +203,9 @@ end
 
     function solve(; measure_λmax)
         dr = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
-            ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0);
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
         )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
@@ -258,9 +258,9 @@ end
 
     function solve(; ϵ_tol, total_iterMax)
         dr = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
-            ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0);
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
         )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
@@ -301,9 +301,9 @@ end
     nq = length(element_v.integration_points.ω)
     K = 10.0
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0, 1.0), (Inf, Inf), (0.0, 0.0);
-        ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0),
-        stress_size = (nq, mesh.nels)
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η = (1.0, 1.0), ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0));
+        stress_size = (nq, mesh.nels),
     )
     γP = zeros(Float64, mesh.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(

@@ -15,9 +15,9 @@ and 241 methods. Loading optional extensions can add methods.
 
 | Current family | Methods | Classification and proposed destination |
 | --- | ---: | --- |
-| `ThermalDiffusionDR` | 4 | Normal material construction; replace expanded property/count calls with mesh-aware construction |
-| `LithostaticPressureDR` | 4 | Same construction migration, using thermal material for EOS properties |
-| `StokesDR` | 4 | Mixed-state construction; infer layout and stress sizes from mesh |
+| `ThermalDiffusionDR` | 4 | Expanded property forms removed; mesh form plus count + `ThermalMaterial` forms remain |
+| `LithostaticPressureDR` | 4 | Same, using `ThermalMaterial` for EOS properties |
+| `StokesDR` | 4 | Expanded property forms removed; mesh form plus count + `StokesMaterial` forms remain |
 | `solver!` | 4 | Two scalar high-level and two expanded methods; canonical `solve!`, separate internal mechanics |
 | `solve_stokes_dyrel!` | 6 | Mixed-state and specialized cell-pressure solving; canonical dispatch-based `solve!`, remove redundant forwarding variants |
 | `solve_stokes_adjoint_dyrel!` | 3 | Advanced adjoint operation; mesh-owned `solve_adjoint!`, preserve explicit outputs and warm starts |
