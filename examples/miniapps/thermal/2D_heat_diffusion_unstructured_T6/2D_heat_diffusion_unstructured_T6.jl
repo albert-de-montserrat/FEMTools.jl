@@ -9,6 +9,7 @@ using GLMakie
 using GeometryBasics
 using TimerOutputs
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 include(joinpath(@__DIR__, "..", "..", "..", "gmsh_meshing.jl"))
 
@@ -116,7 +117,7 @@ function main(; max_area=1e5 / 2)
     hole_dof_vecs = [fill(T_holes[h], length(hole_nodes_per_hole[h]))
                      for h in eachindex(holes)]
 
-    bc_T = DirichletBoundaryCondition(nothing,
+    bc_T = DirichletBoundaryCondition(
         TDev(vcat(top_nodes, bottom_nodes, hole_nodes_per_hole...)), TDev(vcat(
         fill(T_top,    length(top_nodes)),
         fill(T_bottom, length(bottom_nodes)),
@@ -136,8 +137,8 @@ function main(; max_area=1e5 / 2)
     Δt  = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, material;
-                            CFL = 1.25, ϵ = 1e-8)
+    dr = ThermalDiffusionDR(mesh, material;
+                            CFL = 1.0, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
@@ -148,14 +149,14 @@ function main(; max_area=1e5 / 2)
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL = 1.2, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(mesh, material; CFL = 1.2, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
     # P0_litho = Float64[ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     # copyto!(lp_dr.P, P0_litho)
-    bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
+    bc_P = DirichletBoundaryCondition(TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
-    @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 10, Tref = Tref, g = g)
+    @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 10, Tref = Tref, g = g)
     copyto!(dr.P, lp_dr.P)
 
     # VTK setup -----------------------------------------------------------
@@ -230,11 +231,11 @@ function main(; max_area=1e5 / 2)
         fill!(dr.∂T∂τ, 0)
 
         @printf("--- SOLVING TEMPERATURE ---")
-        @timeit to "solver" solver!(dr, Δt, mesh, bc_T; workgroup, ncheck = 100, Tref = Tref)
+        @timeit to "solver" solve!(dr, mesh, bc_T; dt = Δt, workgroup, check_interval = 100, Tref = Tref)
         copyto!(lp_dr.T, dr.T)
     
         @printf("--- SOLVING LITHOSTATIC PRESSURE ---")
-        @timeit to "litho P init" solver!(lp_dr, mesh, bc_P; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
+        @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 50, verbose = false, Tref = Tref, g = g)
         copyto!(dr.P, lp_dr.P)
 
         t_phys += Δt

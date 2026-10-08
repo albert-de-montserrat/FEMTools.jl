@@ -125,14 +125,14 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(mesh_litho, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (-c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
     litho_tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes_litho = Int32[i for i in eachindex(coords_litho) if abs(coords_litho[i][2]) ≤ litho_tol]
-    bc_litho = DirichletBoundaryCondition(nothing, top_nodes_litho, zeros(Float64, length(top_nodes_litho)))
-    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
+    bc_litho = DirichletBoundaryCondition(top_nodes_litho, zeros(Float64, length(top_nodes_litho)))
+    solve!(lp_dr, mesh_litho, bc_litho; workgroup, check_interval = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)
@@ -157,34 +157,16 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
 
     bc_vx_vals = zeros(Float64, length(vx_nodes))
     bc_vy_vals = zeros(Float64, length(vy_nodes))
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
-
-    # FEM pressure residuals are assembled in weak form:
-    #
-    #     RP_i = ∫ N_i (-∇⋅v) dΩ
-    #
-    # The Arrow-Hurwicz pressure step and numerical pressure
-    # correction are calibrated for that pointwise residual.  If we feed the weak
-    # residual directly into Pnum or P += γP*RP/M_P, the update is scaled by element
-    # volume and pressure convergence stalls/refines incorrectly.
-    #
-    # Use the helper to assemble both:
-    #   dr.M_P = ∫ N_i dΩ
-    #   γP      = mean-viscosity pressure update scale
-    # Then γP * RP/M_P matches the pointwise FD-style pressure correction without
-    # letting phase-local viscosity extremes set the pressure step.
+    # The solve scales the pressure update with the mean viscosity, not the
+    # phase-local viscosities it solves for, so extremes do not set the step.
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δt; workgroup,
-        phases_v = phases_solve, η = ηγP,
-    )
 
     iterMax       = 50_000   # max inner DR iterations per PH step
     total_iterMax = 50_000   # max total inner DR iterations
@@ -198,13 +180,14 @@ function main(; max_area = 1 / (1 * 64^2), show_plot = true)
     out_dir = joinpath(@__DIR__, "output_stokes")
     mkpath(out_dir)
 
-    solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
+    solve_stats = solve!(
+        dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
+        pressure_factor = γfact, scaling_viscosity = ηγP,
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
-        ncheck,
-        ϵ_tol,
+        check_interval = ncheck,
+        tolerance = ϵ_tol,
         iterMax,
-        total_iterMax,
+        max_iterations = total_iterMax,
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,

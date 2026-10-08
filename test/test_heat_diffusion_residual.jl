@@ -64,14 +64,14 @@ end
     element = ReferenceElement(QuadraticElement{3, 11, Float64})
     coords, el2n, groups = build_tet11_inclusion_mesh()
     mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     hot = Set(el2n[:, findall(==(2), groups.phase)])
     copyto!(thermal.T, [n in hot ? 1.0 : 0.0 for n in eachindex(coords)])
     copyto!(thermal.T0, thermal.T)
     fixed = Int32.(vcat(groups.surface, groups.bottom))
-    bc = DirichletBoundaryCondition(nothing, fixed, zeros(length(fixed)))
+    bc = DirichletBoundaryCondition(fixed, zeros(length(fixed)))
 
-    solver!(thermal, 1.0e-4, mesh, bc; workgroup = 1, verbose = false, iterMax = 20_000)
+    solve!(thermal, mesh, bc; dt = 1.0e-4, workgroup = 1, verbose = false, max_iterations = 20_000)
 
     @test all(isfinite, thermal.T)
     @test maximum(abs, thermal.T) < 1.1

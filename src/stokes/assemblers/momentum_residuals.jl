@@ -631,7 +631,7 @@ of `element` and placed on `backend` by [`quadrature_table`](@ref).
 A `Hex27` gradient table is 17.5 kB. Held once and read as an array it costs one
 pointer per launch; carried in the kernel argument pack it is close to the whole
 CUDA parameter budget for a single kernel. Build the bundle once per solve —
-[`Stokes3DWorkspace`](@ref) owns one — rather than per launch.
+[`CellPressureStokesDR`](@ref) owns one — rather than per launch.
 """
 function stokes_tables_3d(backend, element::ReferenceElement)
     return (

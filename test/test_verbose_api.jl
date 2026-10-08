@@ -26,7 +26,8 @@ function _thermal_case()
     mesh = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element, (1, 1))
     geo = _thermal_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
     dr = ThermalDiffusionDR(
-        backend, mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,);
+        backend, mesh.nnodes,
+        ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,));
         ϵ = 2.0,
     )
     fill!(dr.source, 1.0)
@@ -39,10 +40,10 @@ function _thermal_output(; verbose)
     empty_i = Int32[]
     empty_v = Float64[]
     return _capture_stdout() do
-        solver!(
+        FEMTools._solve_thermal!(
             dr, 1.0, mesh, geo, element, empty_i, empty_v, empty_v,
             backend, workgroup;
-            ncheck = 1,
+            check_interval = 1,
             verbose,
         )
     end
@@ -64,7 +65,7 @@ function _stokes_case()
     )
     nq = length(element_v.integration_points.ω)
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
-    bc = DirichletBoundaryCondition(nothing, Γnodes, zeros(Float64, length(Γnodes)))
+    bc = DirichletBoundaryCondition(Γnodes, zeros(Float64, length(Γnodes)))
     return (; dr, mesh, τ_old, γP, Γnodes, bc, workgroup)
 end
 
@@ -88,8 +89,8 @@ function _stokes_split_bc_output()
     coords = Array(mesh.coords)
     vx_nodes = Int32[n for n in Γnodes if coords[n][1] ≈ 0.0 || coords[n][1] ≈ 1.0]
     vy_nodes = Int32[n for n in Γnodes if coords[n][2] ≈ 0.0 || coords[n][2] ≈ 1.0]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, zeros(Float64, length(vx_nodes)))
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(Float64, length(vy_nodes)))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, zeros(Float64, length(vx_nodes)))
+    bc_vy = DirichletBoundaryCondition(vy_nodes, zeros(Float64, length(vy_nodes)))
     return _capture_stdout() do
         solve_stokes_dyrel!(
             dr, mesh, bc_vx, bc_vy, 1.0, γP; τ_old, workgroup,

@@ -11,6 +11,7 @@ using DomainSets
 using DomainSets: ×
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 function element_coordinate_matrix(mesh, local_nodes::NTuple{N}) where {N}
     data = ntuple(Val(3N)) do k

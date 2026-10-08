@@ -101,21 +101,24 @@ parameters and nonpositive `Kb`, and requires positive cap radius at both
 ### Physics states and solvers
 
 - Materials/states: `ThermalMaterial`, `ThermalDiffusionDR`,
-  `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `Stokes3DWorkspace`,
+  `LithostaticPressureDR`, `StokesMaterial`, `StokesDR`, `CellPressureStokesDR`,
   `StokesAdjointWorkspace`, `DruckerPrager`, `DruckerPragerCap`.
-- Scalar entry point: `solver!` for thermal diffusion and lithostatic pressure.
-- Stokes entry points: `solve_stokes_dyrel!`,
-  `solve_coupled_dyrel!`,
-  `solve_stokes_adjoint_dyrel!`, `solve_stokes_3d!`,
-  `solve_stokes_adjoint_3d!`.
+- Scalar entry point: `solve!(dr, mesh, bc; dt, ...)` for thermal diffusion and
+  `solve!(dr, mesh, bc; ...)` for lithostatic pressure (`dt` is thermal only).
+- Stokes entry points: `solve_stokes_dyrel!` (prepared scale),
+  `solve_coupled!`; `solve!`/`solve_adjoint!` for mixed `StokesDR`
+  and Hex27 `CellPressureStokesDR`.
 - Stokes operations: `assemble_viscosity_weighted_pressure_scaling!`,
   `pressure_mass`, `rotate_stress!`, `update_stokes_current_stress!`,
   `stokes_material_gradient_3d`.
 
-`solver!` mutates a scalar problem state and returns `nothing` on convergence;
-non-convergence throws. Stokes solvers mutate caller/state arrays and return a
-statistics `NamedTuple` with explicit convergence status. Preserve this
-difference until a concrete migration justifies changing user code.
+`solve!` mutates a scalar problem state and returns
+`(; converged, iterations, residual, history)`; non-convergence throws unless
+`throw_on_failure=false`. Stokes solvers mutate caller/state arrays and return a
+statistics `NamedTuple` with explicit convergence status. The scalar controls
+are `tolerance` (default `dr.ϵ`), `max_iterations`, `check_interval`, `verbose`,
+and `collect_history`; the Stokes solvers still use `ϵ_tol`, `iterMax`,
+`ncheck` until their entry points migrate.
 
 ### Results and output
 
@@ -203,14 +206,14 @@ forcing; pointwise force densities must be integrated by the caller.
 element = ReferenceElement(LinearElement{2, 3, Float64})
 mesh = Mesh(backend, coords, el2n, element)
 material = ThermalMaterial(; k, Cp, ρ0, α, K)
-dr = ThermalDiffusionDR(backend, mesh.nnodes, material)
-bc = DirichletBoundaryCondition(nothing, nodes, values)
-solver!(dr, Δt, mesh, bc; workgroup)
+dr = ThermalDiffusionDR(mesh, material)
+bc = DirichletBoundaryCondition(nodes, values)
+stats = solve!(dr, mesh, bc; dt = Δt, workgroup)
 T = FEMTools.temperature(dr)
 ```
 
 Lithostatic pressure follows the same mesh/material/BC shape with
-`LithostaticPressureDR` and `solver!(dr, mesh, bc; ...)`.
+`LithostaticPressureDR` and `solve!(dr, mesh, bc; ...)`.
 
 ### Two-dimensional mixed Stokes problem
 
@@ -220,15 +223,16 @@ mesh = MixedMesh(mesh_v, element_P; workgroup)
 material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
 dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
               stress_size=(nq, mesh.nels))
-assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, γfact, Δt)
-stats = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, Δt, γP)
-stats.converged || error("Stokes solve did not converge")
+stats = solve!(dr, mesh, bc_vx, bc_vy; dt = Δt, pressure_factor = γfact)
 ```
 
-`solve_coupled_dyrel!` accepts thermal and 2-D Stokes states plus their meshes
-and boundary conditions. It advances one thermal DR step per inner velocity
-iteration and transfers continuous thermal-node values to the discontinuous
-Stokes pressure DoFs. Its statistics add `err_T` and `thermal_iterations`.
+`solve_coupled!(thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_v; dt, ...)`
+accepts thermal and mixed Stokes states plus their meshes and boundary
+conditions, and forwards to the Stokes `solve!` (owned pressure scaling, common
+controls, `throw_on_failure`). It advances one thermal DR step per inner
+velocity iteration and transfers continuous thermal-node values to the
+discontinuous Stokes pressure DoFs. Its statistics add `err_T` and
+`thermal_iterations`; `converged` requires both criteria.
 
 The expanded positional methods remain available for adjoints and specialized
 workflows, but new normal-user examples should start from the high-level forms.
@@ -313,7 +317,18 @@ is easier to document, optimize, and support across CPU/GPU/MPI backends.
 
 ## Current API pressure points
 
-- `solver!` is shared by two scalar physics states, while Stokes uses named
+[`API_SIMPLIFICATION_PLAN.md`](../API_SIMPLIFICATION_PLAN.md) proposes a
+breaking simplification driven by maintained examples and root benchmarks:
+mesh-aware state construction, solver-owned pressure preparation, canonical
+dispatch-based solver entry points, and removal of redundant call variants.
+Work on `refactor/api-simplification` includes caller inventory, baselines, and
+mesh-based constructors described below. Other proposed signatures remain
+planned changes rather than the current contract.
+All changed code must remain GPU-friendly, with explicit host-only boundaries
+and CPU/CUDA checks with scalar indexing disabled. Preserve numerical layouts
+and explicit accepted-history ownership.
+
+- `solve!` covers the two scalar physics states, while Stokes uses named
   entry points and distinct 2-D/3-D layouts.
 - Advanced Stokes/adjoint workflows still require long positional signatures;
   high-level mesh-owned methods cover only the common paths.
@@ -346,6 +361,76 @@ positive Jacobi weights on Q9 cells, matching the signed pressure basis.
 `err_v_components` tuple while retaining `iter`, `err_v`, and `err_P`. Records
 now include outer and inner checks; pressure norms use the residual assembled
 at that check, and the final outer record matches returned convergence errors.
-Scalar DR `solver!` accepts a caller-owned `history` vector and appends
-`(iter,residual,relative)` at checks, including convergence. Its default is
-`nothing`, so default solves record nothing and still return `nothing`.
+Scalar DR `solve!` with `collect_history=true` returns `(iter,residual,relative)`
+records at checks, including convergence, in `stats.history`; otherwise it is empty.
+
+## Mesh-aware state construction
+
+Material keyword constructors accept scalars and tuples. The first property
+tuple fixes phase count and precision; otherwise the first supplied scalar
+fixes precision. Scalars repeat across phases and omitted properties preserve
+their existing physical defaults in the inferred layout. Supplied floating
+values are not promoted across precision. With no phase properties, Stokes
+uses Tref/gravity precision, or Float64 when nothing is supplied. Gravity
+controls dimension separately from phase count. Empty tuples are rejected.
+Parameterized generated keyword constructors are removed; use the ordinary
+constructor and infer its type. Repository callers used the ordinary form.
+
+Ordinary setup uses `ThermalDiffusionDR(mesh, material)`,
+`LithostaticPressureDR(mesh, material)`, and `StokesDR(mixed_mesh, material)`.
+These dispatch on mesh type, infer backend and field sizes, and reject material
+precision mismatches. Stokes also checks gravity dimension and requires cached
+geometry, defaulting stress history to velocity quadrature points × elements.
+Explicit stress layouts (including `:none`) and count-based constructors remain
+available for custom layouts; maintained examples and benchmarks use the mesh forms.
+Every state constructor takes a typed material (`ThermalMaterial` or
+`StokesMaterial`); property-positional tuple forms do not exist. Dirichlet construction accepts
+`(nodes, values)`, borrows both arrays, and rejects unequal lengths in both forms.
+
+## Owned pressure scaling
+
+`solve!(dr, mesh, bc_v; dt, pressure_factor=50, scaling_viscosity)` (and the
+`bc_vx, bc_vy` form) for 2-D/3-D mixed Stokes assembles `dr.M_P` and the scale `dr.γP` into
+state-owned storage before solving; `dr.γP` replaces the unused Stokes `∂P∂τ`
+field. `scaling_viscosity` defaults to the momentum `viscosity`, so a separate
+scaling viscosity (sinking block) stays explicit. The scale is recomputed per
+call and uses the continuity residual's storage modulus (`K` with `finite_K`,
+else `ηb`); a scale built from `K = Inf` while the residual stores
+`(P−P_old)/(ηb Δt)` with finite `ηb` diverges. It maps `tolerance`, `max_iterations`, `check_interval` to `ϵ_tol`,
+`total_iterMax`, `ncheck`, returns the `solve_stokes_dyrel!` statistics (now with
+`iterations` and `residual` aliases), and throws on non-convergence unless
+`throw_on_failure=false`. `solve_stokes_dyrel!(dr, mesh, bc_v, Δt, γP; ...)` remains the
+low-level form for adjoints, prepared scales, and tests that need failed statistics.
+Its array-positional core is internal (`_solve_stokes_dyrel!`); the `MixedMeshCache`
+and split `bc_vx_vals, bc_vy_vals` forwarding methods are removed.
+
+`solve_adjoint!(dr, mesh, bc_v; dt, objective_v, λv, λP, ...)` (and the
+`bc_vx, bc_vy` form with `objective_vx/vy`, `λvx/vy`) is the mesh-owned 2-D/mixed
+adjoint: geometry and elements come from the mesh and the forward scale `dr.γP`
+is reused, with an `ArgumentError` when it was never assembled. Names map
+`tolerance`→`adjoint_tol`, `max_iterations`→`total_iterMax`,
+`check_interval`→`ncheck`; `λ` inputs are the warm start; non-convergence throws
+unless `throw_on_failure=false`. `solve_adjoint!` is the only public mixed-mesh
+adjoint; its array-positional core is internal (`_solve_stokes_adjoint_dyrel!`).
+A caller that prepares its own scale writes it into `dr.γP` before both solves.
+
+## Hex27 cell-pressure state
+
+`CellPressureStokesDR(mesh::Mesh, material::StokesMaterial; phases)` is the state
+of the purely viscous Hex27/Q2--P1 solver with four pressure modes per cell. It
+owns `v` (`VectorField3D`), `P` (`4 × nels`), borrowed cell `phases` (default
+all ones, validated for length, backend, and range), `η`, `ρ = material.ρ0`,
+`g`, residuals, preconditioner, pressure mass, and reference tables. Finite `G`
+or `K` and nonzero `α` are rejected; `ηb` and `Tref` are ignored.
+
+`solve!(dr, mesh, bc_v::NTuple{3})` keeps the solver's former defaults
+(`tolerance=1e-5`, `max_iterations=3000`, `check_interval=100`,
+`velocity_step=0.6`, `pressure_step=0.2`) and returns `converged`, `iterations`,
+`residual`, `history`, `err_v`, `err_P`, `iter`, `err`, `reached_total_iter`;
+it throws on non-convergence unless `throw_on_failure=false`.
+`solve_adjoint!(dr, mesh, bc_v; objective_v, λv, λP)` writes caller-owned
+outputs and leaves `dr.v`/`dr.P` untouched; `stokes_material_gradient_3d(dr,
+mesh, λv)` reads the forward fields and material from the state. The former
+array-positional `solve_stokes_dyrel!`/`solve_stokes_adjoint_dyrel!` 3-D
+methods, `solve_stokes_3d!`, `solve_stokes_adjoint_3d!`, and
+`Stokes3DWorkspace` no longer exist.

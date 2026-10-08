@@ -8,6 +8,7 @@ using StaticArrays
 using DomainSets
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 function gaussian_temperature(x, t; κ=1.0, center=5.0, σ=0.6, amplitude=10.0)
     width² = σ^2 + 4κ * t

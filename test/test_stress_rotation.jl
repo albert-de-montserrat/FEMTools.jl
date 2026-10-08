@@ -26,7 +26,7 @@ function _rotation_fixture(vfun; Δt = 0.25, τ0 = (0.7, -0.4, 0.3), dim = 2)
     mesh = Mesh(CPU(), coords, el2n, element; workgroup = 1)
     nq = length(element.integration_points.ω)
 
-    dr = StokesDR(CPU(), nv, nv, (1.0,), (1.0,), (0.0,); g, stress_size = (nq, 1))
+    dr = StokesDR(CPU(), nv, nv, StokesMaterial(; η = (1.0,), ηb = (1.0,), α = (0.0,), g); stress_size = (nq, 1))
     for (component, field) in enumerate(Tuple(dr.v))
         copyto!(field, [vfun(c)[component] for c in coords])
     end

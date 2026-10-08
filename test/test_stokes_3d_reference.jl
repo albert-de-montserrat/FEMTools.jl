@@ -154,27 +154,22 @@ end
         assembled = vcat(vec(stack(momentum; dims = 1)), vec(continuity))
         @test assembled ≈ residual rtol = 1e-11 atol = 1e-11
 
-        fixed_nodes = forward.fixed_nodes
-        iterative_velocity = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
-        iterative_pressure = zeros(4, forward.mesh.nels)
-        stats = solve_stokes_3d!(
-            iterative_velocity, iterative_pressure, forward.mesh, forward.cell_phase,
-            forward.η, forward.ρ, forward.g, fixed_nodes,
-            maxiter = 3000,
-        )
+        material = StokesMaterial(; η = forward.η, ρ0 = forward.ρ, g = forward.g)
+        iterative = CellPressureStokesDR(forward.mesh, material; phases = forward.cell_phase)
+        stats = solve!(iterative, forward.mesh, forward.bc_v; max_iterations = 3000, verbose = false)
         @test stats.converged
         @test stats.iterations == stats.iter
-        @test norm(vec(stack(iterative_velocity; dims = 1)) -
+        @test norm(vec(stack(Tuple(iterative.v); dims = 1)) -
                    vec(stack(Tuple(forward.velocity); dims = 1))) < 2e-4
 
         adjoint = solve_sinking_block_adjoint_3d(forward)
         objective_load = vcat(vec(stack(Tuple(adjoint.objective_velocity); dims = 1)), zeros(4forward.mesh.nels))
         iterative_adjoint = ntuple(_ -> zeros(forward.mesh.nnodes), 3)
         iterative_adjoint_pressure = zeros(4, forward.mesh.nels)
-        adjoint_stats = solve_stokes_adjoint_3d!(
-            iterative_adjoint, iterative_adjoint_pressure, Tuple(adjoint.objective_velocity),
-            forward.mesh, forward.cell_phase, forward.η, fixed_nodes,
-            maxiter = 5000,
+        adjoint_stats = solve_adjoint!(
+            iterative, forward.mesh, forward.bc_v;
+            objective_v = adjoint.objective_velocity, λv = iterative_adjoint,
+            λP = iterative_adjoint_pressure, max_iterations = 5000, verbose = false,
         )
         exact_adjoint = zeros(length(rhs))
         exact_adjoint[free] = transpose(A[free, free]) \ objective_load[free]
@@ -185,10 +180,7 @@ end
         @test adjoint_stats.iterations == adjoint_stats.iter
         @test norm(vec(stack(iterative_adjoint; dims = 1)) - vec(exact_adjoint_velocity)) < 2e-4
 
-        gradients = stokes_material_gradient_3d(
-            iterative_velocity, iterative_adjoint, forward.mesh, forward.cell_phase,
-            forward.η, forward.ρ, forward.g,
-        )
+        gradients = stokes_material_gradient_3d(iterative, forward.mesh, iterative_adjoint)
         nphases = length(forward.η)
         for p in 1:nphases
             @test gradients.density_gradient[p] ≈ adjoint.density_gradient[p] rtol = 2e-3

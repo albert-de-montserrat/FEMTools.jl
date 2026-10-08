@@ -34,7 +34,7 @@ using DomainSets: ×
     @test maximum(γ) > 10.0
 
     boundary = FEMTools.rectangle_boundary_nodes(coords, 0.0, 1.0, 0.0, 1.0)
-    bc = ntuple(_ -> DirichletBoundaryCondition(nothing, boundary, zeros(length(boundary))), 2)
+    bc = ntuple(_ -> DirichletBoundaryCondition(boundary, zeros(length(boundary))), 2)
     # Equivalence with the existing gravitational assembly checks load sign and
     # its use in both the outer and inner residual loops.
     gravity_material = StokesMaterial(; η = (2.0,), ηb = (Inf,), G = (Inf,), α = (0.0,), g = (0.0, 1.0))
@@ -63,6 +63,27 @@ using DomainSets: ×
     @test_throws ArgumentError solve_stokes_dyrel!(dr, mesh, bc, 1.0, γ; viscosity = -constant)
     @test_throws ArgumentError solve_stokes_dyrel!(dr, mesh, bc, 1.0, γ; body_force = (fill(NaN, mesh.nnodes), zeros(mesh.nnodes)))
     @test_throws DimensionMismatch solve_stokes_dyrel!(dr, mesh, bc, 1.0, γ; body_force = (zeros(1), zeros(1)))
+
+    # The state-owned scale reproduces the caller-prepared one exactly, and a
+    # separate scaling viscosity changes only the scale, not the momentum solve.
+    manual = (copy(dr.v.x), copy(dr.v.y), copy(dr.P))
+    fill!(dr.v.x, 0); fill!(dr.v.y, 0); fill!(dr.P, 0)
+    owned = solve!(dr, mesh, bc; dt = 1.0, pressure_factor = 50.0,
+        viscosity = constant, body_force = load, check_interval = 10, tolerance = 1e-11, verbose = false)
+    @test owned.converged && owned.iterations == owned.iter && owned.residual == owned.err_abs
+    @test dr.γP == γ
+    @test (dr.v.x, dr.v.y, dr.P) == manual
+    solve!(dr, mesh, bc; dt = 1.0, pressure_factor = 50.0, viscosity = constant,
+        scaling_viscosity = varying, body_force = load, check_interval = 10, tolerance = 1e-11, verbose = false)
+    @test maximum(dr.γP) > maximum(γ)
+
+    # A budget too small to converge throws by default and reports failure on request.
+    fill!(dr.v.x, 0); fill!(dr.v.y, 0); fill!(dr.P, 0)
+    @test_throws ErrorException solve!(dr, mesh, bc; dt = 1.0, viscosity = constant,
+        body_force = load, check_interval = 1, max_iterations = 2, verbose = false)
+    failed = solve!(dr, mesh, bc; dt = 1.0, viscosity = constant, body_force = load,
+        check_interval = 1, max_iterations = 2, verbose = false, throw_on_failure = false)
+    @test !failed.converged
 end
 
 @testset "Q2/P1 pressure topology and hydrostatics" begin
@@ -80,7 +101,7 @@ end
     @test sum(mesh.geometry.geo_P[1]) ≈ 0.25
     coords = Array(mesh.coords)
     nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, 1.0, 0.0, 1.0)
-    bc = ntuple(_ -> DirichletBoundaryCondition(nothing, nodes, zeros(length(nodes))), 2)
+    bc = ntuple(_ -> DirichletBoundaryCondition(nodes, zeros(length(nodes))), 2)
     stats = solve_stokes_dyrel!(dr, mesh, bc, 1.0, γ; ncheck = 10, ϵ_tol = 1e-11, collect_history = true, verbose = false)
     @test stats.converged
     @test first(stats.history).iter == 0

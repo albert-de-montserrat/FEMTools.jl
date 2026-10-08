@@ -75,26 +75,26 @@ end
     empty_i = Int32[]
     empty_v = Float64[]
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,); ϵ = 0.0)
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)); ϵ = 0.0)
     fill!(thermal.source, 1.0)
     copyto!(thermal.T0, thermal.T)
     thermal_err = _caught_error() do
-        solver!(
+        FEMTools._solve_thermal!(
             thermal, 1.0, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
-            ncheck = 1,
-            iterMax = 1,
+            check_interval = 1,
+            max_iterations = 1,
             verbose = false,
         )
     end
     @test thermal_err isa ErrorException
     @test occursin("Thermal diffusion DR solver did not converge", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,); ϵ = 0.0)
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)); ϵ = 0.0)
     litho_err = _caught_error() do
-        solver!(
+        FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
-            ncheck = 1,
-            iterMax = 1,
+            check_interval = 1,
+            max_iterations = 1,
             verbose = false,
             g = SVector(0.0, -1.0),
         )
@@ -109,17 +109,17 @@ end
         SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0), SVector(2.0, 2.0),
     ]
     mesh = Mesh(CPU(), coords, reshape(Int32[1, 2, 3], 3, 1), element; workgroup = 1)
-    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+    bc = DirichletBoundaryCondition(Int32[], Float64[])
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     thermal_err = _caught_error() do
-        solver!(thermal, 1.0, mesh, bc; workgroup = 1, verbose = false)
+        solve!(thermal, mesh, bc; dt = 1.0, workgroup = 1, verbose = false)
     end
     @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     litho_err = _caught_error() do
-        solver!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
+        solve!(litho, mesh, bc; workgroup = 1, verbose = false, g = SVector(0.0, -1.0))
     end
     @test occursin("lithostatic pressure preconditioner produced invalid λmax", sprint(showerror, litho_err))
 end
@@ -129,9 +129,9 @@ end
     empty_i = Int32[]
     empty_v = Float64[]
 
-    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
+    thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     thermal_err = _caught_error() do
-        solver!(
+        FEMTools._solve_thermal!(
             thermal, 1.0, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
             verbose = false,
         )
@@ -139,9 +139,9 @@ end
     @test thermal_err isa ErrorException
     @test occursin("thermal diffusion preconditioner produced invalid λmax", sprint(showerror, thermal_err))
 
-    litho = LithostaticPressureDR(CPU(), mesh.nnodes, (1.0,), (0.0,), (Inf,))
+    litho = LithostaticPressureDR(CPU(), mesh.nnodes, ThermalMaterial(; ρ0 = (1.0,), α = (0.0,), K = (Inf,)))
     litho_err = _caught_error() do
-        solver!(
+        FEMTools._solve_lithostatic!(
             litho, mesh, geo, element, empty_i, empty_v, empty_v, CPU(), 1;
             verbose = false,
             g = SVector(0.0, -1.0),
@@ -152,10 +152,9 @@ end
 
     (; dr, mesh, element_v, element_P, τ_old, γP, backend, workgroup) = _orphan_stokes_case()
     stokes_err = _caught_error() do
+        bc_empty = DirichletBoundaryCondition(empty_i, empty_v)
         solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
-            empty_i, empty_v, empty_v, backend, workgroup;
+            dr, mesh, (bc_empty, bc_empty), 1.0, γP; τ_old, workgroup,
             verbose = false,
             verbose_inner = false,
         )
@@ -197,13 +196,16 @@ end
     η = (1.0, 1.0)
     Δt = 1.0
     nq = length(element_v.integration_points.ω)
-    bc = zeros(length(Γ))
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
 
     function solve(; measure_λmax)
         dr = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
-            ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0);
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
         )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
@@ -212,11 +214,10 @@ end
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         stats = solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
-            Γ, bc, bc, backend, workgroup;
+            dr, mesh, bc_v, Δt, γP;
+            phases_v = phases, phases_P = phases, τ_old, workgroup,
             ncheck = 100, ϵ_tol = 1.0e-9, rel_drop0 = 0.1,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes, measure_λmax
+            verbose = false, verbose_inner = false, measure_λmax
         )
         return dr, stats
     end
@@ -250,13 +251,16 @@ end
     η = (1.0, 1.0)
     Δt = 1.0
     nq = length(element_v.integration_points.ω)
-    bc = zeros(length(Γ))
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
 
     function solve(; ϵ_tol, total_iterMax)
         dr = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, η, (Inf, Inf), (0.0, 0.0);
-            ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels)
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 2.0), K = (Inf, Inf), g = SVector(0.0, -1.0), Tref = 0.0);
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
         )
         γP = zeros(Float64, mesh.nnodesP)
         FEMTools.assemble_viscosity_weighted_pressure_scaling!(
@@ -265,11 +269,10 @@ end
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         return solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
-            Γ, bc, bc, backend, workgroup;
+            dr, mesh, bc_v, Δt, γP;
+            phases_v = phases, phases_P = phases, τ_old, workgroup,
             ncheck = 100, ϵ_tol, rel_drop0 = 0.1, iterMax = total_iterMax, total_iterMax,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes
+            verbose = false, verbose_inner = false
         )
     end
 
@@ -298,9 +301,9 @@ end
     nq = length(element_v.integration_points.ω)
     K = 10.0
     dr = StokesDR(
-        backend, mesh.nnodes, mesh.nnodesP, (1.0, 1.0), (Inf, Inf), (0.0, 0.0);
-        ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0),
-        stress_size = (nq, mesh.nels)
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η = (1.0, 1.0), ηb = (Inf, Inf), α = (0.0, 0.0), ρ0 = (1.0, 1.0), K = (K, K), g = (0.0, 0.0));
+        stress_size = (nq, mesh.nels),
     )
     γP = zeros(Float64, mesh.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
@@ -310,7 +313,7 @@ end
     γP .= 10.0
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     Qq = ones(Float64, mesh.nnodesP)
-    bc = DirichletBoundaryCondition(nothing, Γ, zeros(length(Γ)))
+    bc = DirichletBoundaryCondition(Γ, zeros(length(Γ)))
     stats = solve_stokes_dyrel!(
         dr, mesh, bc, bc, 1.0, γP;
         phases_v = phases, phases_P = phases, τ_old,
@@ -411,12 +414,44 @@ end
     thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, material)
     fill!(thermal.source, 1.0)
     baseline = deepcopy(thermal)
-    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
-    history = NamedTuple[]
-    @test solver!(thermal, 1.0, mesh, bc; ncheck = 10, verbose = false, history) === nothing
-    solver!(baseline, 1.0, mesh, bc; ncheck = 10, verbose = false)
+    bc = DirichletBoundaryCondition(Int32[], Float64[])
+    stats = solve!(thermal, mesh, bc; dt = 1.0, check_interval = 10, verbose = false, collect_history = true)
+    plain = solve!(baseline, mesh, bc; dt = 1.0, check_interval = 10, verbose = false)
+    history = stats.history
+    @test isempty(plain.history)
     @test thermal.T ≈ baseline.T
+    @test stats.converged && stats.iterations == plain.iterations
+    @test stats.residual == last(history).relative < thermal.ϵ
     @test first(history).iter == 1 && issorted([h.iter for h in history])
-    @test last(history).relative < thermal.ϵ
+    @test last(history).iter == stats.iterations
     @test last(history).residual ≈ norm(thermal.R) / sqrt(mesh.nnodes)
+
+    # Non-convergence throws by default and reports failed statistics on request.
+    failing = ThermalDiffusionDR(CPU(), mesh.nnodes, material; ϵ = 0.0)
+    fill!(failing.source, 1.0)
+    @test_throws ErrorException solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false)
+    failed = solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false, throw_on_failure = false)
+    @test !failed.converged && failed.iterations == 3
+end
+
+@testset "Stokes solve! scales pressure with the residual's storage modulus" begin
+    (; workgroup, mesh, phases, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    # Finite ηb with K = Inf: continuity stores (P - P_old)/(ηb Δt), so a scale
+    # built from K alone overshoots the explicit pressure-update limit.
+    material = StokesMaterial(;
+        η = (1.0, 10.0), ηb = 1.0, ρ0 = (1.0, 2.0), g = (0.0, -1.0), Tref = 0.0,
+    )
+    dr = StokesDR(mesh, material)
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
+    stats = solve!(dr, mesh, bc_v; dt = 1.0, phases_v = phases, phases_P = phases,
+        workgroup, verbose = false)
+    @test stats.converged
+    expected = similar(dr.γP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        expected, dr, mesh, 50, 1.0; workgroup, phases_v = phases, K = dr.ηb,
+    )
+    @test dr.γP == expected
 end

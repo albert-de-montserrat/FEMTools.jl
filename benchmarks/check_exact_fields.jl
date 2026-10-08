@@ -25,11 +25,6 @@ withenv("FEMTOOLS_BENCHMARK_PLOTS" => "false", "FEMTOOLS_BENCHMARK_HISTORY" => "
     include(joinpath(@__DIR__, "stokes", "solcx2D", "SolCx2D_quad.jl"))
 end
 end
-module ThermalQuadBenchmark
-withenv("FEMTOOLS_BENCHMARK_PLOTS" => "false", "FEMTOOLS_BENCHMARK_HISTORY" => "false") do
-    include(joinpath(@__DIR__, "thermal", "thermal_diffusion2D", "ThermalDiffusion2D_quad.jl"))
-end
-end
 
 @testset "exact-field benchmark refinement" begin
     for (case, benchmark) in ((:SolCx, SolCxBenchmark), (:SolKz, SolKzBenchmark),
@@ -71,8 +66,6 @@ end
     @test last(fine.convergence_history).residual ≈ fine.errors.residual
     @test fine.errors.relative < 0.6 * coarse.errors.relative
     @test fine.metadata.params.K == 1.0
-    quad_thermal = ThermalQuadBenchmark.main(; save_history = false, resolution = 8, nsteps = 8)
-    @test quad_thermal.temperature ≈ fine.temperature
     @test_throws ArgumentError ThermalDiffusionBenchmark.main(; save_history = false, nsteps = 0)
     @test_throws ArgumentError SolCxBenchmark.main(; save_history = false, resolution = 3)
     @test_throws ErrorException SolCxBenchmark.main(; save_history = false, resolution = 4, total_iterMax = 1)
@@ -87,9 +80,9 @@ end
 
 @testset "benchmark history JLD2 round-trip" begin
     for benchmark in (SolKzBenchmark, SolCxBenchmark, SolKzQuadBenchmark, SolCxQuadBenchmark,
-                      ThermalDiffusionBenchmark, ThermalQuadBenchmark)
+                      ThermalDiffusionBenchmark)
         mktempdir() do dir
-            r = benchmark in (ThermalDiffusionBenchmark, ThermalQuadBenchmark) ?
+            r = benchmark === ThermalDiffusionBenchmark ?
                 benchmark.main(; resolution = 4, nsteps = 4, output_dir = dir) :
                 benchmark.main(; resolution = 4, contrast = 10.0, output_dir = dir)
             data = JLD2.load(r.history_path)

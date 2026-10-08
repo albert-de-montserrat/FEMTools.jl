@@ -3,21 +3,28 @@
                    ρ0=(1.0,), K=(Inf,), g=(0.0, 0.0), Tref=0.0)
 
 Typed per-phase material properties and body-force parameters for `StokesDR`.
-All property tuples must have the same length and floating-point type.
+Properties accept scalars or phase tuples. The first supplied property tuple
+determines phase count and precision; without tuples, the first supplied scalar
+does. Scalars apply to every phase. Omitted properties keep the documented
+defaults in that precision and phase count. Supplied floating-point values,
+including gravity and reference temperature, must have matching precision;
+incompatible precisions are not promoted. With no phase properties supplied,
+`Tref` or gravity determines precision. With no inputs, precision is Float64.
 
+`g` may be any two- or three-element collection, such as a tuple or `SVector`.
 The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
 [`StokesDR`](@ref) built from this material inherits it. Pass a three-component
 `g` for a three-dimensional problem, `(0.0, 0.0, 0.0)` included.
 """
-@kwdef struct StokesMaterial{nphases, ndim, FP}
-    η::NTuple{nphases, FP} = (1.0,)
-    ηb::NTuple{nphases, FP} = (1.0,)
-    G::NTuple{nphases, FP} = (Inf,)
-    α::NTuple{nphases, FP} = (0.0,)
-    ρ0::NTuple{nphases, FP} = (1.0,)
-    K::NTuple{nphases, FP} = (Inf,)
-    g::NTuple{ndim, FP} = (0.0, 0.0)
-    Tref::FP = 0.0
+struct StokesMaterial{nphases, ndim, FP}
+    η::NTuple{nphases, FP}
+    ηb::NTuple{nphases, FP}
+    G::NTuple{nphases, FP}
+    α::NTuple{nphases, FP}
+    ρ0::NTuple{nphases, FP}
+    K::NTuple{nphases, FP}
+    g::NTuple{ndim, FP}
+    Tref::FP
 
     function StokesMaterial(
             η::Tuple{FP, Vararg{FP}}, ηb::Tuple{FP, Vararg{FP}},
@@ -34,16 +41,28 @@ The length of the gravity vector `g` sets the spatial dimension `ndim`, and a
     end
 end
 
+function StokesMaterial(;
+        η = nothing, ηb = nothing, G = nothing, α = nothing,
+        ρ0 = nothing, K = nothing, g = nothing, Tref = nothing,
+    )
+    gravity = g === nothing ? nothing : Tuple(g)
+    reference = _material_reference(
+        (η, ηb, G, α, ρ0, K, Tref, gravity === nothing ? nothing : first(gravity)), nothing,
+    )
+    FP = eltype(reference)
+    return StokesMaterial(
+        _material_property(η, reference, 1), _material_property(ηb, reference, 1),
+        _material_property(G, reference, Inf), _material_property(α, reference, 0),
+        _material_property(ρ0, reference, 1), _material_property(K, reference, Inf),
+        gravity === nothing ? (zero(FP), zero(FP)) : gravity,
+        Tref === nothing ? zero(FP) : float(Tref),
+    )
+end
+
 # Storage extents accept either a node count or an explicit dimension tuple, so
 # a cell-local layout such as `(4, nels)` is expressible alongside nodal storage.
 _storage_dims(n::Integer) = (n,)
 _storage_dims(dims) = Tuple(dims)
-
-# The gravity vector fixes the spatial dimension; `Val` keeps the container
-# choice a compile-time decision. Callers may supply any 2- or 3-element
-# container, so it is normalised to a `Tuple` before the length is read.
-_spatial_dimension(::NTuple{N}) where {N} = Val(N)
-_dimension_value(::Val{N}) where {N} = N
 
 _zero_vector_field(::Val{2}, new_array) = VectorField2D(new_array(), new_array())
 _zero_vector_field(::Val{3}, new_array) =
@@ -116,7 +135,7 @@ array.
 |:---------- |:----------------------------------------- |
 | `P`        | Pressure (current iterate)                |
 | `P0`       | Pressure at previous time step            |
-| `∂P∂τ`    | Pseudo-transient rate for pressure         |
+| `γP`       | Pressure scale `γ_eff` owned by the high-level solve |
 | `T`        | Temperature (input from thermal solver)   |
 | `T0`       | Temperature at previous time step         |
 | `Q`        | Volumetric source/sink in continuity      |
@@ -141,11 +160,7 @@ Properties are supplied together through [`StokesMaterial`](@ref).
     StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial;
              CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
              stress_size=nothing, plastic_history_size=nothing)
-    StokesDR(backend, nnodes_v, nnodes_P, η, ηb, α;
-             ρ0=nothing, K=nothing, G=nothing, g=nothing, Tref=nothing,
-             CFL_v=0.98, CFL_P=0.98, c_fact=0.9, ϵ=1e-6,
-             stress_size=nothing, plastic_history_size=nothing)
-StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...)  # defaults to CPU()
+    StokesDR(nnodes_v, nnodes_P, material; kwargs...)  # defaults to CPU()
 
 All nodal float arrays are zero-initialised; phase arrays are initialised to 1.
 Individual components are reached through the field containers, e.g. `dr.v.x`
@@ -198,7 +213,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     # pressure-node solution fields
     P::_TP
     P0::_TP
-    ∂P∂τ::_TP
+    γP::_TP
     T::_TP
     T0::_TP
     Q::_TP
@@ -227,23 +242,12 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
     ϵ::FP
 
     function StokesDR(
-            backend, nnodes_v, nnodes_P,
-            η::Tuple{FP, Vararg{FP, N}}, ηb::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}};
-            ρ0 = nothing,
-            K = nothing,
-            G = nothing,
-            g = nothing,
-            Tref = nothing,
+            backend, nnodes_v, nnodes_P, material::StokesMaterial{nphases, ndim, FP};
             CFL_v = 0.98, CFL_P = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
             stress_size = nothing,
             plastic_history_size = nothing,
-        ) where {N, FP}
-        nphases = N + 1
-        _ρ0 = ρ0 === nothing ? ntuple(_ -> FP(1), Val(nphases)) : NTuple{nphases, FP}(ρ0)
-        _K = K === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(K)
-        _G = G === nothing ? ntuple(_ -> FP(Inf), Val(nphases)) : NTuple{nphases, FP}(G)
-        _g = g === nothing ? (FP(0), FP(0)) : map(FP, Tuple(g))
-        _Tref = Tref === nothing ? FP(0) : FP(Tref)
+        ) where {nphases, ndim, FP}
+        (; η, ηb, α, ρ0, K, G, g, Tref) = material
         stress_size isa Symbol && stress_size !== :none && throw(
             ArgumentError(
                 "stress_size must be `nothing`, `:none`, an integer, or a size tuple; got :$stress_size"
@@ -254,7 +258,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
                 "plastic_history_size must be `nothing`, `:none`, an integer, or a size tuple; got :$plastic_history_size"
             )
         )
-        dim = _spatial_dimension(_g)
+        dim = Val(ndim)
         v_dims = _storage_dims(nnodes_v)
         P_dims = _storage_dims(nnodes_P)
         stress_dims = stress_size === nothing ? v_dims :
@@ -274,7 +278,7 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
                 KernelAbstractions.zeros(backend, FP, history_dims...),
             )
         return new{
-            nphases, _dimension_value(dim), typeof(newvfield()), typeof(newτfield()),
+            nphases, ndim, typeof(newvfield()), typeof(newτfield()),
             typeof(newiv()), typeof(newP()), typeof(newip()), FP, typeof(newhistory()),
         }(
             newvfield(), newvfield(),                 # v, ∂v∂τ
@@ -283,11 +287,11 @@ struct StokesDR{nphases, ndim, _TV, _TT, _TIV, _TP, _TIP, FP, _TH}
             newiv(),                                  # phases_v
             newτfield(), newτfield(),                 # τ, τ_old
             newhistory(),                              # optional cap history
-            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, ∂P∂τ, T, T0, Q
+            newP(), newP(), newP(), newP(), newP(), newP(), # P, P0, γP, T, T0, Q
             newP(),                                   # Pf
             newP(), newP(), newP(), newP(),           # RP, RP0, M_P, Pnum
             newip(),                                  # phases_P
-            η, ηb, α, _ρ0, _K, _G, _g, _Tref,
+            η, ηb, α, ρ0, K, G, g, Tref,
             FP(CFL_v), FP(CFL_P), FP(c_fact), FP(ϵ),
         )
     end
@@ -340,17 +344,29 @@ state.
 """
 temperature(dr::StokesDR) = dr.T
 
-StokesDR(nnodes_v, nnodes_P, η, ηb, α; kwargs...) =
-    StokesDR(CPU(), nnodes_v, nnodes_P, η, ηb, α; kwargs...)
-
-StokesDR(backend, nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
-    StokesDR(
-    backend, nnodes_v, nnodes_P, material.η, material.ηb, material.α;
-    ρ0 = material.ρ0, K = material.K, G = material.G,
-    g = material.g, Tref = material.Tref, kwargs...
-)
 StokesDR(nnodes_v, nnodes_P, material::StokesMaterial; kwargs...) =
     StokesDR(CPU(), nnodes_v, nnodes_P, material; kwargs...)
+
+"""
+    StokesDR(mesh::MixedMesh, material::StokesMaterial; stress_size, kwargs...)
+
+Allocate velocity and pressure fields on the mesh backend. By default, stress
+history has one entry per velocity integration point and element. Override
+`stress_size` for a different layout, or use `:none` to omit stress history.
+The mesh must have cached geometry; material precision and gravity dimension
+must match its coordinates. Remaining keywords control the count-based constructor.
+"""
+function StokesDR(
+        mesh::MixedMesh{D}, material::StokesMaterial;
+        stress_size = (length(_mesh_geometry(mesh).element_v.integration_points.ω), mesh.nels),
+        kwargs...,
+    ) where {D}
+    _check_material_precision(mesh, material.η)
+    length(material.g) == D || throw(DimensionMismatch("material gravity must have $D components"))
+    _mesh_geometry(mesh)
+    return StokesDR(KernelAbstractions.get_backend(mesh.coords), mesh.nnodes, mesh.nnodesP,
+        material; stress_size, kwargs...)
+end
 
 """
     DruckerPrager{nphases, FP}
@@ -528,45 +544,70 @@ function DruckerPragerCap(
 end
 
 """
-    Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+    CellPressureStokesDR(mesh, material::StokesMaterial; phases=nothing)
 
-Caller-owned scratch for the 3-D Hex27/Q2--P1 DYREL solver.
+State of the viscous 3-D Stokes solver on Hex27 cells: continuous Q2 velocity and
+four discontinuous pressure modes `(1, ξ, η, ζ)` per cell.
 
-Holds the momentum and pressure residuals, the Jacobi preconditioner, the lumped
-pressure mass, and the zero boundary values each velocity component is projected
-against. All of it scales with the mesh, so a solver that allocates it per call
-churns tens of megabytes of device memory on every call. Build one and pass it as
-the `workspace` keyword of [`solve_stokes_dyrel!`](@ref) to reuse it across a
-time-stepping or optimization loop.
+Precision, backend, and sizes follow `mesh`. The velocity `v` and the
+`4 × nels` pressure `P` start at zero and are updated in place by
+[`solve!`](@ref). The momentum uses the phase viscosities `material.η`, densities
+`material.ρ0`, and the three-component gravity `material.g`. The discretization
+is purely viscous and incompressible: finite `G` or `K` and nonzero `α` are
+rejected, and `ηb` and `Tref` are not used.
 
-It also owns the reference tables the assembly kernels read, so a `Hex27`
-gradient table is built once per workspace instead of once per launch.
+`phases` assigns one material phase per cell and must live on the mesh backend;
+it defaults to phase one everywhere and is borrowed, not copied.
 
-The preconditioner and pressure mass depend on the material and are refilled at
-the start of every solve, so a workspace never carries stale material data. The
-lengths in `fixed_nodes` are baked into the zero boundary values, and the
-reference tables into `mesh.element`, so a workspace belongs to one
-boundary-condition layout and one element; the solver checks the first and
-raises if it is handed a mismatched one.
+The state also owns the residuals, the Jacobi preconditioner, the lumped
+pressure mass, and the reference tables that every solve reuses. The
+preconditioner and pressure mass are refilled from `η` and `phases` at the start
+of each solve.
 """
-struct Stokes3DWorkspace{TV, TP, TB, TT}
-    residual_v::TV
-    residual_p::TP
-    diagonal::TV
+struct CellPressureStokesDR{T, N, TV, TP, TC, TT}
+    v::VectorField3D{TV}
+    P::TP
+    phases::TC
+    η::NTuple{N, T}
+    ρ::NTuple{N, T}
+    g::NTuple{3, T}
+    Rv::NTuple{3, TV}
+    RP::TP
+    diagonal::NTuple{3, TV}
     pressure_mass::TP
-    zero_bc::TB
     tables::TT
 end
 
-function Stokes3DWorkspace(
-        velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+function CellPressureStokesDR(mesh::Mesh, material::StokesMaterial; phases = nothing)
+    mesh.element isa ReferenceElement{<:QuadraticElement{3, 27}} || throw(
+        ArgumentError("CellPressureStokesDR requires a Hex27 mesh, got $(typeof(mesh.element))")
     )
-    residual_v = ntuple(i -> similar(velocity[i]), 3)
-    diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
-    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
-    tables = stokes_tables_3d(KA.get_backend(first(velocity)), mesh.element)
-    return Stokes3DWorkspace(
-        residual_v, similar(pressure), diagonal, similar(pressure), zero_bc, tables,
+    _check_material_precision(mesh, material.η)
+    length(material.g) == 3 || throw(DimensionMismatch("material gravity must have 3 components"))
+    all(isinf, material.G) && all(isinf, material.K) && all(iszero, material.α) || throw(
+        ArgumentError("CellPressureStokesDR is purely viscous and incompressible; G and K must be Inf and α zero")
+    )
+    backend = KernelAbstractions.get_backend(mesh.coords)
+    T = eltype(eltype(mesh.coords))
+    nphases = length(material.η)
+    if phases === nothing
+        phases = KernelAbstractions.ones(backend, Int32, mesh.nels)
+    else
+        length(phases) == mesh.nels ||
+            throw(DimensionMismatch("phases has $(length(phases)) entries but the mesh has $(mesh.nels) cells"))
+        typeof(KernelAbstractions.get_backend(phases)) === typeof(backend) ||
+            throw(ArgumentError("phases must live on the mesh backend $backend"))
+        lo, hi = extrema(phases)
+        1 ≤ lo && hi ≤ nphases ||
+            throw(ArgumentError("phases must lie in 1:$nphases, got $lo:$hi"))
+    end
+    nodal() = KernelAbstractions.zeros(backend, T, mesh.nnodes)
+    cellwise() = KernelAbstractions.zeros(backend, T, 4, mesh.nels)
+    return CellPressureStokesDR(
+        VectorField3D(nodal(), nodal(), nodal()), cellwise(), phases,
+        material.η, material.ρ0, material.g,
+        ntuple(_ -> nodal(), 3), cellwise(), ntuple(_ -> nodal(), 3), cellwise(),
+        stokes_tables_3d(backend, mesh.element),
     )
 end
 
@@ -580,7 +621,7 @@ set of constrained velocity nodes per direction in `v_nodes`, e.g.
 The workspace owns the mesh-sized residual, rate, pullback, and homogeneous
 boundary-value buffers that would otherwise be allocated on every adjoint
 solve. Pass it as the `workspace` keyword of
-[`solve_stokes_adjoint_dyrel!`](@ref) to reuse those buffers across an
+[`solve_adjoint!`](@ref) to reuse those buffers across an
 optimization loop. Set `enzyme=true` when the workspace will be used with
 `operator = :enzyme`, which is available in two dimensions only; the block and
 matrix-free paths do not allocate those additional reverse-mode buffers.

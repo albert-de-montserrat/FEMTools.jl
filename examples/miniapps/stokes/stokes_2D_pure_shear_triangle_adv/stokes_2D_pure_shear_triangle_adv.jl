@@ -185,8 +185,8 @@ function main(;
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
@@ -194,27 +194,12 @@ function main(;
     copyto!(dr.v.x, [ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
     copyto!(dr.v.y, [-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
 
-    apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    apply_bc!(dr.v.x, DirichletBoundaryCondition(vx_nodes, bc_vx_vals))
+    apply_bc!(dr.v.y, DirichletBoundaryCondition(vy_nodes, bc_vy_vals))
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
-    # FEM pressure residuals are assembled in weak form:
-    #
-    #     RP_i = ∫ N_i (-∇⋅v) dΩ
-    #
-    # The Arrow-Hurwicz pressure step and numerical pressure
-    # correction are calibrated for that pointwise residual.  If we feed the weak
-    # residual directly into Pnum or P += γP*RP/M_P, the update is scaled by element
-    # volume and pressure convergence stalls/refines incorrectly.
-    #
-    # Use the helper to assemble both:
-    #   dr.M_P = ∫ N_i dΩ
-    #   γP      = local viscosity-weighted pressure update scale
-    # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
-    # adapts the pressure step to viscosity contrasts.
     Δt = Δt === nothing ? 0.5 / max(abs(ε̇_bg), eps(Float64)) : Float64(Δt)
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     dt_history = zeros(Float64, nsteps)
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
@@ -269,18 +254,15 @@ function main(;
         t += dt_step
         dt_history[istep] = dt_step
         time_history[istep] = t
-        assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, γfact, dt_step; workgroup, phases_v = phases_v_cpu,
-        )
         @info "Physical time step" istep nsteps t Δt=dt_step Δt_max=Δt
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, bc_vx, bc_vy, dt_step, γP;
+        solve_stats = solve!(
+            dr, mesh_stokes, bc_vx, bc_vy; dt = dt_step, pressure_factor = γfact,
             phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
-            ncheck,
-            ϵ_tol,
+            check_interval = ncheck,
+            tolerance = ϵ_tol,
             iterMax,
-            total_iterMax,
+            max_iterations = total_iterMax,
             rel_drop0,
             verbose = verbose_PH,
             verbose_inner = verbose_DR,

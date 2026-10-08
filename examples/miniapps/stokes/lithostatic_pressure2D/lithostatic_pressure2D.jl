@@ -34,14 +34,14 @@ function main(; max_area = 1 / 32^2, show_plot = true, CFL = 0.9,
     in_block(c) = abs(c[1] - cx) ≤ half_width && abs(c[2] - cy) ≤ half_width
 
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL, c_fact, ϵ)
+    dr = LithostaticPressureDR(mesh, material; CFL, c_fact, ϵ)
     copyto!(dr.phases, Int[in_block(c) ? 2 : 1 for c in coords])
     copyto!(dr.P, [ρ0[1] * abs(g[2]) * (0.0 - c[2]) for c in coords])
 
     tol = max(Lx, Ly) * eps(Float64) * 32
     top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][2]) ≤ tol]
-    bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
-    solver!(dr, mesh, bc; workgroup, ncheck, verbose, Tref, g)
+    bc = DirichletBoundaryCondition(top_nodes, zeros(length(top_nodes)))
+    solve!(dr, mesh, bc; workgroup, check_interval = ncheck, verbose, Tref, g)
 
     P = Array(dr.P)
     show_plot || return (; coords, el2n, P, phases = Array(dr.phases))

@@ -59,14 +59,13 @@ Run the standalone Q2/P1 Stokes variants in the same folders:
 ```sh
 julia --project=examples benchmarks/stokes/solkz2D/SolKz2D_quad.jl
 julia --project=examples benchmarks/stokes/solcx2D/SolCx2D_quad.jl
-julia --project=examples benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D_quad.jl
 ```
 
 Stokes uses Q9 velocity and three discontinuous P1 pressure values per cell.
 The pressure basis spans `(1, ξ, η)` on the reference square, with positive
-Jacobi mass weights and velocity-cell quadrature. Thermal diffusion uses Q2
-for temperature; it has no pressure field and its original script already uses Q9.
-The variants retain inline heatmaps and write to separate `output_quad/` folders.
+Jacobi mass weights and velocity-cell quadrature. The thermal benchmark already
+uses Q9 elements and has no separate variant. The variants retain inline
+heatmaps and write to separate `output_quad/` folders.
 
 Each benchmark displays and saves one comparison figure. Stokes combines
 pressure, x velocity, and y velocity as rows, with FEMTools, analytical, and

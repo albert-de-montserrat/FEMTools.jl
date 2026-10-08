@@ -1,80 +1,6 @@
-"""
-    solve_stokes_adjoint_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                                phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                                objective_v, λv, λP, backend, workgroup;
-                                v_nodes, kwargs...) -> NamedTuple
-    solve_stokes_adjoint_dyrel!(dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-                                phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-                                objective_vx, objective_vy, λvx, λvy, λP,
-                                backend, workgroup; vx_nodes, vy_nodes, kwargs...)
-
-Solve the discrete Stokes adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` with the same
-Powell-Hestenes / DYREL iteration used by [`solve_stokes_dyrel!`](@ref), and
-store the adjoint fields in `λv` (one array per direction) and `λP`, modified in
-place. The second form is the plane-strain spelling with the components passed
-separately.
-
-The adjoint is assembled on the *same* mixed velocity/pressure spaces, quadrature,
-and element operators as the forward problem and transposed exactly. With this
-method's sign convention, the total derivative is `∂J/∂m + λᵀ ∂R/∂m`, where `R`
-is the residual the forward solve drives to zero with the Powell-Hestenes
-augmentation folded into the momentum residual as `Pnum = γP·RP/M_P`. Its forward
-state must already be converged: the transpose Jacobian, its diagonal
-preconditioner, and λmax are frozen at that state, so only λmin (hence the
-Chebyshev pair) is re-estimated during the solve.
-
-`objective_v` carries the velocity part of `∂J/∂u`, one array per direction (the
-consistently assembled objective load); the pressure adjoint has no explicit
-objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
-forward solve. Homogeneous Dirichlet conditions are applied to each adjoint
-velocity component on the matching entry of `v_nodes`.
-
-The input values of `λv` and `λP` are preserved as the initial iterate.
-Pass zero-filled arrays for a cold solve, or fields from the previous design
-iteration to warm-start an optimization loop.
-
-Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
-keyword to reuse mesh-sized scratch across solves. The default constructs a
-fresh workspace for compatibility. A workspace used with `operator = :enzyme`
-must have been constructed with `enzyme=true`.
-
-Because the forward state is frozen, the adjoint residual is affine in `λ` with a
-constant operator, and `operator` chooses how that operator is applied:
-
-- `:blocks` (the default) assembles it once as per-element blocks and applies
-  them as dense element products, so no rheology is evaluated and no primal
-  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
-  for the blocks and their memory cost. It is the only operator in three
-  dimensions, and the only one that supports a plastic model together with a
-  nonzero fluid pressure `dr.Pf`.
-- `:matrix_free` stores nothing per element and rebuilds the same products by
-  forward-mode directional differentiation on every apply, at roughly three
-  element residual evaluations apiece. It requires `plastic === nothing`, whose
-  symmetric tangent is what lets a directional derivative stand in for a
-  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
-- `:enzyme` also stores nothing per element and rebuilds the products by
-  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
-  three and the only one that handles a plastic tangent without stored blocks.
-
-With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
-largest eigenvalue of the preconditioned velocity block is measured by power
-iteration rather than bounded by Gershgorin row sums. The bound is correct but
-loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
-
-Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
-inner dynamic-relaxation trace. Returns a `NamedTuple` with `itPH`, `iter`,
-`err`, `err_v`, `err_P`, `converged`, the `λmax` actually used alongside the
-`λmax_gershgorin` bound and the `λmax_iterations` spent measuring it, and (when
-`collect_history`) `history`.
-
-All arrays read or written by kernels—including `mesh_stokes` connectivity,
-`geo_v`, `geo_P`, phases, objective loads, adjoint fields, and boundary-node
-arrays—must reside on `backend`. Construct unstructured meshes with
-`Mesh(backend, coords, el2n, element_v)`; a `MixedMesh` built from it computes
-`mesh.geometry` on the same backend. The Enzyme transpose assemblers execute on the backend inferred
-from their output buffers.
-"""
-function solve_stokes_adjoint_dyrel!(
+# Positional core of `solve_adjoint!`; `v_nodes` holds one constrained node set
+# per velocity component, and `M_P = dr.M_P` and `γP` must match the forward solve.
+function _solve_stokes_adjoint_dyrel!(
         dr::StokesDR{<:Any, D},
         mesh_stokes,
         geo_v,
@@ -389,6 +315,8 @@ function solve_stokes_adjoint_dyrel!(
         err_v,
         err_P,
         converged = converged || err < adjoint_tol,
+        iterations = iter,
+        residual = err,
         λmax = first(λmax_v),
         λmax_gershgorin,
         λmax_iterations,
@@ -396,59 +324,173 @@ function solve_stokes_adjoint_dyrel!(
     )
 end
 
-solve_stokes_adjoint_dyrel!(
-    dr::StokesDR{<:Any, 2}, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-    objective_vx::AbstractVector, objective_vy::AbstractVector,
-    λvx::AbstractVector, λvy::AbstractVector, λP, backend, workgroup;
-    vx_nodes, vy_nodes, kwargs...,
-) = solve_stokes_adjoint_dyrel!(
-    dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-    phases_v, phases_P, τ_old, plastic, G, Δt, γP,
-    (objective_vx, objective_vy), (λvx, λvy), λP, backend, workgroup;
-    v_nodes = (vx_nodes, vy_nodes), kwargs...,
+"""
+    solve_adjoint!(dr::StokesDR, mesh::MixedMesh, bc_v; dt, objective_v, λv, λP,
+                   tolerance=1e-6, max_iterations=50_000, check_interval=50,
+                   throw_on_failure=true, plastic=nothing, workgroup=256, kwargs...)
+    solve_adjoint!(dr, mesh, bc_vx, bc_vy; dt, objective_vx, objective_vy, λvx, λvy, λP, kwargs...)
+
+Solve the discrete Stokes adjoint `(∂R/∂u)ᵀλ = -∂J/∂u` of a converged forward
+[`solve!`](@ref) on the same state. Geometry and elements come from
+`mesh.geometry`, and the pressure scale `dr.γP` and mass `dr.M_P` the forward solve
+left in `dr` are reused, so the adjoint transposes the augmented residual that was
+actually solved. `dt`, `plastic`, `phases_v`, `phases_P`, and `τ_old` must match the
+forward solve. `bc_v` supplies the constrained velocity nodes; the adjoint
+conditions are homogeneous, so its values are not used.
+
+`objective_v` holds the velocity part of `∂J/∂u`, one array per direction, and
+`λv` and `λP` are the adjoint outputs. Their input values are the initial iterate:
+pass zeros for a cold solve or the previous design iteration's fields to warm-start.
+`tolerance`, `max_iterations`, and `check_interval` set the adjoint tolerance,
+the cumulative inner-iteration budget, and the convergence-check cadence;
+`iterMax`, `max_ph_iterations`, `rel_drop`, `verbose_inner`, `collect_history`,
+`operator`, `workspace`, and `measure_λmax` are also accepted. Returns
+statistics with `itPH`, `iter`, `err`, `err_v`, `err_P`, `converged`,
+`iterations`, `residual`, the `λmax` used alongside the `λmax_gershgorin` bound
+and the `λmax_iterations` spent measuring it, and `history`; a solve that does
+not converge throws unless `throw_on_failure=false`.
+
+The adjoint is assembled on the *same* mixed velocity/pressure spaces, quadrature,
+and element operators as the forward problem and transposed exactly. With this
+method's sign convention, the total derivative is `∂J/∂m + λᵀ ∂R/∂m`, where `R`
+is the residual the forward solve drives to zero with the Powell-Hestenes
+augmentation folded into the momentum residual as `Pnum = γP·RP/M_P`. Its forward
+state must already be converged: the transpose Jacobian, its diagonal
+preconditioner, and λmax are frozen at that state, so only λmin (hence the
+Chebyshev pair) is re-estimated during the solve.
+
+Pass a caller-owned [`StokesAdjointWorkspace`](@ref) with the `workspace`
+keyword to reuse mesh-sized scratch across solves. The default constructs a
+fresh workspace for compatibility. A workspace used with `operator = :enzyme`
+must have been constructed with `enzyme=true`.
+
+Because the forward state is frozen, the adjoint residual is affine in `λ` with a
+constant operator, and `operator` chooses how that operator is applied:
+
+- `:blocks` (the default) assembles it once as per-element blocks and applies
+  them as dense element products, so no rheology is evaluated and no primal
+  residual is recomputed during the solve. See [`FrozenAdjointOperator`](@ref)
+  for the blocks and their memory cost. It is the only operator in three
+  dimensions, and the only one that supports a plastic model together with a
+  nonzero fluid pressure `dr.Pf`.
+- `:matrix_free` stores nothing per element and rebuilds the same products by
+  forward-mode directional differentiation on every apply, at roughly three
+  element residual evaluations apiece. It requires `plastic === nothing`, whose
+  symmetric tangent is what lets a directional derivative stand in for a
+  transposed product; see [`MatrixFreeAdjointOperator`](@ref).
+- `:enzyme` also stores nothing per element and rebuilds the products by
+  reverse-mode differentiation, three sweeps per apply. It is the slowest of the
+  three and the only one that handles a plastic tangent without stored blocks.
+
+With `measure_λmax` (the default, and unavailable with `operator = :enzyme`) the
+largest eigenvalue of the preconditioned velocity block is measured by power
+iteration rather than bounded by Gershgorin row sums. The bound is correct but
+loose, and since `Δτ = 2/sqrt(λmax)·CFL_v` a loose bound shortens every step.
+
+Use `verbose` for outer Powell-Hestenes progress and `verbose_inner` for the
+inner dynamic-relaxation trace.
+
+The adjoint is exact only in the incompressible gauge `K = Inf`; see the solver
+notes for the finite-storage approximation.
+"""
+function solve_adjoint!(
+        dr::StokesDR{<:Any, D},
+        mesh::MixedMesh{D},
+        bc_v::NTuple{D, DirichletBoundaryCondition};
+        dt,
+        objective_v::NTuple{D, AbstractVector},
+        λv::NTuple{D, AbstractVector},
+        λP,
+        phases_v = dr.phases_v,
+        phases_P = dr.phases_P,
+        τ_old = stress_old(dr),
+        plastic = nothing,
+        tolerance = 1.0e-6,
+        max_iterations = 50_000,
+        check_interval = 50,
+        throw_on_failure = true,
+        workgroup = 256,
+        kwargs...,
+    ) where {D}
+    all(iszero, dr.γP) && throw(
+        ArgumentError(
+            "dr.γP is unassembled; run the forward solve! on this state before solve_adjoint!"
+        )
+    )
+    cache = _mesh_geometry(mesh)
+    stats = _solve_stokes_adjoint_dyrel!(
+        dr, mesh, cache.geo_v, cache.geo_P, cache.element_v, cache.element_P,
+        phases_v, phases_P, τ_old, plastic, dr.G, dt, dr.γP,
+        objective_v, λv, λP, KA.get_backend(mesh.coords), workgroup;
+        v_nodes = map(bc -> bc.DoFs, bc_v), adjoint_tol = tolerance,
+        total_iterMax = max_iterations, ncheck = check_interval, kwargs...,
+    )
+    stats.converged || !throw_on_failure || error(
+        "Stokes adjoint solve did not converge after $(stats.iter) iterations " *
+        "(residual = $(stats.residual), tolerance = $tolerance)",
+    )
+    return stats
+end
+
+solve_adjoint!(
+    dr::StokesDR{<:Any, 2}, mesh::MixedMesh,
+    bc_vx::DirichletBoundaryCondition, bc_vy::DirichletBoundaryCondition;
+    objective_vx, objective_vy, λvx, λvy, λP, kwargs...
+) =
+    solve_adjoint!(
+    dr, mesh, (bc_vx, bc_vy);
+    objective_v = (objective_vx, objective_vy), λv = (λvx, λvy), λP, kwargs...
 )
 
 """
-    solve_stokes_adjoint_dyrel!(velocity, pressure, objective_load, mesh,
-                                cell_phase, η, fixed_nodes; kwargs...)
+    solve_adjoint!(dr::CellPressureStokesDR, mesh::Mesh, bc_v; objective_v, λv, λP,
+                   throw_on_failure=true, kwargs...)
 
-Solve the transpose of the linear viscous 3-D Hex27/Q2--P1 Stokes operator
-through the same adjoint DYREL entry point used by the 2-D solver. The operator
-is symmetric, so the 3-D method reuses the dimension-matched forward residual
-and preconditioner with the objective derivative as its momentum load.
-Velocity and pressure are updated in place from their supplied initial guesses.
-`adjoint_tol` sets the combined residual tolerance; `iterMax` and
-`total_iterMax` set the iteration budget. `workspace` is passed straight through
-to the forward solver, so a gradient loop can hand the same
-[`Stokes3DWorkspace`](@ref) to both the forward and the adjoint solve. The
-returned convergence statistics match the 3-D forward method.
+Solve the discrete adjoint `(∂R/∂u)ᵀλ = ∂J/∂u` of the viscous 3-D Hex27 Stokes
+operator. The operator is symmetric and linear, so this runs the forward
+iteration of [`solve!`](@ref) with `objective_v` (one array per velocity
+component) as momentum load, zero density and gravity, and homogeneous
+conditions on the nodes of `bc_v`; its values are not used. It reads only the
+viscosity, phases, and scratch of `dr` and leaves `dr.v` and `dr.P` unchanged.
+
+`λv` (three nodal arrays) and the `4 × nels` `λP` are the adjoint outputs; their
+input values are the initial iterate. The remaining keywords and the returned
+statistics are those of `solve!`. A solve that does not converge throws unless
+`throw_on_failure=false`. Pass `λv` to [`stokes_material_gradient_3d`](@ref) for
+the material sensitivities.
 """
-function solve_stokes_adjoint_dyrel!(
-        velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-        mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
-        ncheck = 100, adjoint_tol = 1.0e-5, iterMax = 3000,
-        total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
-        workgroup = 256, verbose = true,
-        workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
+function solve_adjoint!(
+        dr::CellPressureStokesDR, mesh::Mesh, bc_v::NTuple{3, DirichletBoundaryCondition};
+        objective_v, λv, λP::AbstractMatrix, throw_on_failure = true,
+        tolerance = 1.0e-5, kwargs...,
     )
-    zero_phase = map(zero, η)
-    zero_g = ntuple(_ -> zero(first(η)), 3)
-    return solve_stokes_dyrel!(
-        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
-        ncheck, ϵ_tol = adjoint_tol, iterMax, total_iterMax, velocity_step, γP,
-        load = objective_load, workgroup, verbose, workspace,
+    load = Tuple(objective_v)
+    all(length(load[i]) == mesh.nnodes for i in 1:3) ||
+        throw(DimensionMismatch("objective_v must have mesh.nnodes entries per component"))
+    T = eltype(dr.P)
+    stats = _relax_cell_pressure_stokes!(
+        Tuple(λv), λP, dr, mesh, map(zero, dr.ρ), ntuple(_ -> zero(T), 3),
+        map(bc -> bc.DoFs, bc_v), zero(T), load;
+        tolerance, kwargs...,
     )
+    stats.converged || !throw_on_failure || error(
+        "3-D Stokes adjoint solve did not converge after $(stats.iter) iterations " *
+        "(residual = $(stats.residual), tolerance = $tolerance)",
+    )
+    return stats
 end
 
 """
     stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
                                 cell_phase, η, ρ, g; workgroup=256)
+    stokes_material_gradient_3d(dr::CellPressureStokesDR, mesh, adjoint_velocity;
+                                workgroup=256)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
 viscous operator derivative for every material phase at once. The returned
 named tuple contains `density_gradient` and `viscosity_gradient`, each an
-`NTuple` with one entry per phase of `η`/`ρ`.
+`NTuple` with one entry per phase of `η`/`ρ`. The state form reads the forward
+velocity, phases, and material of `dr`.
 """
 function stokes_material_gradient_3d(
         forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
@@ -482,3 +524,8 @@ function stokes_material_gradient_3d(
 
     return (; density_gradient, viscosity_gradient)
 end
+
+stokes_material_gradient_3d(dr::CellPressureStokesDR, mesh::Mesh, adjoint_velocity; workgroup = 256) =
+    stokes_material_gradient_3d(
+    Tuple(dr.v), Tuple(adjoint_velocity), mesh, dr.phases, dr.η, dr.ρ, dr.g; workgroup,
+)

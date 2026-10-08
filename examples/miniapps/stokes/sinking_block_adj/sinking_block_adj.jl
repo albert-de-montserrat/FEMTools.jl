@@ -356,7 +356,7 @@ function main(;
     # The mixed mesh holds both geometry arrays on the selected backend. The
     # discontinuous-pressure geometry is evaluated at the velocity quadrature
     # points, matching the forward and adjoint assemblers.
-    (; geo_v, geo_P) = mesh_stokes.geometry
+    (; geo_v) = mesh_stokes.geometry
 
     # ---------------------------------------------------------------------------
     # StokesDR struct
@@ -402,7 +402,7 @@ function main(;
     mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
 
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(mesh_litho, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.phases, Int[in_incl(c) ? 2 : 1 for c in coords_litho])
     P0_litho = Float64[ρ0[1] * abs(g[2]) * (Ly / 2 - c[2]) for c in coords_litho]
     copyto!(lp_dr.P, P0_litho)
@@ -411,7 +411,7 @@ function main(;
     bc_litho = DirichletBoundaryCondition(
         nothing, TDev(top_nodes_litho), KernelAbstractions.zeros(backend, Float64, length(top_nodes_litho)),
     )
-    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
+    solve!(lp_dr, mesh_litho, bc_litho; workgroup, check_interval = 50, verbose = false, Tref = Tref, g = g)
 
     P_litho = Array(lp_dr.P)
     P_hydro = zeros(Float64, mesh_stokes.nnodesP)
@@ -439,34 +439,17 @@ function main(;
 
     bc_vx_vals = KernelAbstractions.zeros(backend, Float64, length(vx_nodes))
     bc_vy_vals = KernelAbstractions.zeros(backend, Float64, length(vy_nodes))
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
-    # FEM pressure residuals are assembled in weak form:
-    #
-    #     RP_i = ∫ N_i (-∇⋅v) dΩ
-    #
-    # The Arrow-Hurwicz pressure step and numerical pressure
-    # correction are calibrated for that pointwise residual.  If we feed the weak
-    # residual directly into Pnum or P += γP*RP/M_P, the update is scaled by element
-    # volume and pressure convergence stalls/refines incorrectly.
-    #
-    # Use the helper to assemble both:
-    #   dr.M_P = ∫ N_i dΩ
-    #   γP      = mean-viscosity pressure update scale
-    # Then γP * RP/M_P matches the pointwise FD-style pressure correction without
-    # letting phase-local viscosity extremes set the pressure step.
+    # Scale the pressure update with the mean viscosity so phase-local viscosity
+    # extremes do not set the pressure step.
     ηγP = ntuple(_ -> mean(η), Val(length(η)))
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δt; workgroup,
-        phases_v = phases_solve, η = ηγP,
-    )
 
     rel_drop0     = 1e-1     # inner convergence: velocity residual drops by this factor
     verbose_PH    = verbose
@@ -482,13 +465,14 @@ function main(;
     # Forward solve
     # ---------------------------------------------------------------------------
 
-    t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
+    t_forward = @elapsed solve_stats = solve!(
+        dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
+        pressure_factor = γfact, scaling_viscosity = ηγP,
         phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
-        ncheck,
-        ϵ_tol,
+        check_interval = ncheck,
+        tolerance = ϵ_tol,
         iterMax,
-        total_iterMax,
+        max_iterations = total_iterMax,
         rel_drop0,
         verbose = verbose_PH,
         verbose_inner = verbose_DR,
@@ -497,6 +481,7 @@ function main(;
         λmax_power_rtol = forward_λmax_power_rtol,
         λmax_safety = forward_λmax_safety,
         collect_history = true,
+        throw_on_failure = false,
     )
     # The adjoint freezes its transpose Jacobian, preconditioner, and λmax at the
     # forward state, so differentiating an unconverged one yields a gradient of
@@ -642,18 +627,15 @@ function main(;
     λvy = zero(dr.v.y)
     λP  = zero(dr.P)
 
-    t_adjoint = @elapsed adjoint_stats = solve_stokes_adjoint_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_solve, phases_solve, τ_old, plastic, G_stokes, Δt, γP,
+    t_adjoint = @elapsed adjoint_stats = solve_adjoint!(
+        dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
         objective_vx, objective_vy, λvx, λvy, λP,
-        backend, workgroup;
-        vx_nodes,
-        vy_nodes,
-        ncheck,
-        adjoint_tol,
+        phases_v = phases_solve, phases_P = phases_solve, τ_old, plastic, workgroup,
+        check_interval = ncheck,
+        tolerance = adjoint_tol,
         rel_drop = adjoint_rel_drop,
         iterMax = adjoint_iterMax,
-        total_iterMax = adjoint_total_iterMax,
+        max_iterations = adjoint_total_iterMax,
         max_ph_iterations = adjoint_max_ph_iterations,
         verbose = adjoint_verbose,
         verbose_inner = adjoint_verbose_inner,

@@ -73,48 +73,40 @@ output records.
 ## Boundary conditions
 
 Free slip on all six walls: each wall pins only the velocity component *normal*
-to it, leaving tangential flow along the wall unconstrained. The constraint is
-passed as a 3-tuple `fixed_nodes`, where entry `c` lists the nodes whose
-component `c` is held at zero, so a node on an edge or corner appears once per
-wall it touches. Wall membership is tested against a tolerance rather than exact
-equality, because extruded coordinates land on a wall only to rounding.
+to it, leaving tangential flow along the wall unconstrained. Entry `c` of
+`fixed_nodes` lists the nodes whose component `c` is constrained, so a node on an
+edge or corner appears once per wall it touches. Wall membership is tested
+against a tolerance rather than exact equality, because extruded coordinates
+land on a wall only to rounding. Each node set becomes one
+`DirichletBoundaryCondition` with zero values, and the three form `bc_v`.
 
-The general 3-D solver also accepts `bc_values`, a tuple of three arrays whose
-entries match `fixed_nodes` component by component. Omitting it prescribes zero.
-These velocities are applied before the first residual assembly and repinned
-after each update, so the initial guess need not already satisfy the boundary
-values. A component array with the wrong length raises `DimensionMismatch`.
+Nonzero values impose a prescribed flow, as
+`examples/miniapps/stokes/stokes_3D_viscous_inclusion` does with a far-field pure
+shear. The values are applied before the first
+residual assembly and repinned after each update, so the initial guess need not
+already satisfy them.
 
 ## Forward solve
 
-The forward problem calls `solve_stokes_dyrel!`, the same public entry point the
-2-D example uses; multiple dispatch selects the 3-D layout of three velocity
-components plus cell-local pressure modes. Velocity and pressure are
-caller-owned and updated in place from the supplied initial guess.
+The material goes into a [`StokesMaterial`](stokes.md) with one viscosity and
+density per phase and gravity `(0, 0, -1)`. The state
+[`CellPressureStokesDR`](@ref) takes the mesh, that material, and the cell phases;
+it owns the velocity `dr.v`, a [`VectorField3D`](field_containers.md), the
+`4 × nels` pressure `dr.P`, and the solver scratch. It is separate from the
+mixed-mesh [`StokesDR`](stokes.md), which carries stress history, temperature,
+and pseudo-transient work arrays that this purely viscous method never touches.
 
-The example holds velocity in a
-[`VectorField3D`](field_containers.md) and passes `Tuple(velocity)` to the
-solver, which takes the three component arrays positionally. The tuple shares
-those arrays, so the in-place updates land back in the container.
+`solve!(dr, mesh, bc_v; tolerance, max_iterations, check_interval)` updates
+`dr.v` and `dr.P` in place: `check_interval` sets how often the absolute
+combined residual is recomputed and compared with `tolerance`, and
+`max_iterations` is the iteration budget. `velocity_step` and `pressure_step`
+scale the velocity and pressure updates. The returned statistics carry
+`converged`, `iterations`, `residual`, `history`, `err_v`, and `err_P`; a solve
+that does not converge throws.
 
-It deliberately does not build a [`StokesDR`](stokes.md). That state is
-dimension-generic and a three-dimensional one is constructible, but it also
-carries a stress history, temperature, and the pseudo-transient and
-preconditioner work arrays that this matrix-free method never touches. The bare
-velocity container is the whole of the state the 3-D solver needs.
-
-`ncheck` sets how often the residual norms are recomputed and reported, `ϵ_tol`
-the absolute combined tolerance, and `total_iterMax` the iteration budget the
-3-D method enforces. `velocity_step` and `γP` scale the velocity and pressure
-updates. The returned statistics carry `iter`, `err`, `err_v`, `err_P`,
-`converged`, and `reached_total_iter`; the example raises an error rather than
-returning a silently unconverged field. [`solve_stokes_3d!`](@ref) remains as a
-compatibility wrapper mapping `maxiter`, `tolerance`, and `pressure_step` onto
-those keywords.
-
-`run_sinking_block_3d` returns the mesh, velocity and pressure, cell phases,
-constrained nodes, solver statistics, and the material inputs. The returned
-`velocity` is the `VectorField3D`, so components are reached as `velocity.x`,
+`run_sinking_block_3d` returns the mesh, the solved state `dr` and its `bc_v`,
+velocity and pressure, cell phases, constrained nodes, solver statistics, and
+the material inputs. The returned `velocity` is `dr.v`, so components are reached as `velocity.x`,
 `velocity.y`, `velocity.z`. With
 `write_output=true` it also writes `stokes_3D_sinking_block.vtk` holding the
 three velocity components, cell-centre pressure, and material phase.
@@ -151,13 +143,13 @@ to the dense block — its sinking rate. The load ``c=\partial J/\partial v``
 therefore carries ``1/N`` on the vertical component at those nodes and zero
 everywhere else.
 
-The linear viscous operator is symmetric, so ``A^T=A`` and
-[`solve_stokes_adjoint_dyrel!`](@ref) reuses the forward residual and
-preconditioner with ``c`` as its momentum load. The constrained nodes carry over
-unchanged for the same reason. [`solve_stokes_adjoint_3d!`](@ref) is the
-matching compatibility wrapper.
+The linear viscous operator is symmetric, so ``A^T=A`` and `solve_adjoint!(dr,
+mesh, bc_v; objective_v, λv, λP)` reuses the forward state's residual and
+preconditioner with ``c`` as its momentum load, writing the adjoint into the
+caller-owned `λv` and `λP`. The constrained nodes carry over unchanged for the
+same reason, with homogeneous values.
 
-[`stokes_material_gradient_3d`](@ref) then contracts ``\lambda`` against
+`stokes_material_gradient_3d(dr, mesh, λv)` then contracts ``\lambda`` against
 ``\partial b/\partial\rho`` and ``(\partial A/\partial\eta)u`` for every phase
 at once, returning one gradient tuple per property. Density changes the
 gravity load; viscosity changes a phase's viscous matrix contribution. Both

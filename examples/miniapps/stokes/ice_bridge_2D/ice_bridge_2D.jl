@@ -136,13 +136,12 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     ρ0 = (Float64(ρice),)
     g = (0.0, -Float64(gravity))
     material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref = 0.0)
-    dr = StokesDR(backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9)
+    dr = StokesDR(mesh_stokes, material;
+        stress_size = mesh_stokes.nnodes, CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9)
 
     phases_v = ones(Int, length(element_v), mesh_stokes.nels)
     phases_P = ones(Int, length(element_P), mesh_stokes.nels)
     Δt_max = Float64(Δt_kyr) * KYR
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
 
     # End supports: vertical velocity is zero on two bottom pier patches.  One
     # left-support node also fixes horizontal translation without overconstraining
@@ -157,8 +156,8 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     right_support = Int32[n for n in boundary if coords[n][2] ≤ tol && coords[n][1] ≥ Lx - support_length]
     vy_nodes = sort!(unique(vcat(left_support, right_support)))
     vx_nodes = Int32[minimum(left_support)]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, zeros(Float64, length(vx_nodes)))
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(Float64, length(vy_nodes)))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, zeros(Float64, length(vx_nodes)))
+    bc_vy = DirichletBoundaryCondition(vy_nodes, zeros(Float64, length(vy_nodes)))
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
     @info "Ice-bridge supports" (; horizontal_anchor = length(vx_nodes),
@@ -191,16 +190,13 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
         end
         dt_step = min(dt_step, t_end - t)
         t += dt_step
-        assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, 20.0, dt_step;
-            workgroup, phases_v,
-        )
-        stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, bc_vx, bc_vy, dt_step, γP;
+        stats = solve!(
+            dr, mesh_stokes, bc_vx, bc_vy; dt = dt_step,
+            pressure_factor = 20.0,
             phases_v, phases_P, τ_old,
-            iterMax = 5_000, total_iterMax = 100_000,
-            max_ph_iterations = 20, ϵ_tol = 1.0e-6,
-            rel_drop0 = 0.75, verbose, verbose_inner = false,
+            iterMax = 5_000, max_iterations = 100_000,
+            max_ph_iterations = 20, tolerance = 1.0e-6,
+            rel_drop0 = 0.75, verbose, verbose_inner = false, throw_on_failure = false,
         )
         stats.converged || @warn "Ice-bridge step did not fully converge" istep stats
 
@@ -267,37 +263,3 @@ output_dir = joinpath(@__DIR__, "output_ice_bridge")
 verbose = true
 
 main()
-
-
-function foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode])
-    end
-
-    FEMTools.straighten_t7_geometry!(mesh_stokes.coords, mesh_stokes.el2n)
-    copyto!(mesh_v.coords, mesh_stokes.coords)
-    copyto!(mesh_stokes.coords, mesh_stokes.coords)
-    return update_geometry!(mesh_stokes)
-end
-
-function move_mesh!(mesh_stokes::MixedMesh{2}, dr, dt)
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode])
-    end
-end
-
-function move_mesh!(mesh_stokes::MixedMesh{3}, dr, dt)
-    for inode in 1:length(mesh_stokes.coords)
-        mesh_stokes.coords[inode] += dt * SVector(dr.v.x[inode], dr.v.y[inode], dr.vz[inode])
-    end
-end
-
-foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-@code_warntype foo(mesh_stokes, mesh_v, dr, dt, backend, workgroup, element_v, element_P)
-
-move_mesh!(mesh_stokes, dr, dt)
-
-struct SymmetricTensor{T, N} where {T, N}
-    data::SVector{N * (N + 1) ÷ 2, T}
-end

@@ -10,6 +10,7 @@ using TimerOutputs
 using DomainSets
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 function integrate_residual!(R, H, source, D, mesh, Nq, ∂N∂ξq, ip, iel, ::Val{N}; doatomic::Bool=false) where N
     local_nodes = ntuple(i -> mesh.el2n[i, iel], Val(N))

@@ -68,7 +68,8 @@ using DomainSets: ×
 
     function setup(K, G, ηb, augmented)
         dr = StokesDR(
-            backend, nn, nnP, η, ηb, α; ρ0 = (1.0, 2.0), K, g, Tref,
+            backend, nn, nnP,
+            StokesMaterial(; η, ηb, α, ρ0 = (1.0, 2.0), K, g, Tref);
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, nels),
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, nels), 3)
@@ -161,7 +162,8 @@ end
 
     function operator(K, G)
         dr = StokesDR(
-            backend, nn, nnP, η, (Inf, Inf), α; ρ0 = (1.0, 2.0), K, g, Tref,
+            backend, nn, nnP,
+            StokesMaterial(; η, ηb = (Inf, Inf), α, ρ0 = (1.0, 2.0), K, g, Tref);
             CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, nels),
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, nels), 3)
@@ -305,7 +307,7 @@ end
         objective = (zeros(nn), zeros(nn), [c[3] > -0.5 ? 1.0 : 0.0 for c in coords] ./ nn)
         λv = ntuple(_ -> zeros(nn), 3)
         λP = zeros(nnP)
-        stats = solve_stokes_adjoint_dyrel!(
+        stats = FEMTools._solve_stokes_adjoint_dyrel!(
             dr, mesh, geo_v, geo_P, element_v, element_P, phases_v, phases_P, τ_old, plastic,
             dr.G, Δt, γP, objective, λv, λP, backend, wg;
             v_nodes, adjoint_tol = 1.0e-10, verbose = false,
@@ -320,7 +322,7 @@ end
     end
 
     dr, τ_old, γP = setup(0.0)
-    @test_throws "two dimensions only" solve_stokes_adjoint_dyrel!(
+    @test_throws "two dimensions only" FEMTools._solve_stokes_adjoint_dyrel!(
         dr, mesh, geo_v, geo_P, element_v, element_P, phases_v, phases_P, τ_old, nothing,
         dr.G, Δt, γP, ntuple(_ -> zeros(nn), 3), ntuple(_ -> zeros(nn), 3), zeros(nnP), backend, wg;
         v_nodes = (Int32[], Int32[], Int32[]), operator = :matrix_free, verbose = false,

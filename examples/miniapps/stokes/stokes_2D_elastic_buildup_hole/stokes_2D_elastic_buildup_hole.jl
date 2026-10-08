@@ -194,42 +194,18 @@ function main(;
     vx_bc = zeros(Float64, length(vx_nodes))
     vy_bc = zeros(Float64, length(vy_nodes))
 
-    apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, vx_bc))
-    apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, vy_bc))
+    apply_bc!(dr.v.x, DirichletBoundaryCondition(vx_nodes, vx_bc))
+    apply_bc!(dr.v.y, DirichletBoundaryCondition(vy_nodes, vy_bc))
 
     @info "Gravitational-loading BCs (no-slip bottom, free-slip sides, free surface top+tunnel)" n_vx=length(vx_nodes) n_vy=length(vy_nodes)
 
-    # Seed pressure from a lithostatic solve on the continuous linear corner
-    # mesh, then sample it to the discontinuous P1 pressure DoFs. The analytical
-    # ρg depth profile is only the warm start for the lithostatic DR solve.
-    corner_nodes = sort!(unique(vec(el2nP_cpu)))
-    corner_id = Dict{Int32, Int32}(old => Int32(i) for (i, old) in enumerate(corner_nodes))
-    coords_litho = coords_v[Int.(corner_nodes)]
-    el2n_litho = Matrix{Int32}(undef, 3, mesh_stokes.nels)
-    for iel in 1:mesh_stokes.nels, a in 1:3
-        el2n_litho[a, iel] = corner_id[Int32(el2nP_cpu[a, iel])]
-    end
-    mesh_litho = Mesh(backend, coords_litho, el2n_litho, element_P; workgroup)
-
-    top_nodes_litho = Int32[
-        corner_id[Int32(n)] for n in outer_nodes
-        if haskey(corner_id, Int32(n)) && abs(coords[n][2] - ly) ≤ tol_x
-    ]
-    material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
-    T_stokes = Array(dr.T)
-    copyto!(lp_dr.T, Float64[T_stokes[Int(n)] for n in corner_nodes])
-    P0_litho = Float64[ρ0_mat * g0 * (ly - coords_litho[i][2]) for i in eachindex(coords_litho)]
-    copyto!(lp_dr.P, P0_litho)
-    bc_litho = DirichletBoundaryCondition(
-        nothing, TDev(top_nodes_litho), TDev(zeros(Float64, length(top_nodes_litho))),
-    )
-    solver!(lp_dr, mesh_litho, bc_litho; workgroup, ncheck = 50, verbose = false, Tref = Tref, g = g)
-
-    P_litho_l = Array(lp_dr.P)
+    # Seed pressure with the hydrostatic profile ρ₀g(ly − y) at the pressure
+    # DoFs. It satisfies ∇P = ρ₀g exactly, with P = 0 on the top surface and zero
+    # normal flux elsewhere, so a lithostatic solve would only reproduce it.
     P_litho_P = zeros(Float64, mesh_stokes.nnodesP)
     for iel in 1:mesh_stokes.nels, a in 1:3
-        P_litho_P[DoFsP_cpu[a, iel]] = P_litho_l[corner_id[Int32(el2nP_cpu[a, iel])]]
+        y = coords_v[Int(el2nP_cpu[a, iel])][2]
+        P_litho_P[DoFsP_cpu[a, iel]] = ρ0_mat * g0 * (ly - y)
     end
     copyto!(dr.P, P_litho_P)
     copyto!(dr.P0, P_litho_P)
@@ -271,14 +247,12 @@ function main(;
         Δt = min(Δt_kyr * KYR, t_end - t)
         t += Δt
 
-        # Pressure mass + viscosity-weighted scaling, recomputed each step on the
-        # current (advected) geometry. The K-aware form sets γ_phy = K·Δt, so the
-        # finite bulk modulus caps the pressure penalty (γ_eff ≈ K·Δt ≪ γfact·η),
-        # making the incompressible coupling far less stiff and Powell-Hestenes
-        # converge much faster than the K=Inf hard-incompressible limit.
+        # Pressure mass and scale on the current (advected) geometry. The scale
+        # uses the continuity residual's storage modulus `ηb`; since
+        # `ηb·Δt ≫ γfact·η`, it reduces to the incompressible `γfact·η`.
         assemble_viscosity_weighted_pressure_scaling!(
             γP, dr, mesh_stokes, geo_P, element_v, element_P,
-            γfact, Δt, backend, workgroup; phases_v = phases_v_cpu,
+            γfact, Δt, backend, workgroup; phases_v = phases_v_cpu, K = dr.ηb,
         )
 
         # Residual normalization scales for self-weight loading:

@@ -18,7 +18,14 @@ Documentation has four layers:
 page does not publish it automatically; add it to the `pages` tree when it is
 meant for users.
 
-The docs environment is separate under `docs/Project.toml`. Examples referenced
+The home page opens with `@example` workflows (one thermal step, one
+incompressible Stokes inclusion) that Documenter executes on every build, so the
+ordinary mesh/material/BC/`solve!` path cannot silently rot.
+
+The docs environment is separate under `docs/Project.toml`. Its manifest is
+untracked; a manifest resolved on a newer Julia fails on an older one (for
+example `Zstd_jll`, a stdlib only on 1.13), so keep a per-version
+`Manifest-v1.X.toml` (gitignored) when building on several Julia versions. Examples referenced
 by the manual usually run under `examples/Project.toml`, not the docs
 environment.
 
@@ -137,3 +144,12 @@ Benchmark docs describe default JLD2 history archives and metadata DoF counts,
 including constrained nodes and cell-local pressure unknowns. They document
 save_history/FEMTOOLS_BENCHMARK_HISTORY controls, history_path, dataset keys,
 and reading archives with JLD2.load. JLD2 is an examples dependency only.
+
+Heat, lithostatic, Stokes, and boundary-condition topic pages present mesh-based
+state construction and two-argument Dirichlet data. Precision compatibility,
+inferred backend/stress layout, and explicit layout overrides are documented.
+
+Thermal and Stokes topic pages document scalar material properties, typed
+multi-phase defaults, and uniform scalar phase properties. Stokes setup also
+documents shared one-row cell phases and omitted uniform phases. Bulk viscosity
+still defaults to one; incompressible workflows must explicitly set it infinite.

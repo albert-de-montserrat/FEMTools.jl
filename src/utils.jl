@@ -175,3 +175,27 @@ churn a full set of temporaries per check.
 """
 @inline fused_sum(f, arrays...) =
     sum(Base.Broadcast.instantiate(Base.Broadcast.broadcasted(f, arrays...)))
+
+function _check_material_precision(mesh, properties)
+    eltype(properties) === eltype(eltype(mesh.coords)) ||
+        throw(ArgumentError("mesh coordinates and material properties must have the same scalar type"))
+    return nothing
+end
+
+_material_tuple(value::Real) = (float(value),)
+_material_tuple(values::Tuple) = values
+_material_tuple(::Tuple{}) = throw(ArgumentError("material properties cannot be empty"))
+
+# A phase tuple fixes the layout; otherwise the first supplied scalar does.
+_material_reference(::Tuple{}, scalar) = _material_tuple(something(scalar, 1.0))
+_material_reference(properties::Tuple{<:Tuple, Vararg}, _) = _material_tuple(first(properties))
+function _material_reference(properties::Tuple, scalar)
+    value = first(properties)
+    reference = scalar === nothing ? value : scalar
+    return _material_reference(Base.tail(properties), reference)
+end
+
+_material_property(values::Tuple, _, _) = _material_tuple(values)
+_material_property(value::Real, reference, _) = ntuple(_ -> float(value), Val(length(reference)))
+_material_property(::Nothing, reference::Tuple, default) =
+    ntuple(_ -> eltype(reference)(default), Val(length(reference)))

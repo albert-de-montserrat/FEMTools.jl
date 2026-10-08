@@ -144,14 +144,10 @@ function main(; max_area = 1.0e-3, nsteps = 2000,
 
     material = StokesMaterial(; η, ηb, G, α = (0.0, 0.0), ρ0 = (1.0, 1.0), K,
         g = (0.0, 0.0), Tref = 0.0)
-    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
-        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels))
+    dr = StokesDR(mesh, material; plastic_history_size = (nq, mesh.nels))
     # The seed is a mesh region, so its phase is per element, not per node.
     phases_v = repeat(reshape(mesh_attributes, 1, :), length(element_v), 1)
     phases_P = repeat(reshape(mesh_attributes, 1, :), length(element_P), 1)
-    γP = zeros(Float64, mesh.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(γP, dr, mesh, 20.0, dt;
-        workgroup, phases_v)
 
     coords = Array(mesh.coords)
     boundary = Array(mesh_v.Γnodes)
@@ -166,8 +162,8 @@ function main(; max_area = 1.0e-3, nsteps = 2000,
     vx_nodes = vcat(left, right)
     vx_vals = vcat(fill(-0.5 * strain_rate * Lx, length(left)),
         fill(0.5 * strain_rate * Lx, length(right)))
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, top_bottom, zeros(length(top_bottom)))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, vx_vals)
+    bc_vy = DirichletBoundaryCondition(top_bottom, zeros(length(top_bottom)))
     dr.v.x .= [strain_rate * (c[1] - Lx / 2) for c in coords]
     dr.v.y .= 0
     apply_bc!(dr.v.x, bc_vx)
@@ -208,12 +204,13 @@ function main(; max_area = 1.0e-3, nsteps = 2000,
         println("Starting step $step\n")
         times[step] = step * dt
         copyto!(dr.T0, dr.T)
-        result = solve_stokes_dyrel!(dr, mesh, bc_vx, bc_vy, dt, γP;
+        result = solve!(dr, mesh, bc_vx, bc_vy; dt,
+            pressure_factor = 20.0,
             plastic, phases_v, phases_P, τ_old, P_old, workgroup,
             # Pressure relaxation needs several PH updates; a short inner cap
             # keeps those updates frequent while retaining a generous total budget.
-            ncheck = 25, iterMax = 500, total_iterMax = 50_000,
-            verbose, verbose_inner = false)
+            check_interval = 25, iterMax = 500, max_iterations = 50_000,
+            verbose, verbose_inner = false, throw_on_failure = false)
         result.converged || error("Popov extension step $step did not converge")
         update_stokes_current_stress!(dr, mesh, τ_and_P, dt;
             plastic, phases_v, τ_old, workgroup)

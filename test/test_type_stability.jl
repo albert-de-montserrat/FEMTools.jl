@@ -203,14 +203,14 @@ end
 function _heat_dr_case(::Type{FP}) where FP
     return ThermalDiffusionDR(
         CPU(), 3,
-        (FP(2),), (FP(1),), (FP(1),), (FP(0),), (FP(Inf),),
+        ThermalMaterial(; k = (FP(2),), Cp = (FP(1),), ρ0 = (FP(1),), α = (FP(0),), K = (FP(Inf),)),
     )
 end
 
 function _lithostatic_dr_case(::Type{FP}) where FP
     return LithostaticPressureDR(
         CPU(), 3,
-        (FP(1),), (FP(0),), (FP(Inf),),
+        ThermalMaterial(; ρ0 = (FP(1),), α = (FP(0),), K = (FP(Inf),)),
     )
 end
 

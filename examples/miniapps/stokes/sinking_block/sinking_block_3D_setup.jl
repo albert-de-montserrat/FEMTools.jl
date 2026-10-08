@@ -19,7 +19,7 @@ include(joinpath(@__DIR__, "..", "mesher", "mesher.jl"))
                          verbose=true, solver_tol=1e-6, workgroup=128)
 
 Solve the viscous 3-D sinking-block problem on a Gmsh Hex27 mesh with the
-matrix-free `solve_stokes_dyrel!` solver. Velocity uses continuous Q2 functions
+matrix-free [`CellPressureStokesDR`](@ref) solver. Velocity uses continuous Q2 functions
 and pressure four cell-local P1 modes. The two entries of `η` and `ρ` describe
 the matrix and centred block; `half_width` is the block half-width in every
 coordinate direction. Free-slip conditions constrain the normal velocity on all
@@ -30,8 +30,9 @@ the phase and boundary-node searches run on the host and are transferred once.
 Load the matching GPU package before passing its backend, e.g. `using CUDA` and
 `backend = CUDABackend()`. `workgroup` sets the kernel workgroup size.
 
-Returns the mesh, velocity and pressure, cell phases, constrained nodes, solver
-statistics, and material inputs. With `write_output=true`, also writes
+Returns the mesh, the solved [`CellPressureStokesDR`](@ref) state and its velocity
+boundary conditions, velocity and pressure, cell phases, constrained nodes,
+solver statistics, and material inputs. With `write_output=true`, also writes
 `stokes_3D_sinking_block.vtk` beside this script. `solver_tol` is the absolute
 combined residual tolerance of the solve.
 """
@@ -78,18 +79,16 @@ function run_sinking_block_3d(;
            (component == 2 && (abs(c[2]) ≤ tol || abs(c[2] - 1) ≤ tol)) ||
            (component == 3 && (abs(c[3]) ≤ tol || abs(c[3] - 1) ≤ tol))
     ]), 3)
-    # The solver updates both in place, starting from this zero initial guess.
-    # Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
-    velocity = FEMTools.VectorField3D(backend, Float64, mesh.nnodes)
-    pressure = KA.zeros(backend, Float64, 4, mesh.nels)
-    # `ncheck` sets how often the residual norms are recomputed and reported;
-    # the iteration budget the 3-D method actually enforces is `total_iterMax`.
-    solve_stats = solve_stokes_dyrel!(
-        Tuple(velocity), pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-        ncheck = 50, ϵ_tol = solver_tol, iterMax = 50_000, total_iterMax = 50_000,
+    bc_v = map(nodes -> DirichletBoundaryCondition(nodes, KA.zeros(backend, Float64, length(nodes))), fixed_nodes)
+    # The state holds velocity and pressure, zero initially and updated in place
+    # by the solve. Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
+    material = StokesMaterial(; η, ρ0 = ρ, g)
+    dr = CellPressureStokesDR(mesh, material; phases = cell_phase)
+    solve_stats = solve!(dr, mesh, bc_v;
+        tolerance = solver_tol, max_iterations = 50_000, check_interval = 50,
         workgroup, verbose,
     )
-    solve_stats.converged || error("3D DYREL solve did not converge: $(solve_stats.err)")
+    velocity, pressure = dr.v, dr.P
     if write_output
         # `pressure[1, :]` is the cell-constant mode; the three linear modes have
         # no single cell-centre value and are dropped from the output.
@@ -98,7 +97,7 @@ function run_sinking_block_3d(;
             cell_data = (; pressure = pressure[1, :], phase = cell_phase),
             title = "FEMTools 3D Q2/P1-disc sinking block")
     end
-    return (; mesh, velocity, pressure, cell_phase, fixed_nodes, solve_stats, η, ρ, g)
+    return (; mesh, dr, bc_v, velocity, pressure, cell_phase, fixed_nodes, solve_stats, η, ρ, g)
 end
 
 # Discrete adjoint of the 3-D sinking block. For the linear system `A(m) u = b(m)`
@@ -115,7 +114,7 @@ end
 Solve the discrete transpose of a result from [`run_sinking_block_3d`](@ref)
 for the objective `J = mean(vz)` over velocity nodes belonging to the dense
 block. If `forward` is omitted, run the default forward problem without writing
-VTK output. Both stages are matrix-free: `solve_stokes_adjoint_dyrel!` for the
+VTK output. Both stages are matrix-free: `solve_adjoint!` for the
 transpose solve, then `stokes_material_gradient_3d` for the sensitivities.
 
 Returns the forward result, the objective load, component-wise adjoint velocity
@@ -124,16 +123,17 @@ and pressure, adjoint convergence statistics, the objective value, and
 sensitivity to every material phase from the one transpose solve.
 """
 function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_output = false))
-    (; mesh, cell_phase) = forward
+    (; mesh, dr, bc_v, cell_phase) = forward
+    backend = KA.get_backend(mesh.coords)
     # Every node touched by a phase-2 cell, including those it shares with the
     # surrounding matrix cells.
-    block_nodes = unique(vec(Array(mesh.el2n)[:, cell_phase .== 2]))
+    block_nodes = unique(vec(Array(mesh.el2n)[:, Array(cell_phase) .== 2]))
     # The load `c = ∂J/∂v`. `J` averages the vertical velocity over those nodes,
     # so component 3 carries 1/N there and every other entry is zero.
     objective_components = ntuple(i -> begin
         load = zeros(mesh.nnodes)
         i == 3 && (load[block_nodes] .= 1 / length(block_nodes))
-        load
+        FEMTools.TA(backend)(load)
     end, 3)
 
     objective_velocity = FEMTools.VectorField3D(objective_components...)
@@ -142,22 +142,16 @@ function solve_sinking_block_adjoint_3d(forward = run_sinking_block_3d(; write_o
     # solve reuses the forward residual and preconditioner with `c` as its
     # momentum load. The constrained nodes carry over unchanged for the same
     # reason: `Aᵀ` eliminates the same rows and columns.
-    adjoint_velocity = FEMTools.VectorField3D(CPU(), Float64, mesh.nnodes)
-    adjoint_pressure = zeros(4, mesh.nels)
-    adjoint_stats = solve_stokes_adjoint_dyrel!(
-        Tuple(adjoint_velocity), adjoint_pressure, Tuple(objective_velocity),
-        mesh, cell_phase, forward.η, forward.fixed_nodes;
-        ncheck = 50, adjoint_tol = 1e-6, iterMax = 50_000,
-        total_iterMax = 50_000, verbose = false,
+    adjoint_velocity = FEMTools.VectorField3D(backend, Float64, mesh.nnodes)
+    adjoint_pressure = KA.zeros(backend, Float64, 4, mesh.nels)
+    adjoint_stats = solve_adjoint!(dr, mesh, bc_v;
+        objective_v = objective_velocity, λv = adjoint_velocity, λP = adjoint_pressure,
+        tolerance = 1e-6, max_iterations = 50_000, check_interval = 50, verbose = false,
     )
-    adjoint_stats.converged || error("3D adjoint DYREL solve did not converge: $(adjoint_stats.err)")
     # Contracts `λ` against `∂b/∂ρ` and `(∂A/∂η) u` for every phase at once.
     # Both derivatives are applied as residual evaluations with unit material
     # properties, so neither derivative matrix is ever assembled.
-    gradients = stokes_material_gradient_3d(
-        Tuple(forward.velocity), Tuple(adjoint_velocity), mesh, cell_phase,
-        forward.η, forward.ρ, forward.g,
-    )
+    gradients = stokes_material_gradient_3d(dr, mesh, adjoint_velocity)
 
     # `J = cᵀu`: the mean vertical velocity over the block, i.e. its sinking rate.
     objective = sum(dot(c, u) for (c, u) in zip(Tuple(objective_velocity), Tuple(forward.velocity)))

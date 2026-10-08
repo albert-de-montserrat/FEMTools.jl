@@ -5,25 +5,11 @@ using StaticArrays
 using Printf
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 # const backend   = CUDABackend()
 const backend   = CPU()
 const workgroup = 64
-
-# ---------------------------------------------------------------------------
-# Geometry precomputation  (local helper — wraps FEMTools kernel)
-# ---------------------------------------------------------------------------
-
-function precompute_geometry(coords, el2n, nels, element::ReferenceElement{T}) where T<:AbstractElement{2, N} where N
-    ip    = element.integration_points
-    NQ    = length(ip.ω)
-    ξq    = ntuple(q -> SVector(ip.ξ[q], ip.η[q]), NQ)
-    ∂N∂ξq = ntuple(q -> eval_shape_function_jacobian(element, ξq[q]), NQ)
-    geo   = KernelAbstractions.allocate(backend, NTuple{NQ, Tuple{SMatrix{N, 2, Float64, 2N}, Float64}}, nels)
-    FEMTools.precompute_geometry_kernel!(backend, workgroup)(geo, coords, el2n, ∂N∂ξq, ip.ω, Val(N); ndrange = nels)
-    KernelAbstractions.synchronize(backend)
-    return geo
-end
 
 # ---------------------------------------------------------------------------
 
@@ -56,13 +42,10 @@ function main(nels)
     # DOF index arrays and value arrays are kept separate from dr
     Γ_dofs = TDev(vcat(mesh_cpu.DoFs[Γb], mesh_cpu.DoFs[Γt]))
     Γ_vals = TDev(vcat(fill(T_bot, length(Γb)), fill(T_top, length(Γt))))
-    Γ_zero = zero(Γ_vals)
-
-    # --- precompute geometry (∂N∂x, dΩ per element per quadrature point) ---
-    geo = precompute_geometry(mesh.coords, mesh.el2n, mesh.nels, element)
+    bc = DirichletBoundaryCondition(Γ_dofs, Γ_vals)
 
     # --- ThermalDiffusionDR bundles all solver state and material properties ---
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, material; CFL=0.9, ϵ=1e-8)
+    dr = ThermalDiffusionDR(mesh, material; CFL=0.9, ϵ=1e-8)
 
     # Phase assignment: dr.phases defaults to all-ones (single phase).
     # Overwrite to set a two-phase layout, e.g. upper half = phase 2:
@@ -71,7 +54,7 @@ function main(nels)
     # linear initial profile interpolating between bottom (hot) and top (cold)
     # copyto!(dr.T,  TDev(Float64[T_bot + (T_top - T_bot) * (p[2] - leftendpoint(J_Ω)) / (2Ly) for p in coords_cpu]))
     dr.T .= (1300 + 273 * 2) / 2
-    apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
+    FEMTools.apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
     copyto!(dr.T0, dr.T)
 
     # --- time loop ---
@@ -89,7 +72,7 @@ function main(nels)
         fill!(dr.∂T∂τ, 0)
 
         # one call — everything lives in FEMTools
-        solver!(dr, Δt, mesh, geo, element, Γ_dofs, Γ_zero, Γ_vals, backend, workgroup; ncheck = 50, Tref = Tref)
+        solve!(dr, mesh, bc; dt = Δt, workgroup, check_interval = 50, Tref = Tref)
     end
 
     T_host = reshape(Array(dr.T), nx + 1, ny + 1)

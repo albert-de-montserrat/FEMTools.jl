@@ -7,7 +7,7 @@ pseudo-transient dynamic-relaxation (DR) scheme.
 The weak form is `∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ` (steady-state Poisson),
 so no time-step arrays are needed. Temperature `T` enters only as a known
 coefficient for the density EOS `ρ = ρ0(1 − α(T−Tref) + P/K)`.
-`Tref` and `g` are passed to `solver!`, so callers can choose the reference
+`Tref` and `g` are passed to `solve!`, so callers can choose the reference
 temperature and body-force vector without rebuilding the solver state.
 
 # Type parameters
@@ -39,10 +39,8 @@ same material definition to be shared with `ThermalDiffusionDR`.
     LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; CFL=0.98, c_fact=0.9, ϵ=1e-6)
     LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...)  # CPU
 
-The tuple-based constructors remain available for compatibility.
-
 All nodal float arrays are zero-initialised; `phases` is initialised to 1.
-`T` should be filled via `copyto!(dr.T, ...)` before calling `solver!`.
+`T` should be filled via `copyto!(dr.T, ...)` before calling `solve!`.
 """
 struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     # preallocated work arrays
@@ -67,14 +65,13 @@ struct LithostaticPressureDR{nphases, _T, _TI, FP} <: AbstractDRProblem
     ϵ::FP
 
     function LithostaticPressureDR(
-            backend, nnodes,
-            ρ0::Tuple{FP, Vararg{FP, N}}, α::Tuple{FP, Vararg{FP, N}},
-            K::Tuple{FP, Vararg{FP, N}};
+            backend, nnodes, material::ThermalMaterial{nphases, FP};
             CFL = 0.98, c_fact = 0.9, ϵ = 1.0e-6,
-        ) where {N, FP}
+        ) where {nphases, FP}
+        (; ρ0, α, K) = material
         newvec() = KernelAbstractions.zeros(backend, FP, nnodes)
         newivec() = KernelAbstractions.ones(backend, Int32, nnodes)
-        return new{N + 1, typeof(newvec()), typeof(newivec()), FP}(
+        return new{nphases, typeof(newvec()), typeof(newivec()), FP}(
             newvec(), newvec(), newvec(), newvec(),  # R, R0, ∂R∂P, PC
             newvec(), newvec(),                      # P, ∂P∂τ
             newvec(),                                # T
@@ -91,10 +88,17 @@ dr_fields(dr::LithostaticPressureDR) =
     (R = dr.R, R0 = dr.R0, ∂R∂u = dr.∂R∂P, PC = dr.PC, u = dr.P, ∂u∂τ = dr.∂P∂τ)
 dr_name(::LithostaticPressureDR) = "lithostatic pressure"
 
-LithostaticPressureDR(nnodes, ρ0, α, K; kwargs...) =
-    LithostaticPressureDR(CPU(), nnodes, ρ0, α, K; kwargs...)
-
-LithostaticPressureDR(backend, nnodes, material::ThermalMaterial; kwargs...) =
-    LithostaticPressureDR(backend, nnodes, material.ρ0, material.α, material.K; kwargs...)
 LithostaticPressureDR(nnodes, material::ThermalMaterial; kwargs...) =
     LithostaticPressureDR(CPU(), nnodes, material; kwargs...)
+
+"""
+    LithostaticPressureDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+
+Allocate pressure fields on the mesh backend, using its node count. Material
+properties must have the same scalar type as the mesh coordinates. Solver
+control keywords are forwarded to the count-based constructor.
+"""
+function LithostaticPressureDR(mesh::Mesh, material::ThermalMaterial; kwargs...)
+    _check_material_precision(mesh, material.ρ0)
+    return LithostaticPressureDR(KernelAbstractions.get_backend(mesh.coords), mesh.nnodes, material; kwargs...)
+end

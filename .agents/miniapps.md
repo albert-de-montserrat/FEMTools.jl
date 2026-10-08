@@ -204,7 +204,11 @@ The root `benchmarks/` tree also contains three maintained exact-field drivers:
 Each benchmark follows the SolVi2D script layout: top-level imports and one
 `main` with labeled mesh, geometry, state, boundary, solve, comparison, VTK, and
 visualization sections, followed by an unconditional call and completion message.
-Numerical sampling helpers are local to `main`; heatmaps are built inline. Running or including it
+Quadrature sampling, nodal loads, weighted L² errors, the pressure gauge, JLD2
+history archives, and the comparison/convergence figures come from
+`benchmarks/support.jl`, which each exact-field script (triangle and quad)
+includes; scientific parameters, exact solutions, and metadata stay in the
+script. Running or including it
 executes the default solve with numerical/analytical/error heatmaps displayed.
 Plots use filled mesh polygons with quadrature-weighted cell averages, like
 SolVi2D; error colors average absolute pointwise error. Field panels share a
@@ -224,16 +228,17 @@ an explicit hardware check in `check_cuda.jl`; no local hardware pass is claimed
 
 ## Benchmark and support files
 
+`benchmarks/api_inventory.jl` is a host-only development inventory of public
+methods and textual references. `benchmarks/api_baseline.jl` runs small thermal
+and heterogeneous Stokes correctness smokes; `--cuda` requires CUDA and compares
+CPU/device fields in both precisions with scalar indexing disabled. Both run
+their entry points unconditionally and need no plotting dependencies.
+
 These belong to the miniapp ecosystem but are not independent showcase
 applications.
 
 | File | Role |
 |---|---|
-| `examples/benchmarks/thermal/assembly_perf_2D/assembly_perf_2D.jl` | 2-D sparse/colored/atomic diffusion assembly comparison |
-| `examples/benchmarks/thermal/assembly_perf_3D/assembly_perf_3D.jl` | 3-D counterpart of the assembly comparison |
-| `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` | Includes the 2-D sinking-block adjoint and sweeps mesh size/viscosity contrast |
-| `examples/benchmarks/stokes/forward_lambda_perf/forward_lambda_perf.jl` | Compares Gershgorin and measured forward spectral bounds on the sinking block |
-| `examples/benchmarks/stokes/forward_lambda_shear_band_perf/forward_lambda_shear_band_perf.jl` | Spectral-bound comparison on the unstructured pure-shear workflow |
 | `examples/gmsh_meshing.jl` | Shared Gmsh T3/T6/T7 triangle mesh generation and order conversion |
 | `examples/miniapps/stokes/mesher/mesher.jl` | Sinking-block geometry launch helper and Gmsh Hex27 order conversion |
 | `examples/miniapps/stokes/sinking_block/sinking_block_3D_setup.jl` | 3-D sinking-block forward and adjoint definitions shared by the two drivers and `test/test_stokes_3d_reference.jl` |
@@ -259,8 +264,12 @@ New or polished primary miniapps should follow this shape:
    experiment.
 6. Rely on `--project=examples`; do not mutate the active Julia environment from
    inside a maintained script.
+   Scripts that load GLMakie and build a `Mesh` add `using FEMTools: Mesh`:
+   both packages export `Mesh`, and the ambiguous name is otherwise undefined.
+   Non-exported `public` names (for example `apply_dirichlet!`) are qualified
+   as `FEMTools.name`.
 7. Keep default problem sizes runnable on a normal workstation. Put expensive
-   sweeps in `examples/benchmarks/`.
+   sweeps in `benchmarks/`.
 8. Use public FEMTools APIs for supported workflows. Script-local low-level
    experiments are allowed, but label them as such and avoid presenting them as
    stable package API.
@@ -308,10 +317,9 @@ does not cover this entire inventory. Update it when a miniapp becomes part of
 the maintained set; add a tiny execution test only when it can remain stable
 and reasonably fast.
 
-The same benchmark folders contain standalone `SolKz2D_quad.jl`,
-`SolCx2D_quad.jl`, and `ThermalDiffusion2D_quad.jl`, with the same one-main
-SolVi2D layout. Stokes uses Q2/P1; thermal uses scalar Q2 (no pressure), as its
-original Q9 driver already does. Quad outputs use `output_quad/` and `_quad`
+The Stokes benchmark folders contain standalone `SolKz2D_quad.jl` and
+`SolCx2D_quad.jl` with the same one-main SolVi2D layout and Q2/P1 elements. The
+thermal driver already uses Q9, so it has no quad variant. Quad outputs use `output_quad/` and `_quad`
 filenames, so running variants does not replace triangle outputs.
 
 ## Update this guide when
@@ -344,3 +352,28 @@ include boundary constraints and cell-local pressure values. Return history_path
 is the filename, or nothing when disabled. The default entry point respects
 FEMTOOLS_BENCHMARK_HISTORY=false; validation/sweep runners suppress archives
 except serialization checks in temporary directories.
+
+The six maintained exact-field drivers use mesh-based state constructors and
+two-argument Dirichlet construction. Stokes stress dimensions are inferred.
+Material defaults remove explicit unit, zero, and infinite property tuples.
+SolKz uses default nodal phases without all-one cell matrices. SolCx shares
+one backend-resident cell-phase row across velocity and pressure, preserving
+the discontinuous interface. Pressure scaling remains explicit pending later
+API work.
+
+## Owned pressure scaling in drivers
+
+SolKz/SolCx, Solvi (benchmark and miniapp copies), sinking block (benchmark and
+miniapp, `scaling_viscosity` = mean viscosity), shear bands, ice bridge, Popov
+extension, and the three unstructured pure-shear drivers (`_triangle`, `_adv`,
+`_hole`) call `solve!(…; dt, pressure_factor)`. The 2-D adjoint miniapps
+(`sinking_block_adj`, `vevp/stokes_2D_pure_shear_triangle_adj`) call `solve!`
+then `solve_adjoint!`, keeping their own forward/adjoint convergence errors via
+`throw_on_failure = false`. Run with small meshes on Linux, the migrated pure-shear,
+Solvi, and adjoint drivers reproduce the positional-API fields, adjoint
+multipliers, and phase gradients to ≤1e-12 relative.
+
+`stokes_2D_pure_shear`, `stokes_2D_elastic_buildup`, and
+`stokes_2D_elastic_buildup_hole` hand-write the DR loop around low-level kernels,
+so they keep calling `assemble_viscosity_weighted_pressure_scaling!` for their
+own `γP`.

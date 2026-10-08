@@ -178,7 +178,7 @@ end
                              max_iterations=50_000, workgroup=256)
 
 Solve the linear viscous spherical-inclusion problem on a sphere-fitted Hex27
-mesh of the cube `[0,L]³` with the matrix-free `solve_stokes_dyrel!` solver.
+mesh of the cube `[0,L]³` with the matrix-free [`CellPressureStokesDR`](@ref) solver.
 Velocity uses continuous Q2 functions and pressure four cell-local P1 modes. The
 entries of `η` are the matrix and inclusion viscosities; the sphere of `radius`
 sits at the centre of the cube. There is no body force, so the pressure is
@@ -238,27 +238,24 @@ function run_viscous_inclusion_3d(;
     on_wall(c) = any(x -> abs(x) ≤ tol || abs(x - L) ≤ tol, c)
     wall_nodes = Int32[node for (node, c) in pairs(coords) if on_wall(c)]
     pure_shear = (c -> ε̇_bg * (c[1] - L / 2), c -> zero(ε̇_bg), c -> -ε̇_bg * (c[3] - L / 2))
-    fixed_nodes = ntuple(_ -> TDev(wall_nodes), 3)
-    bc_values = ntuple(component -> TDev([pure_shear[component](coords[n]) for n in wall_nodes]), 3)
+    bc_v = ntuple(component -> DirichletBoundaryCondition(
+        TDev(wall_nodes), TDev([pure_shear[component](coords[n]) for n in wall_nodes]),
+    ), 3)
 
+    # No body force: density and gravity stay at zero.
+    material = StokesMaterial(; η, ρ0 = 0.0, g = (0.0, 0.0, 0.0))
+    dr = CellPressureStokesDR(mesh, material; phases = cell_phase)
     # Seeding the interior with the far-field field costs nothing and starts the
     # iteration from a divergence-free state that already satisfies the walls.
-    velocity = FEMTools.VectorField3D(backend, Float64, mesh.nnodes)
-    for (component, field) in enumerate(Tuple(velocity))
+    # Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell and starts at zero.
+    for (component, field) in enumerate(Tuple(dr.v))
         copyto!(field, [pure_shear[component](c) for c in coords])
     end
-    # Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
-    pressure = KA.zeros(backend, Float64, 4, mesh.nels)
-    # `ncheck` sets how often the residual norms are recomputed and reported;
-    # the iteration budget the 3-D method actually enforces is `total_iterMax`.
-    solve_stats = solve_stokes_dyrel!(
-        Tuple(velocity), pressure, mesh, cell_phase, η, (0.0, 0.0), (0.0, 0.0, 0.0),
-        fixed_nodes;
-        bc_values, ncheck = 100, ϵ_tol = solver_tol,
-        iterMax = max_iterations, total_iterMax = max_iterations,
+    solve_stats = solve!(dr, mesh, bc_v;
+        tolerance = solver_tol, max_iterations, check_interval = 100,
         workgroup, verbose,
     )
-    solve_stats.converged || error("3D DYREL solve did not converge: $(solve_stats.err)")
+    velocity, pressure = dr.v, dr.P
 
     εII, τII = cell_strain_rate_invariants(Tuple(velocity), mesh, cell_phase, η; workgroup)
     if write_output

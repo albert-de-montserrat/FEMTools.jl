@@ -20,39 +20,30 @@ using StaticArrays
     thermal_material = ThermalMaterial(;
         k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,),
     )
-    thermal = ThermalDiffusionDR(
-        backend, thermal_mesh.nnodes, thermal_material; ϵ = 1.0e-8,
-    )
-    thermal_ref = ThermalDiffusionDR(
-        backend, thermal_mesh.nnodes, thermal_material; ϵ = 1.0e-8,
-    )
+    thermal = ThermalDiffusionDR(thermal_mesh, thermal_material; ϵ = 1.0e-8)
+    thermal_ref = ThermalDiffusionDR(thermal_mesh, thermal_material; ϵ = 1.0e-8)
     fill!(thermal.source, 1.0)
     fill!(thermal_ref.source, 1.0)
 
     Γnodes = thermal_mesh.Γnodes
     zero_bc = zeros(length(Γnodes))
-    bc_T = DirichletBoundaryCondition(nothing, Γnodes, zero_bc)
-    solver!(
-        thermal_ref, Δt, thermal_mesh, bc_T;
-        workgroup, ncheck = 1, iterMax = 2000, verbose = false,
+    bc_T = DirichletBoundaryCondition(Γnodes, zero_bc)
+    solve!(
+        thermal_ref, thermal_mesh, bc_T;
+        dt = Δt, workgroup, check_interval = 1, max_iterations = 2000, verbose = false,
     )
 
     stokes = StokesDR(
-        backend, stokes_mesh.nnodes, stokes_mesh.nnodesP,
-        StokesMaterial(; η = (1.0,), ηb = (1.0,), G = (Inf,), α = (0.0,));
+        stokes_mesh, StokesMaterial(; η = 1.0, ηb = 1.0, G = Inf, α = 0.0);
         ϵ = 1.0e-8,
     )
-    bc_v = DirichletBoundaryCondition(nothing, Γnodes, zero_bc)
-    γP = zeros(stokes_mesh.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, stokes, stokes_mesh, 1.0, Δt; workgroup,
-    )
+    bc_v = DirichletBoundaryCondition(Γnodes, zero_bc)
 
-    stats = solve_coupled_dyrel!(
-        thermal, stokes, thermal_mesh, stokes_mesh,
-        bc_T, bc_v, bc_v, Δt, γP;
-        workgroup, ncheck = 1, iterMax = 2000, total_iterMax = 2000,
-        max_ph_iterations = 5, ϵ_tol = 1.0e-8, verbose = false,
+    stats = solve_coupled!(
+        thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_v, bc_v;
+        dt = Δt, pressure_factor = 1.0, workgroup, check_interval = 1,
+        iterMax = 2000, max_iterations = 2000, max_ph_iterations = 5,
+        tolerance = 1.0e-8, verbose = false,
     )
 
     @test stats.converged
@@ -61,9 +52,9 @@ using StaticArrays
     @test thermal.T ≈ thermal_ref.T
     @test stokes.T[stokes_mesh.DoFsP] ≈ thermal.T[stokes_mesh.el2nP]
 
-    coupled(thermal_state, mesh_T) = solve_coupled_dyrel!(
-        thermal_state, stokes, mesh_T, stokes_mesh,
-        bc_T, bc_v, bc_v, Δt, γP; workgroup, verbose = false,
+    coupled(thermal_state, mesh_T) = solve_coupled!(
+        thermal_state, stokes, mesh_T, stokes_mesh, bc_T, bc_v, bc_v;
+        dt = Δt, workgroup, verbose = false,
     )
     topology_only = Mesh(backend, Array(thermal_mesh.coords), Array(thermal_mesh.el2n); order = 2)
     @test_throws "thermal mesh has no geometry" coupled(thermal, topology_only)
@@ -96,28 +87,24 @@ end
 
     function solve(shear_heating)
         thermal = ThermalDiffusionDR(
-            backend, thermal_mesh.nnodes,
+            thermal_mesh,
             ThermalMaterial(; k = (1.0,), Cp = (1.0,), ρ0 = (1.0,), α = (0.0,), K = (Inf,));
             ϵ = 1.0e-10,
         )
         stokes = StokesDR(
-            backend, stokes_mesh.nnodes, stokes_mesh.nnodesP,
-            StokesMaterial(; η = (η,), ηb = (1.0,), G = (G,), α = (0.0,));
-            ϵ = 1.0e-10,
+            stokes_mesh, StokesMaterial(; η, ηb = 1.0, G, α = 0.0); ϵ = 1.0e-10,
         )
         # Near, but not at, the solution: the relaxation needs a nonzero residual.
         stokes.v.x .= [γ̇ * c[2] + 0.1 * sinpi(c[1]) * sinpi(c[2]) for c in coords]
-        bc_vx = DirichletBoundaryCondition(nothing, Γnodes, [γ̇ * coords[n][2] for n in Γnodes])
-        bc_vy = DirichletBoundaryCondition(nothing, Γnodes, zeros(length(Γnodes)))
+        bc_vx = DirichletBoundaryCondition(Γnodes, [γ̇ * coords[n][2] for n in Γnodes])
+        bc_vy = DirichletBoundaryCondition(Γnodes, zeros(length(Γnodes)))
         T_Γ = shear_heating ? T_expected : 0.0
-        bc_T = DirichletBoundaryCondition(nothing, Γnodes, fill(T_Γ, length(Γnodes)))
-        γP = zeros(stokes_mesh.nnodesP)
-        assemble_viscosity_weighted_pressure_scaling!(γP, stokes, stokes_mesh, 1.0, Δt; workgroup)
-        stats = solve_coupled_dyrel!(
-            thermal, stokes, thermal_mesh, stokes_mesh,
-            bc_T, bc_vx, bc_vy, Δt, γP;
-            workgroup, shear_heating, ncheck = 10, iterMax = 20_000,
-            total_iterMax = 20_000, ϵ_tol = 1.0e-10, verbose = false,
+        bc_T = DirichletBoundaryCondition(Γnodes, fill(T_Γ, length(Γnodes)))
+        stats = solve_coupled!(
+            thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_vx, bc_vy;
+            dt = Δt, pressure_factor = 1.0, workgroup, shear_heating,
+            check_interval = 10, iterMax = 20_000, max_iterations = 20_000,
+            tolerance = 1.0e-10, verbose = false,
         )
         return stats, thermal
     end

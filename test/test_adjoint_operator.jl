@@ -45,21 +45,22 @@ using DomainSets: ×
     Δt = 1.0
     nq = length(element_v.integration_points.ω)
 
-    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, η, ηb, α;
-        ρ0 = (1.0, 2.0), K, g, Tref,
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels))
+    dr = StokesDR(
+        backend, mesh.nnodes, mesh.nnodesP,
+        StokesMaterial(; η, ηb, α, ρ0 = (1.0, 2.0), K, g, Tref);
+        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
+    )
     γP = zeros(Float64, mesh.nnodesP)
     FEMTools.assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P, 20.0, Δt, backend, wg;
         phases_v = phases, η)
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+    bc_v = (DirichletBoundaryCondition(vx_nodes, bcx), DirichletBoundaryCondition(vy_nodes, bcy))
     fwd = solve_stokes_dyrel!(
-        dr, mesh, geo_v, geo_P, element_v, element_P,
-        phases, phases, τ_old, nothing, G, Δt, γP,
-        Γ, bcx, bcy, backend, wg;
+        dr, mesh, bc_v, Δt, γP;
+        phases_v = phases, phases_P = phases, τ_old, workgroup = wg,
         ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
-        rel_drop0 = 0.1, verbose = false, verbose_inner = false, vx_nodes, vy_nodes,
-        measure_λmax = true)
+        rel_drop0 = 0.1, verbose = false, verbose_inner = false, measure_λmax = true)
     @test fwd.converged
     @test fwd.jacobian_assemblies == 1
     @test fwd.λmax_iterations > 0
@@ -244,10 +245,10 @@ using DomainSets: ×
             (deg2rad(30.0),), (deg2rad(10.0),), (10.0,), (-5.0,),
             (1.0,), (100.0,))
         dr_cap = StokesDR(
-            backend, mesh.nnodes, mesh.nnodesP, (1.0,), (Inf,), (0.0,);
-            ρ0 = (1.0,), K = (100.0,), g, Tref,
-            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7,
-            stress_size = (nq, mesh.nels))
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η = (1.0,), ηb = (Inf,), α = (0.0,), ρ0 = (1.0,), K = (100.0,), g, Tref);
+            CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.7, stress_size = (nq, mesh.nels),
+        )
         dr_cap.v.x .= [10.0 * coords[n][1] for n in eachindex(coords)]
         dr_cap.v.y .= 0.0
         dr_cap.P .= -20.0

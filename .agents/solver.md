@@ -15,17 +15,18 @@ non-convergence.
 Physics layers:
 
 - Heat diffusion: `ThermalMaterial`, `ThermalDiffusionDR`, atomic/colored
-  residual assembly, and `solver!` for one physical time step.
+  residual assembly, and `solve!` for one physical time step.
 - Lithostatic pressure: `LithostaticPressureDR`, pressure-dependent density,
-  atomic/colored assembly, and `solver!`.
+  atomic/colored assembly, and `solve!`.
 - 2-D Stokes: `StokesDR` on a `MixedMesh`, viscoelastic rheology with optional
   Drucker-Prager plasticity, pressure scaling, Powell-Hestenes outer iteration,
   DYREL velocity iteration, stress history, and a discrete adjoint.
-- Coupled 2-D thermal--Stokes: `solve_coupled_dyrel!` advances one thermal DR
+- Coupled thermal--Stokes: `solve_coupled!` advances one thermal DR
   step per inner Stokes velocity step and gathers the continuous thermal field
   onto the discontinuous pressure-temperature DoFs.
-- 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure, caller-owned
-  arrays, forward/adjoint wrappers, and material gradients.
+- 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure in a
+  `CellPressureStokesDR` state (fields, phases, material, and all solver
+  scratch), `solve!`/`solve_adjoint!` on it, and material gradients.
 - Repeated 2-D adjoint solves may reuse a caller-owned
   `StokesAdjointWorkspace`. Its common scratch serves every operator mode, while
   the nine Enzyme-only arrays are allocated only with `enzyme=true`; workspace
@@ -471,9 +472,12 @@ P\leftarrow P+γ_P M_P^{-1}R^p,
 v\leftarrow v-ωD_v^{-1}(R^v-f).
 ```
 
-Prescribed 3-D velocities are applied before the first residual assembly and
-repinned after each update. Omitting `bc_values` prescribes zero; component
-lengths must match `fixed_nodes`. The constant pressure mode is mass-weighted
+Prescribed 3-D velocities (one `DirichletBoundaryCondition` per component) are
+applied before the first residual assembly and repinned after each update; the
+adjoint uses the same node sets with homogeneous values. `solve!` and
+`solve_adjoint!` share one internal loop, `_relax_cell_pressure_stokes!`, which
+takes the iterate, density, gravity, and load explicitly and reads viscosity,
+phases, and scratch from the state. The constant pressure mode is mass-weighted
 to zero after each pressure update.
 The four cell-local pressure residuals test `-div(v)` against `(1,ξ,η,ζ)`.
 
@@ -539,8 +543,8 @@ homogeneous primal Dirichlet conditions; the pressure adjoint uses
 
 The forward state must be converged before freezing these blocks.
 
-The linear viscous **3-D convention** differs: for `Au=b` and `J=c^Tu`, the
-wrapper solves
+The linear viscous **3-D convention** differs: for `Au=b` and `J=c^Tu`,
+`solve_adjoint!(::CellPressureStokesDR, ...)` solves
 
 ```math
 A^Tλ=c,
@@ -578,7 +582,7 @@ scaling. The conservative velocity preconditioner uses the element maximum.
 Both cases assemble exact gravitational loads once and pass `body_force`; the
 solver subtracts these before boundary constraints in outer and inner loops.
 SolKz uses vertical force `-ρ`, whereas SolCx uses `+sin(πy)cos(πx)`.
-SolCx requires an even structured resolution and element-local phase matrices
+SolCx requires an even structured resolution and a cell-wise phase row
 so x=0.5 remains a conforming, unsmoothed interface. Error integration removes
 the volume-weighted pressure gauge independently from numerical and exact fields.
 The quadrature-viscosity API is forward-only and does not change `dr.η`.
@@ -673,7 +677,35 @@ Stokes check history retains aggregate velocity and pressure fields and adds
 `err_v_components`. Outer records include initial/final physical residuals;
 inner records use the momentum and pressure residuals already assembled at
 that check, without extra assembly or changing solver convergence decisions.
-Scalar DR accepts `history=nothing` or a caller-owned vector; records contain
-iteration, absolute RMS residual, and relative residual. Optional recording
-does not change the scalar return value or numerical update. Thermal drivers
-combine per-step histories with cumulative iteration offsets.
+Scalar DR returns `(; converged, iterations, residual, history)`; `residual`
+is the relative residual that `tolerance` bounds, and `history` records
+iteration, absolute RMS residual, and relative residual when
+`collect_history=true`. Recording does not change the numerical update. Failure
+to converge throws unless `throw_on_failure=false`. Thermal drivers combine
+per-step histories with cumulative `stats.iterations` offsets.
+
+## Mesh-based state allocation
+
+Material keyword normalization uses dispatch for omitted, scalar, and tuple
+properties; stored tuples and physical defaults remain unchanged. A one-row
+cell-phase matrix can be shared across velocity and pressure through the
+existing gather path. Uniform SolKz drivers use the state phase defaults.
+
+Thermal and lithostatic states can be allocated from a single-field mesh;
+mixed Stokes states infer velocity/pressure sizes and quadrature stress layout.
+Allocation follows the coordinate backend and requires matching material
+precision; Stokes gravity must match spatial dimension. No residual, iteration,
+pressure-scaling, or history-commit semantics change with these constructors.
+
+## Owned pressure scaling
+
+`solve!(stokes, mesh, bc_v; dt, …)` calls `assemble_viscosity_weighted_pressure_scaling!`
+into `dr.γP` with unchanged formula and mass weights, then forwards to the
+`γP` method with the common names translated once; non-convergence throws unless
+`throw_on_failure=false`. Regression: `test/test_stokes_quadrature_viscosity.jl` (identical
+fields to the manual path; distinct `scaling_viscosity` changes only `γP`).
+
+`solve_adjoint!` reuses that `dr.γP` and `dr.M_P`, so the adjoint transposes the
+augmentation actually solved; its regression compares it with the expanded call
+(`test/test_stokes_adjoint_api.jl`). The `K = Inf` adjoint limitation above is
+unchanged.

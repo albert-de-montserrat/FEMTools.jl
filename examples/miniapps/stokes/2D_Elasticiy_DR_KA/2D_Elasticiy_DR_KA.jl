@@ -10,6 +10,7 @@ using KernelAbstractions
 import KernelAbstractions as KA
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 # ---------------------------------------------------------------------------
 # 2D linear elasticity (plane strain) of a cantilever clamped on the left
 # face, loaded by gravity, solved with dynamic relaxation (second-order
