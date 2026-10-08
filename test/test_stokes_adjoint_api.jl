@@ -71,12 +71,12 @@ end
             γP, dr, mesh, geo_P, element_v, element_P, 20.0, Δt, backend, wg;
             phases_v = phases, η)
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
+        bc_v = (DirichletBoundaryCondition(vx_nodes, bcx), DirichletBoundaryCondition(vy_nodes, bcy))
         stats = solve_stokes_dyrel!(
-            dr, mesh, geo_v, geo_P, element_v, element_P,
-            phases, phases, τ_old, nothing, G, Δt, γP,
-            Γ, bcx, bcy, backend, wg;
+            dr, mesh, bc_v, Δt, γP;
+            phases_v = phases, phases_P = phases, τ_old, workgroup = wg,
             ncheck = 100, ϵ_tol = 1.0e-10, iterMax = 200_000, total_iterMax = 200_000,
-            rel_drop0 = 0.1, verbose = false, verbose_inner = false, vx_nodes, vy_nodes)
+            rel_drop0 = 0.1, verbose = false, verbose_inner = false)
         return dr, γP, τ_old, stats
     end
 

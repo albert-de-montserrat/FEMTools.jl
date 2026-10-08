@@ -21,11 +21,12 @@ Physics layers:
 - 2-D Stokes: `StokesDR` on a `MixedMesh`, viscoelastic rheology with optional
   Drucker-Prager plasticity, pressure scaling, Powell-Hestenes outer iteration,
   DYREL velocity iteration, stress history, and a discrete adjoint.
-- Coupled 2-D thermal--Stokes: `solve_coupled_dyrel!` advances one thermal DR
+- Coupled thermal--Stokes: `solve_coupled!` advances one thermal DR
   step per inner Stokes velocity step and gathers the continuous thermal field
   onto the discontinuous pressure-temperature DoFs.
-- 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure, caller-owned
-  arrays, forward/adjoint wrappers, and material gradients.
+- 3-D Stokes: Hex27/Q2 velocity with cell-local four-mode pressure in a
+  `CellPressureStokesDR` state (fields, phases, material, and all solver
+  scratch), `solve!`/`solve_adjoint!` on it, and material gradients.
 - Repeated 2-D adjoint solves may reuse a caller-owned
   `StokesAdjointWorkspace`. Its common scratch serves every operator mode, while
   the nine Enzyme-only arrays are allocated only with `enzyme=true`; workspace
@@ -471,9 +472,12 @@ P\leftarrow P+γ_P M_P^{-1}R^p,
 v\leftarrow v-ωD_v^{-1}(R^v-f).
 ```
 
-Prescribed 3-D velocities are applied before the first residual assembly and
-repinned after each update. Omitting `bc_values` prescribes zero; component
-lengths must match `fixed_nodes`. The constant pressure mode is mass-weighted
+Prescribed 3-D velocities (one `DirichletBoundaryCondition` per component) are
+applied before the first residual assembly and repinned after each update; the
+adjoint uses the same node sets with homogeneous values. `solve!` and
+`solve_adjoint!` share one internal loop, `_relax_cell_pressure_stokes!`, which
+takes the iterate, density, gravity, and load explicitly and reads viscosity,
+phases, and scratch from the state. The constant pressure mode is mass-weighted
 to zero after each pressure update.
 The four cell-local pressure residuals test `-div(v)` against `(1,ξ,η,ζ)`.
 
@@ -539,8 +543,8 @@ homogeneous primal Dirichlet conditions; the pressure adjoint uses
 
 The forward state must be converged before freezing these blocks.
 
-The linear viscous **3-D convention** differs: for `Au=b` and `J=c^Tu`, the
-wrapper solves
+The linear viscous **3-D convention** differs: for `Au=b` and `J=c^Tu`,
+`solve_adjoint!(::CellPressureStokesDR, ...)` solves
 
 ```math
 A^Tλ=c,

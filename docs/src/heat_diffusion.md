@@ -123,7 +123,7 @@ The resulting temperature field is:
 
 `solve!` advances temperature on its own. To relax temperature and an
 incompressible Stokes flow together within one time step, use
-[`solve_coupled_dyrel!`](@ref), which interleaves one thermal DR iteration with
+[`solve_coupled!`](@ref), which interleaves one thermal DR iteration with
 every inner Stokes velocity iteration and feeds the resulting temperature into
 the buoyancy and pressure terms. The [Stokes](stokes.md) page describes the
 node-numbering requirement and the extra statistics it returns.

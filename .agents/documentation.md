@@ -18,7 +18,14 @@ Documentation has four layers:
 page does not publish it automatically; add it to the `pages` tree when it is
 meant for users.
 
-The docs environment is separate under `docs/Project.toml`. Examples referenced
+The home page opens with `@example` workflows (one thermal step, one
+incompressible Stokes inclusion) that Documenter executes on every build, so the
+ordinary mesh/material/BC/`solve!` path cannot silently rot.
+
+The docs environment is separate under `docs/Project.toml`. Its manifest is
+untracked; a manifest resolved on a newer Julia fails on an older one (for
+example `Zstd_jll`, a stdlib only on 1.13), so keep a per-version
+`Manifest-v1.X.toml` (gitignored) when building on several Julia versions. Examples referenced
 by the manual usually run under `examples/Project.toml`, not the docs
 environment.
 

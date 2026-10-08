@@ -150,8 +150,8 @@ function main(;
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten
@@ -163,25 +163,6 @@ function main(;
     apply_bc!(dr.v.y, bc_vy)
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
-
-    # FEM pressure residuals are assembled in weak form:
-    #
-    #     RP_i = ∫ N_i (-∇⋅v) dΩ
-    #
-    # The Arrow-Hurwicz pressure step and numerical pressure
-    # correction are calibrated for that pointwise residual.  If we feed the weak
-    # residual directly into Pnum or P += γP*RP/M_P, the update is scaled by element
-    # volume and pressure convergence stalls/refines incorrectly.
-    #
-    # Use the helper to assemble both:
-    #   dr.M_P = ∫ N_i dΩ
-    #   γP      = local viscosity-weighted pressure update scale
-    # Then γP * RP/M_P matches the pointwise FD-style pressure correction, but
-    # adapts the pressure step to viscosity contrasts.
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δt; workgroup, phases_v = phases_v_cpu,
-    )
 
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
@@ -209,10 +190,11 @@ function main(;
         @info "Physical time step" istep nsteps t
 
         solve_stats = nothing
-        solve_time += @elapsed solve_stats = solve_stokes_dyrel!(
-                dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
+        solve_time += @elapsed solve_stats = solve!(
+                dr, mesh_stokes, bc_vx, bc_vy; dt = Δt, pressure_factor = γfact,
                 phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
-                ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0,
+                check_interval = ncheck, tolerance = ϵ_tol, iterMax,
+                max_iterations = total_iterMax, rel_drop0,
                 verbose = verbose && verbose_PH,
                 verbose_inner = verbose && verbose_DR,
                 measure_λmax, λmax_safety)

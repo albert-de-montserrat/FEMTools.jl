@@ -134,7 +134,7 @@ function main(;
     NQ_v  = length(ip_v.ω)
     NV    = length(element_v)
     NP    = length(element_P)
-    (; geo_v, geo_P) = mesh_stokes.geometry
+    (; geo_v) = mesh_stokes.geometry
 
     dr = StokesDR(
         backend,
@@ -143,6 +143,7 @@ function main(;
         η, ηb, α;
         ρ0,
         K,
+        G,
         g,
         Tref,
         CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9,
@@ -165,12 +166,12 @@ function main(;
 
     copyto!(dr.v.x, Float64[ ε̇_bg * (c[1] - Lx / 2) for c in coords_v])
     copyto!(dr.v.y, Float64[-ε̇_bg * (c[2] - Ly / 2) for c in coords_v])
-    apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-    apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
+    apply_bc!(dr.v.x, bc_vx)
+    apply_bc!(dr.v.y, bc_vy)
 
     @info "Pure-shear outer BCs; hole rim is traction-free" n_vx=length(vx_nodes) n_vy=length(vy_nodes) max_vx=maximum(abs, bc_vx_vals) max_vy=maximum(abs, bc_vy_vals)
-
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
 
     time_history = zeros(Float64, nsteps)
     mean_tauII_history = zeros(Float64, nsteps)
@@ -206,32 +207,26 @@ function main(;
             c = coords_v[n]
             bc_vy_vals[i] = -ε̇_bg * (c[2] - ymid)
         end
-        apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals))
-        apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals))
-        assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, geo_P, element_v, element_P,
-            γfact, Float64(Δt), backend, workgroup; phases_v = phases_v_cpu,
-        )
+        apply_bc!(dr.v.x, bc_vx)
+        apply_bc!(dr.v.y, bc_vy)
         @info "Physical time step" istep nsteps t
 
-        solve_stats = solve_stokes_dyrel!(
-            dr, mesh_stokes, mesh_stokes.geometry, element_v, element_P,
-            phases_v_cpu, phases_P_cpu, τ_old, plastic, G, Float64(Δt), γP,
-            Γnodes, bc_vx_vals, bc_vy_vals, backend, workgroup;
-            ncheck,
-            ϵ_tol,
+        solve_stats = solve!(
+            dr, mesh_stokes, bc_vx, bc_vy;
+            dt = Float64(Δt), pressure_factor = γfact,
+            phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
+            check_interval = ncheck,
+            tolerance = ϵ_tol,
             iterMax,
-            total_iterMax,
+            max_iterations = total_iterMax,
             rel_drop0,
             verbose = verbose_PH,
             verbose_inner = verbose_DR,
-            vx_nodes = vx_nodes,
-            vy_nodes = vy_nodes,
         )
 
         update_stokes_current_stress!(
-            dr, mesh_stokes, mesh_stokes.geometry, element_v, element_P, phases_v_cpu,
-            τ_old, plastic, τ, G, Float64(Δt), backend, workgroup,
+            dr, mesh_stokes, τ, Float64(Δt);
+            phases_v = phases_v_cpu, τ_old, plastic, workgroup,
         )
 
         P_cpu  = Array(dr.P)

@@ -522,8 +522,8 @@ end
     # Homogeneous uniaxial extension imposed on every boundary node.
     coords = Array(mesh.coords)
     nodes = Int32.(collect(mesh_v.Γnodes))
-    bc_vx = DirichletBoundaryCondition(nothing, nodes, [ε̇ * coords[n][1] for n in nodes])
-    bc_vy = DirichletBoundaryCondition(nothing, nodes, zeros(length(nodes)))
+    bc_vx = DirichletBoundaryCondition(nodes, [ε̇ * coords[n][1] for n in nodes])
+    bc_vy = DirichletBoundaryCondition(nodes, zeros(length(nodes)))
     dr.v.x .= [ε̇ * c[1] for c in coords]
     dr.v.y .= 0
     γP = zeros(mesh.nnodesP)

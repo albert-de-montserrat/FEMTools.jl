@@ -69,7 +69,7 @@ end
     copyto!(thermal.T, [n in hot ? 1.0 : 0.0 for n in eachindex(coords)])
     copyto!(thermal.T0, thermal.T)
     fixed = Int32.(vcat(groups.surface, groups.bottom))
-    bc = DirichletBoundaryCondition(nothing, fixed, zeros(length(fixed)))
+    bc = DirichletBoundaryCondition(fixed, zeros(length(fixed)))
 
     solve!(thermal, mesh, bc; dt = 1.0e-4, workgroup = 1, verbose = false, max_iterations = 20_000)
 

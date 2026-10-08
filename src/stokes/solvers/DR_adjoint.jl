@@ -487,45 +487,54 @@ solve_adjoint!(
 )
 
 """
-    solve_stokes_adjoint_dyrel!(velocity, pressure, objective_load, mesh,
-                                cell_phase, η, fixed_nodes; kwargs...)
+    solve_adjoint!(dr::CellPressureStokesDR, mesh::Mesh, bc_v; objective_v, λv, λP,
+                   throw_on_failure=true, kwargs...)
 
-Solve the transpose of the linear viscous 3-D Hex27/Q2--P1 Stokes operator
-through the same adjoint DYREL entry point used by the 2-D solver. The operator
-is symmetric, so the 3-D method reuses the dimension-matched forward residual
-and preconditioner with the objective derivative as its momentum load.
-Velocity and pressure are updated in place from their supplied initial guesses.
-`adjoint_tol` sets the combined residual tolerance; `iterMax` and
-`total_iterMax` set the iteration budget. `workspace` is passed straight through
-to the forward solver, so a gradient loop can hand the same
-[`Stokes3DWorkspace`](@ref) to both the forward and the adjoint solve. The
-returned convergence statistics match the 3-D forward method.
+Solve the discrete adjoint `(∂R/∂u)ᵀλ = ∂J/∂u` of the viscous 3-D Hex27 Stokes
+operator. The operator is symmetric and linear, so this runs the forward
+iteration of [`solve!`](@ref) with `objective_v` (one array per velocity
+component) as momentum load, zero density and gravity, and homogeneous
+conditions on the nodes of `bc_v`; its values are not used. It reads only the
+viscosity, phases, and scratch of `dr` and leaves `dr.v` and `dr.P` unchanged.
+
+`λv` (three nodal arrays) and the `4 × nels` `λP` are the adjoint outputs; their
+input values are the initial iterate. The remaining keywords and the returned
+statistics are those of `solve!`. A solve that does not converge throws unless
+`throw_on_failure=false`. Pass `λv` to [`stokes_material_gradient_3d`](@ref) for
+the material sensitivities.
 """
-function solve_stokes_adjoint_dyrel!(
-        velocity::NTuple{3}, pressure::AbstractMatrix, objective_load::NTuple{3},
-        mesh::Mesh, cell_phase, η, fixed_nodes::NTuple{3};
-        ncheck = 100, adjoint_tol = 1.0e-5, iterMax = 3000,
-        total_iterMax = iterMax, velocity_step = 0.6, γP = 0.2,
-        workgroup = 256, verbose = true,
-        workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
+function solve_adjoint!(
+        dr::CellPressureStokesDR, mesh::Mesh, bc_v::NTuple{3, DirichletBoundaryCondition};
+        objective_v, λv, λP::AbstractMatrix, throw_on_failure = true,
+        tolerance = 1.0e-5, kwargs...,
     )
-    zero_phase = map(zero, η)
-    zero_g = ntuple(_ -> zero(first(η)), 3)
-    return solve_stokes_dyrel!(
-        velocity, pressure, mesh, cell_phase, η, zero_phase, zero_g, fixed_nodes;
-        ncheck, ϵ_tol = adjoint_tol, iterMax, total_iterMax, velocity_step, γP,
-        load = objective_load, workgroup, verbose, workspace,
+    load = Tuple(objective_v)
+    all(length(load[i]) == mesh.nnodes for i in 1:3) ||
+        throw(DimensionMismatch("objective_v must have mesh.nnodes entries per component"))
+    T = eltype(dr.P)
+    stats = _relax_cell_pressure_stokes!(
+        Tuple(λv), λP, dr, mesh, map(zero, dr.ρ), ntuple(_ -> zero(T), 3),
+        map(bc -> bc.DoFs, bc_v), zero(T), load;
+        tolerance, kwargs...,
     )
+    stats.converged || !throw_on_failure || error(
+        "3-D Stokes adjoint solve did not converge after $(stats.iter) iterations " *
+        "(residual = $(stats.residual), tolerance = $tolerance)",
+    )
+    return stats
 end
 
 """
     stokes_material_gradient_3d(forward_velocity, adjoint_velocity, mesh,
                                 cell_phase, η, ρ, g; workgroup=256)
+    stokes_material_gradient_3d(dr::CellPressureStokesDR, mesh, adjoint_velocity;
+                                workgroup=256)
 
 Contract the matrix-free 3-D adjoint with the density load derivative and
 viscous operator derivative for every material phase at once. The returned
 named tuple contains `density_gradient` and `viscosity_gradient`, each an
-`NTuple` with one entry per phase of `η`/`ρ`.
+`NTuple` with one entry per phase of `η`/`ρ`. The state form reads the forward
+velocity, phases, and material of `dr`.
 """
 function stokes_material_gradient_3d(
         forward_velocity::NTuple{3}, adjoint_velocity::NTuple{3}, mesh::Mesh,
@@ -559,3 +568,8 @@ function stokes_material_gradient_3d(
 
     return (; density_gradient, viscosity_gradient)
 end
+
+stokes_material_gradient_3d(dr::CellPressureStokesDR, mesh::Mesh, adjoint_velocity; workgroup = 256) =
+    stokes_material_gradient_3d(
+    Tuple(dr.v), Tuple(adjoint_velocity), mesh, dr.phases, dr.η, dr.ρ, dr.g; workgroup,
+)

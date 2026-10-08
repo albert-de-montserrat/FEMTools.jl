@@ -144,8 +144,7 @@ function main(; max_area = 1.0e-3, nsteps = 2000,
 
     material = StokesMaterial(; η, ηb, G, α = (0.0, 0.0), ρ0 = (1.0, 1.0), K,
         g = (0.0, 0.0), Tref = 0.0)
-    dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
-        stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels))
+    dr = StokesDR(mesh, material; plastic_history_size = (nq, mesh.nels))
     # The seed is a mesh region, so its phase is per element, not per node.
     phases_v = repeat(reshape(mesh_attributes, 1, :), length(element_v), 1)
     phases_P = repeat(reshape(mesh_attributes, 1, :), length(element_P), 1)
@@ -163,8 +162,8 @@ function main(; max_area = 1.0e-3, nsteps = 2000,
     vx_nodes = vcat(left, right)
     vx_vals = vcat(fill(-0.5 * strain_rate * Lx, length(left)),
         fill(0.5 * strain_rate * Lx, length(right)))
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, top_bottom, zeros(length(top_bottom)))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, vx_vals)
+    bc_vy = DirichletBoundaryCondition(top_bottom, zeros(length(top_bottom)))
     dr.v.x .= [strain_rate * (c[1] - Lx / 2) for c in coords]
     dr.v.y .= 0
     apply_bc!(dr.v.x, bc_vx)

@@ -40,17 +40,19 @@ t = main(; resolution=16, nsteps=40,
 ```
 
 `write_output=true` saves VTK fields and PNG comparisons. Like SolVi2D, each
-script imports GLMakie at the top and defines one `main` containing mesh setup,
-geometry, state, boundary conditions, solve, comparison, and visualization. Keep generated results outside the tracked source tree.
+script defines one `main` containing mesh setup, geometry, state, boundary
+conditions, solve, comparison, and visualization. Shared host-side helpers for
+quadrature sampling, weighted errors, history archives, and figures live in
+`benchmarks/support.jl`, which each exact-field script includes. Keep generated results outside the tracked source tree.
 
 ## Quadrilateral variants
 
-The `_quad.jl` files are standalone scripts with the same SolVi2D layout:
+The Stokes `_quad.jl` files are standalone scripts with the same SolVi2D layout.
+The thermal benchmark already uses Q9 elements, so it has no separate variant:
 
 ```sh
 julia --project=examples benchmarks/stokes/solkz2D/SolKz2D_quad.jl
 julia --project=examples benchmarks/stokes/solcx2D/SolCx2D_quad.jl
-julia --project=examples benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D_quad.jl
 ```
 
 Stokes uses continuous Q2 velocity (Q9) and discontinuous P1 pressure with three

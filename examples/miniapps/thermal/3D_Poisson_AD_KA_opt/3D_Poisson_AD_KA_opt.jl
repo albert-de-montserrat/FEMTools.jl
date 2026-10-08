@@ -10,6 +10,7 @@ using KernelAbstractions
 import KernelAbstractions as KA
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 using CUDA
 

@@ -109,7 +109,7 @@ end
         SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0), SVector(2.0, 2.0),
     ]
     mesh = Mesh(CPU(), coords, reshape(Int32[1, 2, 3], 3, 1), element; workgroup = 1)
-    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+    bc = DirichletBoundaryCondition(Int32[], Float64[])
 
     thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, (1.0,), (1.0,), (1.0,), (0.0,), (Inf,))
     thermal_err = _caught_error() do
@@ -152,10 +152,9 @@ end
 
     (; dr, mesh, element_v, element_P, τ_old, γP, backend, workgroup) = _orphan_stokes_case()
     stokes_err = _caught_error() do
+        bc_empty = DirichletBoundaryCondition(empty_i, empty_v)
         solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            dr.phases_v, dr.phases_P, τ_old, nothing, (Inf,), 1.0, γP,
-            empty_i, empty_v, empty_v, backend, workgroup;
+            dr, mesh, (bc_empty, bc_empty), 1.0, γP; τ_old, workgroup,
             verbose = false,
             verbose_inner = false,
         )
@@ -197,7 +196,10 @@ end
     η = (1.0, 1.0)
     Δt = 1.0
     nq = length(element_v.integration_points.ω)
-    bc = zeros(length(Γ))
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
 
     function solve(; measure_λmax)
         dr = StokesDR(
@@ -212,11 +214,10 @@ end
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         stats = solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
-            Γ, bc, bc, backend, workgroup;
+            dr, mesh, bc_v, Δt, γP;
+            phases_v = phases, phases_P = phases, τ_old, workgroup,
             ncheck = 100, ϵ_tol = 1.0e-9, rel_drop0 = 0.1,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes, measure_λmax
+            verbose = false, verbose_inner = false, measure_λmax
         )
         return dr, stats
     end
@@ -250,7 +251,10 @@ end
     η = (1.0, 1.0)
     Δt = 1.0
     nq = length(element_v.integration_points.ω)
-    bc = zeros(length(Γ))
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
 
     function solve(; ϵ_tol, total_iterMax)
         dr = StokesDR(
@@ -265,11 +269,10 @@ end
         )
         τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
         return solve_stokes_dyrel!(
-            dr, mesh, mesh.geometry, element_v, element_P,
-            phases, phases, τ_old, nothing, (Inf, Inf), Δt, γP,
-            Γ, bc, bc, backend, workgroup;
+            dr, mesh, bc_v, Δt, γP;
+            phases_v = phases, phases_P = phases, τ_old, workgroup,
             ncheck = 100, ϵ_tol, rel_drop0 = 0.1, iterMax = total_iterMax, total_iterMax,
-            verbose = false, verbose_inner = false, vx_nodes, vy_nodes
+            verbose = false, verbose_inner = false
         )
     end
 
@@ -310,7 +313,7 @@ end
     γP .= 10.0
     τ_old = ntuple(_ -> zeros(Float64, nq, mesh.nels), 3)
     Qq = ones(Float64, mesh.nnodesP)
-    bc = DirichletBoundaryCondition(nothing, Γ, zeros(length(Γ)))
+    bc = DirichletBoundaryCondition(Γ, zeros(length(Γ)))
     stats = solve_stokes_dyrel!(
         dr, mesh, bc, bc, 1.0, γP;
         phases_v = phases, phases_P = phases, τ_old,
@@ -411,7 +414,7 @@ end
     thermal = ThermalDiffusionDR(CPU(), mesh.nnodes, material)
     fill!(thermal.source, 1.0)
     baseline = deepcopy(thermal)
-    bc = DirichletBoundaryCondition(nothing, Int32[], Float64[])
+    bc = DirichletBoundaryCondition(Int32[], Float64[])
     stats = solve!(thermal, mesh, bc; dt = 1.0, check_interval = 10, verbose = false, collect_history = true)
     plain = solve!(baseline, mesh, bc; dt = 1.0, check_interval = 10, verbose = false)
     history = stats.history
@@ -429,4 +432,26 @@ end
     @test_throws ErrorException solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false)
     failed = solve!(failing, mesh, bc; dt = 1.0, max_iterations = 3, check_interval = 1, verbose = false, throw_on_failure = false)
     @test !failed.converged && failed.iterations == 3
+end
+
+@testset "Stokes solve! scales pressure with the residual's storage modulus" begin
+    (; workgroup, mesh, phases, vx_nodes, vy_nodes) = _buoyancy_stokes_case()
+    # Finite ηb with K = Inf: continuity stores (P - P_old)/(ηb Δt), so a scale
+    # built from K alone overshoots the explicit pressure-update limit.
+    material = StokesMaterial(;
+        η = (1.0, 10.0), ηb = 1.0, ρ0 = (1.0, 2.0), g = (0.0, -1.0), Tref = 0.0,
+    )
+    dr = StokesDR(mesh, material)
+    bc_v = (
+        DirichletBoundaryCondition(vx_nodes, zeros(length(vx_nodes))),
+        DirichletBoundaryCondition(vy_nodes, zeros(length(vy_nodes))),
+    )
+    stats = solve!(dr, mesh, bc_v; dt = 1.0, phases_v = phases, phases_P = phases,
+        workgroup, verbose = false)
+    @test stats.converged
+    expected = similar(dr.γP)
+    assemble_viscosity_weighted_pressure_scaling!(
+        expected, dr, mesh, 50, 1.0; workgroup, phases_v = phases, K = dr.ηb,
+    )
+    @test dr.γP == expected
 end

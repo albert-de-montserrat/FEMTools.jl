@@ -34,7 +34,7 @@ using DomainSets: ×
     @test maximum(γ) > 10.0
 
     boundary = FEMTools.rectangle_boundary_nodes(coords, 0.0, 1.0, 0.0, 1.0)
-    bc = ntuple(_ -> DirichletBoundaryCondition(nothing, boundary, zeros(length(boundary))), 2)
+    bc = ntuple(_ -> DirichletBoundaryCondition(boundary, zeros(length(boundary))), 2)
     # Equivalence with the existing gravitational assembly checks load sign and
     # its use in both the outer and inner residual loops.
     gravity_material = StokesMaterial(; η = (2.0,), ηb = (Inf,), G = (Inf,), α = (0.0,), g = (0.0, 1.0))
@@ -101,7 +101,7 @@ end
     @test sum(mesh.geometry.geo_P[1]) ≈ 0.25
     coords = Array(mesh.coords)
     nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, 1.0, 0.0, 1.0)
-    bc = ntuple(_ -> DirichletBoundaryCondition(nothing, nodes, zeros(length(nodes))), 2)
+    bc = ntuple(_ -> DirichletBoundaryCondition(nodes, zeros(length(nodes))), 2)
     stats = solve_stokes_dyrel!(dr, mesh, bc, 1.0, γ; ncheck = 10, ϵ_tol = 1e-11, collect_history = true, verbose = false)
     @test stats.converged
     @test first(stats.history).iter == 0

@@ -9,6 +9,7 @@ Pkg.activate(joinpath(@__DIR__, "..", "..", ".."))
 using DomainSets
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 using Base.Threads: @threads
 

@@ -29,6 +29,53 @@ julia> mesh = Mesh((0.0..1.0) × (0.0..1.0), element, (4, 4))
 Mesh{2, 2}(nnodes=81, nels=16)
 ```
 
+## Workflows
+
+A solve needs a mesh, a material, boundary conditions, and physical controls.
+The state takes its backend, precision, and field sizes from the mesh, and
+`solve!` owns its scratch storage. One backward-Euler heat-diffusion step with
+a uniform source and zero boundary temperature:
+
+```@example workflow
+using FEMTools, DomainSets
+using DomainSets: ×
+
+element = ReferenceElement(QuadraticElement{2, 9})
+mesh = Mesh((0.0..1.0) × (0.0..1.0), element, (8, 8))
+thermal = ThermalDiffusionDR(mesh, ThermalMaterial(; k = 1.0, α = 0.0, K = Inf))
+fill!(thermal.source, 1.0)
+bc = DirichletBoundaryCondition(mesh.Γnodes, zeros(length(mesh.Γnodes)))
+stats = solve!(thermal, mesh, bc; dt = 0.1, verbose = false)
+(stats.converged, maximum(thermal.T))
+```
+
+A dense, viscous inclusion sinking in an incompressible (`ηb = Inf`) no-slip
+box, with T7 velocity and discontinuous P1 pressure. Phases are assigned per
+cell:
+
+```@example workflow
+element_v = ReferenceElement(QuadraticElement{2, 7})
+element_P = ReferenceElement(LinearElement{2, 3})
+mesh_v = Mesh((0.0..1.0) × (0.0..1.0), element_v, (8, 8))
+mesh = MixedMesh(mesh_v, element_P)
+material = StokesMaterial(;
+    η = (1.0, 10.0), ηb = Inf, ρ0 = (1.0, 2.0), g = (0.0, -1.0), Tref = 0.0,
+)
+stokes = StokesDR(mesh, material)
+
+centroid(e) = sum(mesh.coords[mesh.el2nP[:, e]]) / 3
+phases = reshape([hypot((centroid(e) .- 0.5)...) < 0.2 ? 2 : 1 for e in 1:mesh.nels], 1, :)
+no_slip = DirichletBoundaryCondition(mesh_v.Γnodes, zeros(length(mesh_v.Γnodes)))
+stats = solve!(stokes, mesh, (no_slip, no_slip);
+               dt = 1.0, phases_v = phases, phases_P = phases, verbose = false)
+(stats.converged, minimum(stokes.v.y))
+```
+
+`solve!` throws if the iteration does not converge; pass
+`throw_on_failure = false` to inspect failed statistics instead. The
+[Heat Diffusion](heat_diffusion.md) and [Stokes](stokes.md) pages describe the
+controls, coupling, adjoints, and plasticity.
+
 ## GPU support
 
 Load CUDA to activate the GPU backend extension:

@@ -116,8 +116,8 @@ function main(;
 
     bc_vx_lr = Float64[ε̇_bg * (coords[n][1] - lx / 2) for n in lr_nodes]
     bc_vy_tb = Float64[-ε̇_bg * (coords[n][2] - ly / 2) for n in tb_nodes]
-    bc_vx = DirichletBoundaryCondition(nothing, lr_nodes, bc_vx_lr)
-    bc_vy = DirichletBoundaryCondition(nothing, tb_nodes, bc_vy_tb)
+    bc_vx = DirichletBoundaryCondition(lr_nodes, bc_vx_lr)
+    bc_vy = DirichletBoundaryCondition(tb_nodes, bc_vy_tb)
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
 

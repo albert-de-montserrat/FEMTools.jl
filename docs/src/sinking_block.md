@@ -69,9 +69,8 @@ Both fields are combined into one `MixedMesh(mesh_v, element_P)`
 quadrature points once and stores it as `mesh_stokes.geometry`. Unlike the 3-D example, the 2-D example
 does build a [`StokesDR`](stokes.md): the mixed-mesh Arrow–Hurwicz/DYREL
 solver needs its lumped pressure mass, viscosity-weighted pressure-step array
-`γP` (from
-[`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref)), stress
-history, and diagonal preconditioner, all of which live there.
+`γP`, stress history, and diagonal preconditioner, all of which live there.
+The solve assembles the pressure mass and `γP` itself.
 
 ## Boundary conditions
 
@@ -79,10 +78,9 @@ Free slip on all four walls: `vx_nodes` and `vy_nodes` are the boundary nodes
 (`mesh_v.Γnodes`) lying on a wall normal to `x` or `y` respectively, found with
 a coordinate tolerance rather than exact equality. Two
 `DirichletBoundaryCondition`s pin the wall-normal component to zero and are
-applied once with `apply_bc!` before the first residual assembly; unlike the
-3-D solver's `fixed_nodes`/`bc_values` tuple pair, the mixed-mesh solver takes
-`bc_vx` and `bc_vy` positionally and re-applies them internally after every
-update. Pressure carries no Dirichlet constraint; it floats relative to the
+applied once with `apply_bc!` before the first residual assembly; the solver
+takes `bc_vx` and `bc_vy` positionally and re-applies them internally after
+every update. Pressure carries no Dirichlet constraint; it floats relative to the
 initial guess described next.
 
 ## Forward solve
@@ -95,14 +93,17 @@ both `dr.P` and `dr.P0`. This gives the outer pressure iteration a
 physically-scaled starting point instead of zero, rather than acting as a hard
 constraint on the converged answer.
 
-The forward call is `solve_stokes_dyrel!(dr, mesh_stokes, bc_vx, bc_vy,
-Δt, γP; phases_v, phases_P, τ_old, plastic, ncheck, ϵ_tol, iterMax,
-total_iterMax, rel_drop0, ...)`, the same mixed-mesh entry point described in
+The forward call is `solve!(dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
+pressure_factor = γfact, scaling_viscosity = ηγP, phases_v, phases_P, τ_old,
+plastic, check_interval, tolerance, iterMax, max_iterations, rel_drop0, ...)`,
+the same mixed-mesh entry point described in
 [Stokes](stokes.md#Compact-setup): an outer Arrow–Hurwicz pressure update
 wrapping an inner Chebyshev-accelerated DYREL sweep on the momentum residual.
-`iterMax` bounds one inner sweep, `total_iterMax` the whole solve, and
+`iterMax` bounds one inner sweep, `max_iterations` the whole solve, and
 `rel_drop0` how far the inner velocity residual must drop before the outer
-pressure update fires.
+pressure update fires. `scaling_viscosity = ηγP` scales the pressure step
+with the mean phase viscosity rather than the phase-local viscosity, so the
+inclusion's viscosity contrast does not set the step.
 
 After convergence, `update_stokes_current_stress!` refreshes `dr.τ` and
 `compute_strain_rate_stress_postprocess` derives nodal strain-rate and stress
@@ -154,8 +155,9 @@ shape-function-weighted fraction of itself that lies in the window, rather
 than an all-or-nothing indicator.
 
 The viscous operator is symmetric, so `Aᵀ = A` and
-[`solve_stokes_adjoint_dyrel!`](@ref) reuses the forward's frozen transpose
-Jacobian, preconditioner, and boundary nodes with `c` as its momentum load —
+[`solve_adjoint!`](@ref) reuses the forward's pressure scale `dr.γP`, frozen
+transpose Jacobian, preconditioner, and boundary nodes with `c` as its
+momentum load —
 see [Stokes](stokes.md#Two-dimensional-frozen-operator-and-solver-controls)
 for the dense-block caching this relies on.
 

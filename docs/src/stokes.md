@@ -50,8 +50,8 @@ outer Arrow–Hurwicz pressure update wraps an inner
 Chebyshev-accelerated dynamic-relaxation sweep on the momentum residual. The
 3-D T11/P1-discontinuous and Hex27/Q2--P1 discretisations are available through
 a `StokesDR`/`MixedMesh` state for coupled visco-elasto-plastic problems. The
-original Hex27 viscous interface with three caller-owned velocity arrays and a
-`4 × nels` pressure array remains available.
+purely viscous Hex27 discretisation with four cell-local pressure modes has its
+own state, [`CellPressureStokesDR`](@ref), solved by the same `solve!`.
 
 The discrete adjoint uses the transpose of the same assembled element
 operators and the same mixed spaces. It therefore computes gradients of the
@@ -80,7 +80,7 @@ The [SolKz and SolCx benchmarks](benchmarks.md) exercise these inputs.
 ```@docs
 StokesMaterial
 StokesDR
-Stokes3DWorkspace
+CellPressureStokesDR
 StokesAdjointWorkspace
 DruckerPrager
 DruckerPragerCap
@@ -99,10 +99,10 @@ This keeps the tensile-cap radius positive throughout cohesion softening.
 
 The velocity and pressure fields live on separate node sets described by a
 [`MixedMesh`](mesh.md), which also holds the precomputed per-field geometry in
-`mesh.geometry`. Fill `dr.T` (and `dr.T0`) before solving. The lumped
-pressure mass `dr.M_P` must be assembled — see
-[`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
-first call.
+`mesh.geometry`. Fill `dr.T` (and `dr.T0`) before solving. `solve!` assembles
+the lumped pressure mass `dr.M_P` and the pressure scale `dr.γP` itself; only
+the low-level [`solve_stokes_dyrel!`](@ref) expects them prepared with
+[`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref).
 
 Velocity-node quantities are grouped as [field containers](field_containers.md).
 The velocity is `dr.v`, its pseudo-transient rate `dr.∂v∂τ`, the momentum
@@ -125,20 +125,16 @@ components, so `stress(dr)` returns six arrays instead of three:
 
 ```julia
 material = StokesMaterial(; η, ηb, G, α, ρ0, K, g = (0.0, 0.0, -9.81), Tref)
-dr = StokesDR(backend, nnodes_v, nnodes_P, material)
+dr = StokesDR(mesh, material)   # `mesh` is a 3-D MixedMesh
 dr.v.z          # the third velocity component
 dr.τ.yz         # a stress component that has no two-dimensional counterpart
 ```
 
-`nnodes_v` and `nnodes_P` accept a dimension tuple as well as a node count, so
-a cell-local pressure layout is expressed as `StokesDR(backend, nnodes_v,
-(4, nels), material)`.
-
 The mixed-mesh solvers on this page accept a `StokesDR` and `MixedMesh` of the
 same spatial dimension, 2 or 3, with one Dirichlet boundary condition per
 velocity component; a dimension mismatch is a `MethodError`. The viscous Hex27
-method instead takes caller-owned arrays positionally and does not consume a
-`StokesDR` — see [Sinking block (3-D)](sinking_block_3d.md).
+cell-pressure discretisation uses a [`CellPressureStokesDR`](@ref) and a plain
+`Mesh` instead — see [Sinking block (3-D)](sinking_block_3d.md).
 
 ### Compact setup
 
@@ -311,17 +307,16 @@ The plastic adjoint solver does not support a nonzero `Pf` and rejects it.
 
 ### Coupled thermal--Stokes relaxation
 
-`solve_coupled_dyrel!` advances one thermal DR iteration during every inner
+`solve_coupled!` advances one thermal DR iteration during every inner
 Stokes velocity iteration. The thermal mesh must share the Stokes velocity-node
 numbering; after each thermal update, its continuous nodal temperature is
 gathered onto the discontinuous pressure DoFs used by the Stokes residuals.
 
 ```julia
-stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh, bc_T,
-    (bc_vx, bc_vy, bc_vz), Δt, γP; workgroup,
+stats = solve_coupled!(
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T, (bc_vx, bc_vy, bc_vz);
+    dt = Δt, pressure_factor = γfact, workgroup,
 )
-stats.converged || error("coupled solve did not converge")
 ```
 
 The returned Stokes statistics additionally contain `err_T` and
@@ -353,9 +348,9 @@ points, so the thermal element must share the velocity element's quadrature.
 `thermal.source` keeps the caller's own source and is not modified.
 
 ```julia
-stats = solve_coupled_dyrel!(
-    thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_vx, bc_vy, Δt, γP;
-    workgroup, shear_heating = true,
+stats = solve_coupled!(
+    thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_vx, bc_vy;
+    dt = Δt, workgroup, shear_heating = true,
 )
 ```
 
@@ -363,49 +358,35 @@ In 2-D, pass `bc_vx` and `bc_vy` positionally as before. In 3-D, pass the tuple
 shown above. The 3-D signed pressure basis uses a positive Jacobi modal mass
 instead of direct lumping.
 
-### Three-dimensional viscous array layout
+### Three-dimensional viscous cell-pressure state
 
-The original viscous Hex27/Q2--P1 method keeps caller-owned arrays:
-
-```julia
-velocity = ntuple(_ -> zeros(mesh.nnodes), 3)
-pressure = zeros(4, mesh.nels)
-
-stats = solve_stokes_dyrel!(
-    velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-    ϵ_tol = 1e-6,
-)
-```
-
-`fixed_nodes` is an `NTuple{3}` containing the constrained nodes for each
-velocity component, held at zero unless `bc_values` supplies one velocity per
-entry of `fixed_nodes`, which is how a far-field flow is imposed on the
-boundary. Each component's values must match the length and ordering of its
-constrained-node array. The solver applies them before the first residual
-assembly and after every velocity update. A mismatched length raises
-`DimensionMismatch`; the initial guess need not satisfy the constraints.
-The matching `solve_stokes_adjoint_dyrel!` method accepts the same
-storage plus a three-component objective load. `solve_stokes_3d!` and
-`solve_stokes_adjoint_3d!` remain compatibility wrappers.
-
-Each call otherwise allocates its own residuals, preconditioner and pressure
-mass, which at Hex27 resolutions is over a hundred megabytes per solve. A loop
-that solves repeatedly should own that storage:
+The viscous Hex27/Q2--P1 discretisation stores four pressure modes per cell
+and is solved through a [`CellPressureStokesDR`](@ref) built from a Hex27 `Mesh`:
 
 ```julia
-workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
-
-for step in 1:nsteps
-    stats = solve_stokes_dyrel!(
-        velocity, pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-        ϵ_tol = 1e-6, workspace,
-    )
-end
+material = StokesMaterial(; η = (1.0, 100.0), ρ0 = (1.0, 2.0), g = (0.0, 0.0, -1.0))
+dr = CellPressureStokesDR(mesh, material; phases = cell_phase)
+bc_v = (bc_vx, bc_vy, bc_vz)
+stats = solve!(dr, mesh, bc_v; tolerance = 1e-6, max_iterations = 50_000)
 ```
 
-The preconditioner is refilled from the current material at the start of every
-solve, so a reused workspace never carries stale values, and the same workspace
-can be handed to `solve_stokes_adjoint_dyrel!`.
+`bc_v` holds one `DirichletBoundaryCondition` per velocity component, so each
+component may be constrained on its own node set; nonzero values impose a
+far-field flow. The solver applies them before the first residual assembly and
+after every velocity update, so the initial guess in `dr.v` need not satisfy
+them. The state owns the residuals, preconditioner, pressure mass, and reference
+tables, so repeated solves on the same state allocate no mesh-sized storage. The
+preconditioner is refilled from the material at the start of every solve.
+
+For an objective `J(u)` with velocity derivative `objective_v`, the adjoint
+solve reuses the state's material and scratch and writes caller-owned outputs:
+
+```julia
+λv = ntuple(_ -> zeros(mesh.nnodes), 3)
+λP = zeros(4, mesh.nels)
+solve_adjoint!(dr, mesh, bc_v; objective_v, λv, λP, tolerance = 1e-6)
+gradients = stokes_material_gradient_3d(dr, mesh, λv)
+```
 
 ### Two-dimensional spectral estimate and frozen Jacobian
 
@@ -525,13 +506,13 @@ headless accelerator runs.
 ## Drivers
 
 ```@docs
-solve_coupled_dyrel!
+solve_coupled!
 solve!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
 solve_stokes_dyrel!
 solve_adjoint!(::StokesDR{<:Any, D}, ::MixedMesh{D}, ::NTuple{D, DirichletBoundaryCondition}) where {D}
 solve_stokes_adjoint_dyrel!
-solve_stokes_3d!
-solve_stokes_adjoint_3d!
+solve!(::CellPressureStokesDR, ::Mesh, ::NTuple{3, DirichletBoundaryCondition})
+solve_adjoint!(::CellPressureStokesDR, ::Mesh, ::NTuple{3, DirichletBoundaryCondition})
 stokes_material_gradient_3d
 FEMTools.FrozenAdjointOperator
 FEMTools.MatrixFreeAdjointOperator
@@ -577,16 +558,16 @@ for the 2-D convention above. The current examples have no explicit material
 term in the objective, so only the contraction remains. The 2-D example forms a
 finite-element objective load for
 `J(v_y) = -∫_{Ωobs} v_y dΩ`, solves the transpose system with
-`solve_stokes_adjoint_dyrel!`, and uses Enzyme reverse mode on the element
+`solve_adjoint!`, and uses Enzyme reverse mode on the element
 momentum residual contraction to obtain density and viscosity sensitivities.
 The returned sensitivity arrays contain raw element integrals. Their sums give
 phase gradients; division by element area is used only to visualise a spatial
 sensitivity density.
 
-The 3-D viscous operator is symmetric, so its adjoint DYREL method reuses the
-3-D forward residual and preconditioner with the objective derivative as the
-momentum load. This wrapper instead solves `A^Tλ = J_u`, so its material
-derivative uses the opposite contraction `-λ^T R_m`.
+The 3-D viscous operator is symmetric, so the cell-pressure `solve_adjoint!`
+reuses the forward residual and preconditioner with the objective derivative as
+the momentum load. It solves `A^Tλ = J_u`, so its material derivative uses the
+opposite contraction `-λ^T R_m`.
 `stokes_material_gradient_3d` contracts the forward and adjoint velocity fields
 analytically. `test/test_stokes_3d_reference.jl`
 validates those contractions against a sparse finite-difference oracle.
@@ -674,11 +655,7 @@ at construction rather than assumed.
 three sweeps per application. It is the slowest of the three and the only one
 that avoids block storage for a plastic tangent.
 
-See `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` for a complete solve
-and `examples/benchmarks/stokes/adjoint_perf/adjoint_perf.jl` for a headless mesh/contrast sweep.
-Forward comparisons are available in
-`examples/benchmarks/stokes/forward_lambda_perf/forward_lambda_perf.jl` and
-`examples/benchmarks/stokes/forward_lambda_shear_band_perf/forward_lambda_shear_band_perf.jl`.
+See `examples/miniapps/stokes/sinking_block_adj/sinking_block_adj.jl` for a complete solve.
 
 ## Assembly
 

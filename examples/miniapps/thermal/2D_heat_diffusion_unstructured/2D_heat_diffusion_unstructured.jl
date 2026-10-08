@@ -9,6 +9,7 @@ using GLMakie
 using GeometryBasics
 using TimerOutputs
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 include(joinpath(@__DIR__, "..", "..", "..", "gmsh_meshing.jl"))
 
@@ -55,7 +56,7 @@ function main(; max_area=1e5)
         fill(T_bottom, length(bottom_nodes)),
         hole_dof_vecs...,
     ))
-    bc_T = DirichletBoundaryCondition(nothing, Γ_dofs, Γ_vals)
+    bc_T = DirichletBoundaryCondition(Γ_dofs, Γ_vals)
 
     @printf("Dirichlet: %d top, %d bottom", length(top_nodes), length(bottom_nodes))
     for (h, hn) in enumerate(hole_nodes_per_hole)
@@ -70,23 +71,23 @@ function main(; max_area=1e5)
     Δt  = 20e3 * 365.25 * 24 * 3600   # 20 kyr time step [s]
 
     # Solver state --------------------------------------------------------
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, material;
+    dr = ThermalDiffusionDR(mesh, material;
                             CFL = 0.9, ϵ = 1e-8)
 
     T_init = Float64[T_top + (T_bottom - T_top) * (-coords_cpu[i][2] / Ly) for i in eachindex(coords_cpu)]
     copyto!(dr.T, T_init)
-    apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
+    FEMTools.apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
     copyto!(dr.T0, dr.T)
 
     # Lithostatic pressure: solve ∫ ∇P·∇v dΩ = ∫ ρ(T) g·∇v dΩ on the initial T.
     # BC: P = 0 on the free surface (top), Neumann elsewhere.
     # Warm-start from the analytical P = ρ₀ g depth so the initial residual is small;
     # this prevents β=1 undamped accumulation in the DR solver for pure Poisson.
-    lp_dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(mesh, material; CFL = 0.9, ϵ = 1e-2)
     copyto!(lp_dr.T, dr.T)
     P0_litho = Float64[material.ρ0[1] * (-g[2]) * (-coords_cpu[i][2]) for i in eachindex(coords_cpu)]
     copyto!(lp_dr.P, P0_litho)
-    bc_P = DirichletBoundaryCondition(nothing, TDev(top_nodes), zero(dr.P[top_nodes]))
+    bc_P = DirichletBoundaryCondition(TDev(top_nodes), zero(dr.P[top_nodes]))
     @printf("solving initial lithostatic pressure …\n")
     to = TimerOutput()
     @timeit to "litho P init" solve!(lp_dr, mesh, bc_P; workgroup, check_interval = 50, Tref = Tref, g = g)

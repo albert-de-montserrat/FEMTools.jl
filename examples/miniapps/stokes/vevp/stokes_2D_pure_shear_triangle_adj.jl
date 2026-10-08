@@ -460,8 +460,8 @@ function main(;
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - Lx / 2) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - Ly / 2) for n in vy_nodes]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the solver
     # starts from a good initial guess.
@@ -473,11 +473,6 @@ function main(;
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(vy_nodes) max_vx = maximum(abs, bc_vx_vals) max_vy = maximum(abs, bc_vy_vals)
 
-    γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
-    assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δt; workgroup, phases_v = phases_v_cpu,
-    )
-
     # ---------------------------------------------------------------------------
     # Forward solve
     # ---------------------------------------------------------------------------
@@ -487,12 +482,13 @@ function main(;
 
     @info "Starting PH/DYREL-style Stokes solver" Δt iterMax total_iterMax ncheck ϵ_tol
 
-    t_forward = @elapsed solve_stats = solve_stokes_dyrel!(
-        dr, mesh_stokes, bc_vx, bc_vy, Δt, γP;
+    t_forward = @elapsed solve_stats = solve!(
+        dr, mesh_stokes, bc_vx, bc_vy; dt = Δt, pressure_factor = γfact,
         phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
-        ncheck, ϵ_tol, iterMax, total_iterMax, rel_drop0 = 0.75,
+        check_interval = ncheck, tolerance = ϵ_tol, iterMax,
+        max_iterations = total_iterMax, rel_drop0 = 0.75,
         verbose, verbose_inner = false,
-        collect_history = true,
+        collect_history = true, throw_on_failure = false,
     )
     # The adjoint freezes its transpose Jacobian and preconditioner at the forward
     # state, so differentiating an unconverged one yields a gradient of nothing in
@@ -518,22 +514,20 @@ function main(;
     λvy = zero(dr.v.y)
     λP  = zero(dr.P)
 
-    t_adjoint = @elapsed adjoint_stats = solve_stokes_adjoint_dyrel!(
-        dr, mesh_stokes, geo_v, geo_P, element_v, element_P,
-        phases_v_cpu, phases_P_cpu, τ_old, plastic, G_stokes, Δt, γP,
+    t_adjoint = @elapsed adjoint_stats = solve_adjoint!(
+        dr, mesh_stokes, bc_vx, bc_vy; dt = Δt,
         objective_vx, objective_vy, λvx, λvy, λP,
-        backend, workgroup;
-        vx_nodes,
-        vy_nodes,
-        ncheck,
-        adjoint_tol,
+        phases_v = phases_v_cpu, phases_P = phases_P_cpu, τ_old, plastic, workgroup,
+        check_interval = ncheck,
+        tolerance = adjoint_tol,
         rel_drop = adjoint_rel_drop,
         iterMax = adjoint_iterMax,
-        total_iterMax = adjoint_total_iterMax,
+        max_iterations = adjoint_total_iterMax,
         max_ph_iterations = adjoint_max_ph_iterations,
         verbose,
         verbose_inner = false,
         collect_history = true,
+        throw_on_failure = false,
     )
     verbose && @info "Adjoint solve complete" adjoint_stats
     # A diverged adjoint still produces multipliers, and contracting them yields

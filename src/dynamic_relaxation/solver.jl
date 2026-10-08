@@ -154,6 +154,17 @@ function apply_dirichlet!(v, dofs, vals, backend, workgroup)
     return launch!(dirichlet_kernel!, backend, workgroup, length(dofs), v, dofs, vals)
 end
 
+@kernel function dirichlet_value_kernel!(v, @Const(dofs), val)
+    i = @index(Global)
+    v[dofs[i]] = val
+end
+
+# One value for every constrained entry, e.g. homogeneous conditions.
+function apply_dirichlet!(v, dofs, val::Number, backend, workgroup)
+    isempty(dofs) && return nothing
+    return launch!(dirichlet_value_kernel!, backend, workgroup, length(dofs), v, dofs, val)
+end
+
 # ---------------------------------------------------------------------------
 # Pseudo-transient update kernels
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ function main(; mesh_size = 0.12, nz = 8, CFL = 0.9, c_fact = 0.9,
     ρ0, α, K = (1.0, 2.0), (0.0, 0.0), (Inf, Inf)
     g, Tref = SA[0.0, 0.0, -1.0], 0.0
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    dr = LithostaticPressureDR(backend, mesh.nnodes, material; CFL, c_fact, ϵ)
+    dr = LithostaticPressureDR(mesh, material; CFL, c_fact, ϵ)
 
     center, half_width = SA[Lx / 2, Ly / 2, Lz / 2], 0.15
     in_block(c) = all(abs.(c .- center) .≤ half_width)
@@ -68,7 +68,7 @@ function main(; mesh_size = 0.12, nz = 8, CFL = 0.9, c_fact = 0.9,
 
     tol = max(Lx, Ly, Lz) * eps(Float64) * 32
     top_nodes = Int32[i for i in eachindex(coords) if abs(coords[i][3] - Lz) ≤ tol]
-    bc = DirichletBoundaryCondition(nothing, top_nodes, zeros(length(top_nodes)))
+    bc = DirichletBoundaryCondition(top_nodes, zeros(length(top_nodes)))
     solve!(dr, mesh, bc; workgroup, check_interval = ncheck, verbose, Tref, g)
 
     P, phases = Array(dr.P), Array(dr.phases)

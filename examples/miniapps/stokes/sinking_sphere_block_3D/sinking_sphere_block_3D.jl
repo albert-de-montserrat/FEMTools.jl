@@ -116,7 +116,7 @@ end
                           solver_tol=1e-6, max_iterations=100_000, workgroup=128)
 
 Solve the viscous 3-D sinking-sphere problem on a sphere-fitted Hex27 mesh with
-the matrix-free `solve_stokes_dyrel!` solver. Velocity uses continuous Q2
+the matrix-free [`CellPressureStokesDR`](@ref) solver. Velocity uses continuous Q2
 functions and pressure four cell-local P1 modes. The two entries of `η` and `ρ`
 describe the matrix and the centred sphere of `radius`. Free-slip conditions
 constrain the normal velocity on all six walls.
@@ -176,19 +176,16 @@ function run_sinking_sphere_3d(;
            (component == 2 && (abs(c[2]) ≤ tol || abs(c[2] - 1) ≤ tol)) ||
            (component == 3 && (abs(c[3]) ≤ tol || abs(c[3] - 1) ≤ tol))
     ]), 3)
-    # The solver updates both in place, starting from this zero initial guess.
-    # Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
-    velocity = FEMTools.VectorField3D(backend, Float64, mesh.nnodes)
-    pressure = KA.zeros(backend, Float64, 4, mesh.nels)
-    # `ncheck` sets how often the residual norms are recomputed and reported;
-    # the iteration budget the 3-D method actually enforces is `total_iterMax`.
-    solve_stats = solve_stokes_dyrel!(
-        Tuple(velocity), pressure, mesh, cell_phase, η, ρ, g, fixed_nodes;
-        ncheck = 50, ϵ_tol = solver_tol,
-        iterMax = max_iterations, total_iterMax = max_iterations,
+    bc_v = map(nodes -> DirichletBoundaryCondition(nodes, KA.zeros(backend, Float64, length(nodes))), fixed_nodes)
+    # The state holds velocity and pressure, zero initially and updated in place
+    # by the solve. Pressure holds the four P1 modes (1, ξ, η, ζ) of each cell.
+    material = StokesMaterial(; η, ρ0 = ρ, g)
+    dr = CellPressureStokesDR(mesh, material; phases = cell_phase)
+    solve_stats = solve!(dr, mesh, bc_v;
+        tolerance = solver_tol, max_iterations, check_interval = 50,
         workgroup, verbose,
     )
-    solve_stats.converged || error("3D DYREL solve did not converge: $(solve_stats.err)")
+    velocity, pressure = dr.v, dr.P
     if write_output
         # `pressure[1, :]` is the cell-constant mode; the three linear modes have
         # no single cell-centre value and are dropped from the output.
@@ -200,7 +197,5 @@ function run_sinking_sphere_3d(;
     return (; mesh, velocity, pressure, cell_phase, fixed_nodes, solve_stats, η, ρ, g)
 end
 
-if abspath(PROGRAM_FILE) == abspath(@__FILE__)
-    result = run_sinking_sphere_3d(backend = backend, ncells = 12, ncells_inner = 6)
-    @info "3D sinking-sphere forward solve" result.mesh.nnodes result.mesh.nels result.solve_stats.err
-end
+result = run_sinking_sphere_3d(backend = backend, ncells = 12, ncells_inner = 6)
+@info "3D sinking-sphere forward solve" result.mesh.nnodes result.mesh.nels result.solve_stats.err

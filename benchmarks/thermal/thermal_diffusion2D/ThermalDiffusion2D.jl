@@ -3,11 +3,9 @@ using LinearAlgebra
 using DomainSets
 using KernelAbstractions
 using ExactFieldSolutions
-using JLD2
 using DomainSets: ×
 
-import GLMakie
-using GLMakie: Figure, Axis, Colorbar, poly!, Point2f, DataAspect
+include(joinpath(@__DIR__, "..", "..", "support.jl"))
 
 # ---------------------------------------------------------------------------
 # Parameters
@@ -55,26 +53,7 @@ function main(;
     # ---------------------------------------------------------------------------
 
     coords, connectivity = Array(mesh.coords), Array(mesh.el2n)
-    Nq = shape_function_values(element)
-    gradients = shape_function_gradients(element)
-    geo = Array(mesh.geometry)
-    points = [sum(Nq[q][a] * coords[connectivity[a, e]] for a in axes(connectivity, 1))
-              for q in eachindex(Nq), e in 1:mesh.nels]
-    weights = [FEMTools.element_geometry(geo, e, gradients)[q][2]
-               for q in eachindex(Nq), e in 1:mesh.nels]
-    samples = (; points, weights)
-    function sample_field(field, connectivity, shapes)
-        values = Array(field)
-        field_nodes = Array(connectivity)
-        return [sum(shapes[q][a] * values[field_nodes[a, e]] for a in axes(field_nodes, 1))
-                for q in eachindex(shapes), e in axes(field_nodes, 2)]
-    end
-
-    function field_error(numerical, exact, weights)
-        absolute = sqrt(sum(weights .* abs2.(numerical .- exact)))
-        reference = sqrt(sum(weights .* abs2.(exact)))
-        return (; absolute, relative = iszero(reference) ? NaN : absolute / reference)
-    end
+    samples = quadrature_samples(mesh, mesh.geometry, element)
 
     # ---------------------------------------------------------------------------
     # ThermalDiffusionDR struct
@@ -127,12 +106,8 @@ function main(;
     metadata = (; julia = string(VERSION), exact_fields = string(pkgversion(ExactFieldSolutions)),
                  backend = string(typeof(backend)), resolution, nsteps, final_time, tolerance,
                  case = :ThermalDiffusion, discretization = :Q2, params, dofs)
-    history_path = nothing
-    if save_history
-        mkpath(output_dir)
-        history_path = joinpath(output_dir, "temperature_convergence.jld2")
-        jldsave(history_path; convergence_history, metadata)
-    end
+    history_path = save_history ? save_convergence_history(
+        joinpath(output_dir, "temperature_convergence.jld2"); convergence_history, metadata) : nothing
 
     # ---------------------------------------------------------------------------
     # VTK output
@@ -147,43 +122,14 @@ function main(;
     # ---------------------------------------------------------------------------
 
     if show_plot || write_output
-        pts = [Point2f(c) for c in coords]
-        polys = [[pts[connectivity[a, e]] for a in 1:4] for e in 1:mesh.nels]
-        # Filled-element heatmaps preserve material interfaces, as in SolVi2D.
-        cell_average(field) = vec(sum(weights .* field; dims = 1) ./ sum(weights; dims = 1))
-        name = "temperature"
-        el_num = cell_average(numerical)
-        el_anal = cell_average(analytical)
-        el_error = cell_average(abs.(numerical .- analytical))
-        clims = extrema(vcat(el_num, el_anal))
-        fig = Figure(size = (1200, 520))
-        for (i, (label, field)) in enumerate((("FEMTools", el_num),
-                                             ("analytics", el_anal),
-                                             ("Absolute error", el_error)))
-            ax = Axis(fig[1, 2i - 1]; aspect = DataAspect(),
-                      title = "$name ($label)", xlabel = "x", ylabel = "y")
-            colorrange = i == 3 ? extrema(field) : clims
-            plot = poly!(ax, polys; color = field, colormap = :vik, colorrange, strokewidth = 0)
-            Colorbar(fig[1, 2i], plot)
-        end
-        show_plot && display(GLMakie.Screen(), fig)
-        write_output && GLMakie.save(joinpath(output_dir, "$name.png"), fig)
-    end
+        fig = comparison_figure(coords, connectivity, 4, samples.weights,
+            (("temperature", numerical, analytical),); size = (1200, 520))
+        show_and_save(fig, joinpath(output_dir, "temperature.png"); show_plot, write_output)
 
-    # ---------------------------------------------------------------------------
-    # Temperature convergence history (separate window)
-    # ---------------------------------------------------------------------------
-
-    if show_plot || write_output
-        convergence_fig = Figure(size = (900, 500))
-        ax = Axis(convergence_fig[1, 1]; title = "Thermal diffusion convergence",
-                  xlabel = "Cumulative DR iteration", ylabel = "Residual", yscale = log10)
-        iterations = [h.iter for h in convergence_history]
-        residuals = [h.residual for h in convergence_history]
-        GLMakie.lines!(ax, iterations, max.(residuals, eps(Float64)); label = "T")
-        GLMakie.axislegend(ax)
-        show_plot && display(GLMakie.Screen(), convergence_fig)
-        write_output && GLMakie.save(joinpath(output_dir, "temperature_convergence.png"), convergence_fig)
+        convergence_fig = convergence_figure([h.iter for h in convergence_history],
+            ("T" => [h.residual for h in convergence_history],);
+            title = "Thermal diffusion convergence", xlabel = "Cumulative DR iteration")
+        show_and_save(convergence_fig, joinpath(output_dir, "temperature_convergence.png"); show_plot, write_output)
     end
 
     return (; mesh, temperature = Array(dr.T), samples, numerical, analytical,

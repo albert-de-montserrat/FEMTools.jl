@@ -136,8 +136,8 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     ρ0 = (Float64(ρice),)
     g = (0.0, -Float64(gravity))
     material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref = 0.0)
-    dr = StokesDR(backend, mesh_stokes.nnodes, mesh_stokes.nnodesP, material;
-        CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9)
+    dr = StokesDR(mesh_stokes, material;
+        stress_size = mesh_stokes.nnodes, CFL_v = 0.9, CFL_P = 0.9, c_fact = 0.9)
 
     phases_v = ones(Int, length(element_v), mesh_stokes.nels)
     phases_P = ones(Int, length(element_P), mesh_stokes.nels)
@@ -156,8 +156,8 @@ function main(; Lx = 20.0, Ly = 6.0, arch_radius = 4.0,
     right_support = Int32[n for n in boundary if coords[n][2] ≤ tol && coords[n][1] ≥ Lx - support_length]
     vy_nodes = sort!(unique(vcat(left_support, right_support)))
     vx_nodes = Int32[minimum(left_support)]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, zeros(Float64, length(vx_nodes)))
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, zeros(Float64, length(vy_nodes)))
+    bc_vx = DirichletBoundaryCondition(vx_nodes, zeros(Float64, length(vx_nodes)))
+    bc_vy = DirichletBoundaryCondition(vy_nodes, zeros(Float64, length(vy_nodes)))
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
     @info "Ice-bridge supports" (; horizontal_anchor = length(vx_nodes),

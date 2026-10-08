@@ -9,7 +9,6 @@ _example_has_parse_error(x) = x isa Expr &&
     scripts = [
         "benchmarks/api_inventory.jl",
         "benchmarks/api_baseline.jl",
-        "benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D_quad.jl",
         "benchmarks/stokes/solcx2D/SolCx2D_quad.jl",
         "benchmarks/stokes/solkz2D/SolKz2D_quad.jl",
         "benchmarks/stokes/solkz2D/SolKz2D_triangle.jl",

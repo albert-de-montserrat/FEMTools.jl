@@ -10,6 +10,7 @@ using KernelAbstractions
 import KernelAbstractions as KA
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 # For CUDA, add `using CUDA` and switch the backend below to `CUDABackend()`.
 # ---------------------------------------------------------------------------
 # 2D linear elasticity (plane strain) of a cantilever clamped on the left

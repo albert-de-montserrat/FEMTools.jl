@@ -35,7 +35,7 @@ introduce a CPU-only shortcut merely to reduce source length.
 - `benchmarks/thermal/thermal_diffusion2D/ThermalDiffusion2D.jl:84-110`
   repeats backend/node counts and explicitly manages previous temperature,
   pseudo-time rate, boundary values, and separate convergence histories.
-- `benchmarks/stokes/sinking_block/sinking_block.jl` intentionally uses a
+- `examples/miniapps/stokes/sinking_block/sinking_block.jl` intentionally uses a
   different viscosity for pressure scaling. Simplification must preserve that
   scientific choice rather than silently use the solve viscosity everywhere.
 - `src/stokes/solvers/DR.jl` already has a dimension-generic mixed-state solver,
@@ -125,8 +125,9 @@ progress. Typed material defaults and scalar properties are implemented;
 SolCx shares one cell-phase row, while SolKz uses default phases. Owned pressure
 scaling is implemented for the mixed 2-D forward solve (`dr.γP`,
 `pressure_factor`, `scaling_viscosity`); SolKz/SolCx, Solvi, sinking-block,
-shear-band, ice-bridge and Popov drivers use it. Adjoint, elastic build-up, and
-pure-shear-hole migration remain. Count-based entry points remain during caller
+shear-band, ice-bridge, Popov, pure-shear, and 2-D adjoint drivers use it.
+Hand-written DR loops (`stokes_2D_pure_shear`, elastic build-up) keep the
+low-level scaling call because they own their pressure update. Count-based entry points remain during caller
 migration. Generated parameterized material keyword forms had no repository
 callers and are removed in favor of inferred ordinary construction.
 
@@ -165,10 +166,19 @@ Implemented first slice: scalar `solve!(thermal, mesh, bc; dt, ...)` and
 callers are removed; the low-level forms are internal (`_solve_thermal!`,
 `_solve_lithostatic!`). Mixed 2-D `solve!(stokes, mesh, bc_v; dt, ...)` is also
 implemented (owned pressure scaling, common controls, `throw_on_failure`); the
-SolKz/SolCx, Solvi, sinking-block, shear-band, ice-bridge, and Popov drivers use
-it. The positional `γP` form is the low-level form. Mixed 2-D `solve_adjoint!`
-(forward scale reused from the state) is implemented; the adjoint miniapps
-still use the expanded call. Cell-pressure 3-D and coupled entry points are next.
+SolKz/SolCx, Solvi, sinking-block, shear-band, ice-bridge, Popov, and
+unstructured pure-shear drivers use it. The positional `γP` form is the
+low-level form. Mixed 2-D `solve_adjoint!` (forward scale reused from the state)
+is implemented and used by both 2-D adjoint miniapps. The Hex27 cell-pressure
+path has its own state, `CellPressureStokesDR(mesh, material; phases)`, owning
+fields, phases, material, and scratch, with `solve!`, `solve_adjoint!`, and
+`stokes_material_gradient_3d(dr, mesh, λv)`; its array-positional methods,
+`solve_stokes_3d!`, `solve_stokes_adjoint_3d!`, and `Stokes3DWorkspace` are
+removed after migrating all callers. CPU/CUDA Float32/Float64 agreement and
+old/new field equality (≤4e-14, equal iteration counts) were checked.
+`solve_coupled!(thermal, stokes, thermal_mesh, stokes_mesh, bc_T, bc_v; dt, ...)`
+replaces `solve_coupled_dyrel!`; it forwards to the mixed Stokes `solve!`, so it
+owns pressure scaling and shares the common controls and failure contract.
 
 Introduce the canonical `solve!` methods and consistent controls/statistics.
 Remove old scalar/Stokes solver names, expanded constructors, split-component
@@ -198,6 +208,12 @@ failure tests. Multi-step cap recurrence and adjoint transpose/gradient gates pa
 
 ### 4. Simplify implementation after callers migrate
 
+Implemented first slice: maintained examples and benchmarks construct thermal,
+lithostatic, and mixed Stokes states from meshes. `solve_stokes_dyrel!` keeps
+only its mesh-owned forms; the array-positional core is internal
+(`_solve_stokes_dyrel!`, per-direction node sets positional) and its
+`MixedMeshCache` and split-component forwarding methods are removed.
+
 Remove forwarding layers made unnecessary by the new API. Derive backend and
 sizes once at the owning boundary. Avoid rebuilding or passing reference
 tables through layers that already own them. Reuse existing workspace/table
@@ -224,6 +240,13 @@ blocks; no new hot-path allocation or loss of inference. Representative warmed
 timings stay within measured baseline variability, or regressions are investigated.
 
 ### 5. Migrate workflows and reduce repeated benchmark support
+
+Implemented first slice: the manual home page starts with executed thermal and
+Stokes workflows; maintained callers use the two-argument Dirichlet constructor.
+`benchmarks/support.jl` holds the quadrature sampling, nodal-load, weighted-error,
+gauge, archive, and figure helpers of the six exact-field scripts; their fields,
+errors, histories, and metadata are bitwise unchanged, and
+`benchmarks/check_exact_fields.jl` passes.
 
 Migrate all maintained workflows, README, docstrings, export tests, and manual
 pages in the same change that removes their old API. Put a short complete

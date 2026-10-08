@@ -172,8 +172,8 @@ function main(;
 
     bc_vx_vals = [ ε̇_bg * (coords[n][1] - cx) for n in vx_nodes]
     bc_vy_vals = [-ε̇_bg * (coords[n][2] - cy) for n in vy_nodes]
-    bc_vx = DirichletBoundaryCondition(nothing, vx_nodes, bc_vx_vals)
-    bc_vy = DirichletBoundaryCondition(nothing, vy_nodes, bc_vy_vals)
+    bc_vx = DirichletBoundaryCondition(vx_nodes, bc_vx_vals)
+    bc_vy = DirichletBoundaryCondition(vy_nodes, bc_vy_vals)
 
     # Seed the full interior with the analytical pure-shear field so the
     # solver starts with a good initial guess (boundary nodes are overwritten

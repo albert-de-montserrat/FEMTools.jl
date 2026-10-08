@@ -36,6 +36,10 @@ the pressure field enter this quadrature.
 
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
+`K` must be the storage modulus of the continuity residual: `dr.K` for solves
+with `finite_K = true`, otherwise `dr.ηb`. A finite modulus omitted from the
+scale makes the explicit pressure update unstable; [`solve!`](@ref) selects it
+automatically.
 `η` also accepts an `nq × nels` viscosity matrix sampled at velocity quadrature
 points, matching the forward solver's `viscosity` keyword.
 """

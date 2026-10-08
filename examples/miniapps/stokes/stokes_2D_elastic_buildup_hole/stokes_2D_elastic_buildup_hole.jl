@@ -194,8 +194,8 @@ function main(;
     vx_bc = zeros(Float64, length(vx_nodes))
     vy_bc = zeros(Float64, length(vy_nodes))
 
-    apply_bc!(dr.v.x, DirichletBoundaryCondition(nothing, vx_nodes, vx_bc))
-    apply_bc!(dr.v.y, DirichletBoundaryCondition(nothing, vy_nodes, vy_bc))
+    apply_bc!(dr.v.x, DirichletBoundaryCondition(vx_nodes, vx_bc))
+    apply_bc!(dr.v.y, DirichletBoundaryCondition(vy_nodes, vy_bc))
 
     @info "Gravitational-loading BCs (no-slip bottom, free-slip sides, free surface top+tunnel)" n_vx=length(vx_nodes) n_vy=length(vy_nodes)
 
@@ -216,7 +216,7 @@ function main(;
         if haskey(corner_id, Int32(n)) && abs(coords[n][2] - ly) ≤ tol_x
     ]
     material = ThermalMaterial(; k = one.(ρ0), Cp = one.(ρ0), ρ0, α, K)
-    lp_dr = LithostaticPressureDR(backend, mesh_litho.nnodes, material; CFL = 0.9, ϵ = 1e-2)
+    lp_dr = LithostaticPressureDR(mesh_litho, material; CFL = 0.9, ϵ = 1e-2)
     T_stokes = Array(dr.T)
     copyto!(lp_dr.T, Float64[T_stokes[Int(n)] for n in corner_nodes])
     P0_litho = Float64[ρ0_mat * g0 * (ly - coords_litho[i][2]) for i in eachindex(coords_litho)]

@@ -8,6 +8,7 @@ using DomainSets
 using DomainSets: ×
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 # include("../mesh_node_reordering.jl")
 

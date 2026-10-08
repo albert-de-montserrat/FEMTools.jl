@@ -21,7 +21,7 @@ and 241 methods. Loading optional extensions can add methods.
 | `solver!` | 4 | Two scalar high-level and two expanded methods; canonical `solve!`, separate internal mechanics |
 | `solve_stokes_dyrel!` | 6 | Mixed-state and specialized cell-pressure solving; canonical dispatch-based `solve!`, remove redundant forwarding variants |
 | `solve_stokes_adjoint_dyrel!` | 3 | Advanced adjoint operation; mesh-owned `solve_adjoint!`, preserve explicit outputs and warm starts |
-| `solve_coupled_dyrel!` | 2 | Coupled operation; tuple component boundaries through `solve_coupled!` |
+| `solve_coupled_dyrel!` | 2 | Removed; callers use `solve_coupled!` |
 | `solve_stokes_3d!` | 1 | Removed; callers use `solve!` |
 | `solve_stokes_adjoint_3d!` | 1 | Removed; callers use `solve_stokes_adjoint_dyrel!` |
 

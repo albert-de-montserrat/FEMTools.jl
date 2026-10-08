@@ -8,6 +8,7 @@ using TimerOutputs
 using DomainSets
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 function integrate_residual(Hloc, local_nodes, source, D, mesh, Nq, ∂N∂ξq, ip, ::Val{N}) where N
     coords = ntuple(i -> mesh.coords[local_nodes[i]], Val(N))

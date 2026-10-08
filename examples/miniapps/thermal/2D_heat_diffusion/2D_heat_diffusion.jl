@@ -5,6 +5,7 @@ using StaticArrays
 using Printf
 using GLMakie
 using FEMTools
+using FEMTools: Mesh  # GLMakie also exports `Mesh`
 
 # const backend   = CUDABackend()
 const backend   = CPU()
@@ -44,7 +45,7 @@ function main(nels)
     bc = DirichletBoundaryCondition(Γ_dofs, Γ_vals)
 
     # --- ThermalDiffusionDR bundles all solver state and material properties ---
-    dr = ThermalDiffusionDR(backend, mesh.nnodes, material; CFL=0.9, ϵ=1e-8)
+    dr = ThermalDiffusionDR(mesh, material; CFL=0.9, ϵ=1e-8)
 
     # Phase assignment: dr.phases defaults to all-ones (single phase).
     # Overwrite to set a two-phase layout, e.g. upper half = phase 2:
@@ -53,7 +54,7 @@ function main(nels)
     # linear initial profile interpolating between bottom (hot) and top (cold)
     # copyto!(dr.T,  TDev(Float64[T_bot + (T_top - T_bot) * (p[2] - leftendpoint(J_Ω)) / (2Ly) for p in coords_cpu]))
     dr.T .= (1300 + 273 * 2) / 2
-    apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
+    FEMTools.apply_dirichlet!(dr.T, Γ_dofs, Γ_vals, backend, workgroup)
     copyto!(dr.T0, dr.T)
 
     # --- time loop ---

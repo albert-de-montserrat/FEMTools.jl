@@ -573,45 +573,70 @@ function DruckerPragerCap(
 end
 
 """
-    Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes)
+    CellPressureStokesDR(mesh, material::StokesMaterial; phases=nothing)
 
-Caller-owned scratch for the 3-D Hex27/Q2--P1 DYREL solver.
+State of the viscous 3-D Stokes solver on Hex27 cells: continuous Q2 velocity and
+four discontinuous pressure modes `(1, ξ, η, ζ)` per cell.
 
-Holds the momentum and pressure residuals, the Jacobi preconditioner, the lumped
-pressure mass, and the zero boundary values each velocity component is projected
-against. All of it scales with the mesh, so a solver that allocates it per call
-churns tens of megabytes of device memory on every call. Build one and pass it as
-the `workspace` keyword of [`solve_stokes_dyrel!`](@ref) to reuse it across a
-time-stepping or optimization loop.
+Precision, backend, and sizes follow `mesh`. The velocity `v` and the
+`4 × nels` pressure `P` start at zero and are updated in place by
+[`solve!`](@ref). The momentum uses the phase viscosities `material.η`, densities
+`material.ρ0`, and the three-component gravity `material.g`. The discretization
+is purely viscous and incompressible: finite `G` or `K` and nonzero `α` are
+rejected, and `ηb` and `Tref` are not used.
 
-It also owns the reference tables the assembly kernels read, so a `Hex27`
-gradient table is built once per workspace instead of once per launch.
+`phases` assigns one material phase per cell and must live on the mesh backend;
+it defaults to phase one everywhere and is borrowed, not copied.
 
-The preconditioner and pressure mass depend on the material and are refilled at
-the start of every solve, so a workspace never carries stale material data. The
-lengths in `fixed_nodes` are baked into the zero boundary values, and the
-reference tables into `mesh.element`, so a workspace belongs to one
-boundary-condition layout and one element; the solver checks the first and
-raises if it is handed a mismatched one.
+The state also owns the residuals, the Jacobi preconditioner, the lumped
+pressure mass, and the reference tables that every solve reuses. The
+preconditioner and pressure mass are refilled from `η` and `phases` at the start
+of each solve.
 """
-struct Stokes3DWorkspace{TV, TP, TB, TT}
-    residual_v::TV
-    residual_p::TP
-    diagonal::TV
+struct CellPressureStokesDR{T, N, TV, TP, TC, TT}
+    v::VectorField3D{TV}
+    P::TP
+    phases::TC
+    η::NTuple{N, T}
+    ρ::NTuple{N, T}
+    g::NTuple{3, T}
+    Rv::NTuple{3, TV}
+    RP::TP
+    diagonal::NTuple{3, TV}
     pressure_mass::TP
-    zero_bc::TB
     tables::TT
 end
 
-function Stokes3DWorkspace(
-        velocity::NTuple{3}, pressure::AbstractMatrix, mesh, fixed_nodes::NTuple{3},
+function CellPressureStokesDR(mesh::Mesh, material::StokesMaterial; phases = nothing)
+    mesh.element isa ReferenceElement{<:QuadraticElement{3, 27}} || throw(
+        ArgumentError("CellPressureStokesDR requires a Hex27 mesh, got $(typeof(mesh.element))")
     )
-    residual_v = ntuple(i -> similar(velocity[i]), 3)
-    diagonal = ntuple(i -> similar(velocity[i], mesh.nnodes), 3)
-    zero_bc = ntuple(i -> fill!(similar(velocity[i], length(fixed_nodes[i])), 0), 3)
-    tables = stokes_tables_3d(KA.get_backend(first(velocity)), mesh.element)
-    return Stokes3DWorkspace(
-        residual_v, similar(pressure), diagonal, similar(pressure), zero_bc, tables,
+    _check_material_precision(mesh, material.η)
+    length(material.g) == 3 || throw(DimensionMismatch("material gravity must have 3 components"))
+    all(isinf, material.G) && all(isinf, material.K) && all(iszero, material.α) || throw(
+        ArgumentError("CellPressureStokesDR is purely viscous and incompressible; G and K must be Inf and α zero")
+    )
+    backend = KernelAbstractions.get_backend(mesh.coords)
+    T = eltype(eltype(mesh.coords))
+    nphases = length(material.η)
+    if phases === nothing
+        phases = KernelAbstractions.ones(backend, Int32, mesh.nels)
+    else
+        length(phases) == mesh.nels ||
+            throw(DimensionMismatch("phases has $(length(phases)) entries but the mesh has $(mesh.nels) cells"))
+        typeof(KernelAbstractions.get_backend(phases)) === typeof(backend) ||
+            throw(ArgumentError("phases must live on the mesh backend $backend"))
+        lo, hi = extrema(phases)
+        1 ≤ lo && hi ≤ nphases ||
+            throw(ArgumentError("phases must lie in 1:$nphases, got $lo:$hi"))
+    end
+    nodal() = KernelAbstractions.zeros(backend, T, mesh.nnodes)
+    cellwise() = KernelAbstractions.zeros(backend, T, 4, mesh.nels)
+    return CellPressureStokesDR(
+        VectorField3D(nodal(), nodal(), nodal()), cellwise(), phases,
+        material.η, material.ρ0, material.g,
+        ntuple(_ -> nodal(), 3), cellwise(), ntuple(_ -> nodal(), 3), cellwise(),
+        stokes_tables_3d(backend, mesh.element),
     )
 end
 
