@@ -22,8 +22,8 @@ and 241 methods. Loading optional extensions can add methods.
 | `solve_stokes_dyrel!` | 6 | Mixed-state and specialized cell-pressure solving; canonical dispatch-based `solve!`, remove redundant forwarding variants |
 | `solve_stokes_adjoint_dyrel!` | 3 | Advanced adjoint operation; mesh-owned `solve_adjoint!`, preserve explicit outputs and warm starts |
 | `solve_coupled_dyrel!` | 2 | Coupled operation; tuple component boundaries through `solve_coupled!` |
-| `solve_stokes_3d!` | 1 | Compatibility keyword wrapper; migrate callers, then remove |
-| `solve_stokes_adjoint_3d!` | 1 | Compatibility keyword wrapper; migrate callers, then remove |
+| `solve_stokes_3d!` | 1 | Removed; callers use `solve!` |
+| `solve_stokes_adjoint_3d!` | 1 | Removed; callers use `solve_stokes_adjoint_dyrel!` |
 
 Keep reference elements, mesh producers, field containers, post-processing, and
 writers initially. Review geometry/cache exports and raw kernel public status
