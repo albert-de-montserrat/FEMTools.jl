@@ -53,10 +53,10 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
     root = size - 1
     material = ThermalMaterial(; k = uniform ? (FP(1),) : (FP(1), FP(3)),
         Cp = FP(1), ρ0 = FP(1), α = FP(0), K = FP(Inf))
-    problem = MPIThermal.collective(comm) do
+    problem = FEMTools.collective(comm) do
         rank == root ? problem_data(FP, nels; uniform) : nothing
     end
-    assignment = MPIThermal.collective(comm) do
+    assignment = FEMTools.collective(comm) do
         rank == root && ghost_only && size > 1 || return nothing
         counts = zeros(Int, problem.mesh.nnodes)
         for node in problem.mesh.el2n
@@ -70,7 +70,7 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
     context = MPIThermal.distribute(problem, comm; backend, root, assignment, workgroup = 32)
     try
         tolerance = FP === Float32 ? FP(2e-5) : FP(1e-9)
-        (; dr, bc) = MPIThermal.prepare_state(context, material; tolerance)
+        (; dr, bc) = MPIThermal.prepare_state(context, problem, material; tolerance)
         if ghost_only && size > 1 && rank == size - 1
             @test context.mesh.nels == 1
             @test context.part.nowned == 0
@@ -81,13 +81,13 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
         dt = FP(0.05)
         # Repeated reverse assembly must clear old ghost contributions.
         for repetition in 1:2
-            MPIThermal.collective(context.comm) do
+            FEMTools.collective(context.comm) do
                 FEMTools._assemble_thermal!(dr, dt, context.mesh, context.mesh.geometry,
                     context.mesh.element, FP(0), backend, 32, true)
             end
             FEMTools._dr_accumulate!(context, dr.R, dr.∂R∂T, dr.PC)
-            obtained = map(a -> MPIThermal.gather_field(a, context; root), (dr.R, dr.∂R∂T, dr.PC))
-            MPIThermal.collective(context.comm) do
+            obtained = map(a -> FEMTools.gather_owned(a, context), (dr.R, dr.∂R∂T, dr.PC))
+            FEMTools.collective(context.comm) do
                 rank == root || return nothing
                 if uniform
                     exact = independent_system(problem, dt)
@@ -97,7 +97,7 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
                 end
             end
         end
-        serial = MPIThermal.collective(context.comm) do
+        serial = FEMTools.collective(context.comm) do
             rank == root || return nothing
             state = ThermalDiffusionDR(problem.mesh, material; CFL = 0.9, ϵ = tolerance)
             for key in keys(problem.fields)
@@ -113,10 +113,10 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
             end
             stats = MPIThermal.solve_step!(dr, context, bc; dt, Tref = FP(0), verbose = false,
                 tolerance, check_interval = 5, max_iterations = 5000)
-            T = MPIThermal.gather_temperature(dr, context; root)
+            T = MPIThermal.gather_temperature(dr, context)
             @test stats.converged
             @test all(isfinite, dr.T)
-            MPIThermal.collective(context.comm) do
+            FEMTools.collective(context.comm) do
                 rank == root || return nothing
                 if step > 1
                     copyto!(serial.T0, serial.T)

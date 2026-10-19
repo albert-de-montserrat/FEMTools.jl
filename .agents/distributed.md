@@ -2,28 +2,41 @@
 
 ## Current reality
 
-The package has MPI-free partition metadata but no distributed solver API.
-`MPI.jl` and PartitionedArrays are examples-only dependencies; Metis is a weak
-dependency.
+The package has MPI-free partition metadata in the core and an MPI execution
+layer in `FEMToolsMPIExt` (loads with `MPI` + `PartitionedArrays`). No public
+solver accepts a distributed mesh yet; all names below are internal.
 
-- `src/distributed/partition.jl` (internal names): `partition_mesh(mesh,
-  assignment, nparts)` returns one `MeshPartition` per part with serial node and
-  element IDs, owned-first local nodes, local connectivity, inherited physical
-  boundary nodes, and halo entries carrying a dense interface-node ID and owning
-  part. `localize_dirichlet` keeps owner constraints only; `reconstruct_owned`
-  rebuilds serial order and rejects missing or duplicate owners.
-  `partition_elements` (Metis extension) partitions the face-adjacency graph.
-- Parts are labelled `1:nparts`. A node is owned by its lowest incident part.
-- The shared DR loop accepts an `execution` keyword; `nothing` is the serial
-  path. An execution context supplies owner ranges, halo refresh/accumulate,
-  global reductions, and a collective guard through the `_dr_*` hooks in
+- `src/distributed/partition.jl`: `partition_mesh(mesh, assignment, nparts)`
+  returns one `MeshPartition` per part with serial node and element IDs,
+  owned-first local nodes, local connectivity, inherited physical boundary
+  nodes, and halo entries carrying a dense interface-node ID and owning part.
+  `local_mesh` builds the element-aware local `Mesh` on a backend with those
+  boundary nodes. `localize_dirichlet` keeps owner constraints only;
+  `reconstruct_owned` rebuilds serial order and rejects missing or duplicate
+  owners. `partition_elements` (Metis extension) partitions the face-adjacency
+  graph.
+- Parts are labelled `1:nparts`; rank `r` holds part `r + 1`. A node is owned
+  by its lowest incident part.
+- `src/distributed/execution.jl` holds stubs for `distribute_mesh`,
+  `scatter_field!`, `localize_bc`, `gather_owned`, `collective`, and `agree`.
+  `FEMToolsMPIExt` implements them on its `DistributedMesh`: a private
+  `Comm_dup` freed by `close`, root-side partitioning and serialized scatter,
+  local mesh on the backend, and cached host/device halo buffers for the mesh
+  float type and `Int32` only (other element types are rejected).
+- Halo transport is host-staged: a KA kernel packs shared entries, the host
+  buffer goes through PartitionedArrays `consistent!` (owner to ghosts) or
+  `assemble!` (ghosts added to owners, ghosts zeroed), then a kernel unpacks.
+  Only halo entries cross the host/device boundary.
+- The shared DR loop accepts `execution = distributed_mesh`; `nothing` is the
+  serial path. The extension supplies owner ranges, halo refresh/accumulate,
+  global reductions, and collective guards through the `_dr_*` hooks in
   `src/dynamic_relaxation/solver.jl`.
-- `examples/miniapps/thermal/2D_heat_diffusion_MPI/mpi_thermal.jl` is a working
-  T3 thermal prototype of plan phases 2-4 on that hook: PartitionedArrays
-  transport with KA pack/unpack and host staging, a private communicator, and
-  collective error agreement. `test/mpi/` launches its worker suite. CPU
-  1/2/4 ranks and one CUDA rank pass; the two-GPU gate is unrun. Gate records
-  live in `MPI_IMPLEMENTATION_PLAN.md`.
+- Thermal-specific glue (state allocation, coefficient refresh, `solve!`
+  forwarding) is still in
+  `examples/miniapps/thermal/2D_heat_diffusion_MPI/mpi_thermal.jl`.
+- `test/mpi/` has its own environment, launcher, and two workers; CI job `mpi`
+  runs them on 1/2/4 CPU ranks. One CUDA rank passes locally; the two-GPU gate
+  is unrun. Gate records live in `MPI_IMPLEMENTATION_PLAN.md`.
 
 Existing parallel foundations are local to one process/device:
 
@@ -204,7 +217,8 @@ A CUDA skip is missing hardware coverage, not completion of the first milestone.
 - Whether the public distributed API wraps `MeshPartition` or replaces it.
 - CUDA-aware optimization availability; host staging is the required baseline.
 - WriteVTK integration details and checkpoint format/continuation contract.
-- CPU MPI CI and required multi-GPU hardware runner/deployment environments.
+- Multi-GPU hardware runner/deployment environment (CPU MPI CI exists).
+- Float32 driver tolerance: the example driver stalls at 1.32e-5 against 1e-5.
 
 ## Update this guide when
 

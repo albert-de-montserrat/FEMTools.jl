@@ -19,7 +19,7 @@ on peers, together with global solve statistics and local ownership counts.
 """
 function main(nels = (32, 32); nsteps = 5, backend = CPU(), FP = Float64,
         comm = MPI.COMM_WORLD, workgroup = 128, verbose = true)
-    MPIThermal.agree((nels, nsteps, FP), comm)
+    FEMTools.agree((nels, nsteps, FP), comm)
     rank = MPI.Comm_rank(comm)
     material = ThermalMaterial(;
         k = (FP(3), FP(2.5)), Cp = (FP(1200), FP(1100)), ρ0 = (FP(3300), FP(2700)),
@@ -28,7 +28,7 @@ function main(nels = (32, 32); nsteps = 5, backend = CPU(), FP = Float64,
     Lx, Ly = FP(10e3), FP(20e3)
     T_bot, T_top, Tref = FP(873), FP(273), FP(273)
     dt = FP(1e3 * 365 * 24 * 3600)
-    problem = MPIThermal.collective(comm) do
+    problem = FEMTools.collective(comm) do
         all(>(0), nels) && nsteps > 0 || throw(ArgumentError("mesh dimensions and nsteps must be positive"))
         rank == 0 || return nothing
         Ω = (-Lx .. Lx) × (-Ly .. zero(FP))
@@ -49,7 +49,7 @@ function main(nels = (32, 32); nsteps = 5, backend = CPU(), FP = Float64,
     context = MPIThermal.distribute(problem, comm; backend, workgroup)
     try
         tolerance = FP === Float32 ? FP(1e-5) : FP(1e-8)
-        (; dr, bc) = MPIThermal.prepare_state(context, material; tolerance)
+        (; dr, bc) = MPIThermal.prepare_state(context, problem, material; tolerance)
         history = NamedTuple[]
         for step in 1:nsteps
             rank == 0 && verbose && @printf("time step %d / %d; MPI ranks = %d\n", step, nsteps, MPI.Comm_size(comm))

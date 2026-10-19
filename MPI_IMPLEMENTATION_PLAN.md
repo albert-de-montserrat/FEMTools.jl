@@ -1,67 +1,87 @@
 # MPI implementation plan
 
-Status: phase 0 transport experiment and phase 1 ownership metadata are
-implemented; phases 2-4 exist only as an example-level prototype. Scope:
-distributed-memory domain decomposition with CPU and CUDA support from the
-first complete milestone, preserving the existing matrix-free finite-element
-mathematics and serial API. External package count is unrestricted; CUDA
-compatibility is a mandatory dependency and design gate.
+Status: phases 0-2 are implemented: ownership metadata in the core, and the
+MPI transport/setup layer as a package extension. The thermal solve (phases
+3-4) runs through example-level glue on top of that layer. The two-GPU gate is
+outstanding. Scope: distributed-memory domain decomposition with CPU and CUDA
+support from the first complete milestone, preserving the existing matrix-free
+finite-element mathematics and serial API. External package count is
+unrestricted; CUDA compatibility is a mandatory dependency and design gate.
 
 The `benchmarks/stokes/solcx2D_MPI/` scripts still call the serial package API;
 their directory name does not provide a distributed implementation.
 
 ## Current state
 
-Package code (no MPI dependency):
+Core package (no MPI dependency, all names internal until phase 4):
 
 - `src/distributed/partition.jl`: `MeshPartition`, `partition_mesh`,
-  `localize_dirichlet`, `reconstruct_owned`, and the `partition_elements` stub.
-  All four names are internal; the public surface is decided in phase 4.
-  Parts are labelled `1:nparts`; the MPI layer maps rank `r` to part `r + 1`.
-- `ext/FEMToolsMetisExt.jl`: `partition_elements` via the face-adjacency graph.
-  Metis is a weak dependency and a test dependency.
+  `localize_dirichlet`, `reconstruct_owned`, `local_mesh`, and the
+  `partition_elements` stub. Parts are labelled `1:nparts`; rank `r` holds part
+  `r + 1`.
+- `src/distributed/execution.jl`: stubs for `distribute_mesh`,
+  `scatter_field!`, `localize_bc`, `gather_owned`, `collective`, and `agree`.
 - `src/dynamic_relaxation/solver.jl`: the `execution` keyword and `_dr_*`
   hooks; `nothing` keeps the serial path. `assemble_dr_matrices_atomix!`
   handles zero local elements.
-- `test/test_partition.jl`: phase-1 gate. `test/test_scalar_initial_bc.jl`:
-  initial-BC regression.
+- `Serialization` is a core stdlib dependency so the MPI extension can
+  serialize setup payloads.
 
-Example-level prototype of phases 2-4 (`examples/` environment):
+Extensions:
+
+- `FEMToolsMetisExt` (`Metis`): `partition_elements` on the face-adjacency graph.
+- `FEMToolsMPIExt` (`MPI` + `PartitionedArrays`): `DistributedMesh` (private
+  duplicated communicator, root, partition, local mesh on the backend, cached
+  `Float`/`Int32` halo buffers, root-held partitions), setup by serialized
+  scatter with agreed receive-buffer allocation, KA pack/unpack with host
+  staging around PartitionedArrays `consistent!`/`assemble!`, collective error
+  agreement, field/BC scatter, owned gather, `close`, and the DR hooks.
+
+Thermal glue (`examples/` and `test/mpi/`):
 
 - `examples/miniapps/thermal/2D_heat_diffusion_MPI/mpi_thermal.jl`
-  (`MPIThermal`): root partitions with the package helpers, serializes and
-  scatters parts, builds local T3 meshes with inherited physical boundaries, and
-  runs halo copy/add through PartitionedArrays `consistent!`/`assemble!` with
-  KA pack/unpack and host staging. It also supplies the private communicator,
-  collective error agreement, owner-range DR hooks, and owned gather.
-- `.../2D_heat_diffusion_MPI.jl`: headless CPU/CUDA driver.
-- `test/mpi/runtests.jl` + `thermal_worker.jl`: launcher with timeout and the
-  worker fixtures (independent affine T3 oracle for `R`/`PC`/row sums, ghost-only
-  rank, empty ranks, reversed split communicator, repeated assembly, two
-  physical steps, budget exhaustion, injected NaN failure).
+  (`MPIThermal`): T3 input validation, state allocation and field scatter,
+  control agreement, coefficient refresh, and `solve!` with `execution`.
+  `.../2D_heat_diffusion_MPI.jl` is the headless CPU/CUDA driver.
+- `test/mpi/Project.toml`: isolated MPI test environment with FEMTools from
+  the working tree. `runtests.jl` launches `exchange_worker.jl` and
+  `thermal_worker.jl` at each rank count with a kill-on-timeout.
+- `exchange_worker.jl` (phase 2 gate): copy/add in Float32/Float64/Int32 with
+  buffer reuse, field scatter/gather, BC localization, Metis/round-robin/uneven
+  assignments with empty ranks, Q9 vertex-only and four-sharer nodes, nonzero
+  root, reversed split communicator, two live distributed meshes, repeated and
+  post-close use, and collective root/local/control-mismatch failures.
+- `thermal_worker.jl`: independent affine T3 oracle for `R`/`PC`/row sums,
+  ghost-only rank, empty ranks, reversed communicator, repeated assembly, two
+  physical steps, budget exhaustion, injected NaN failure.
+- CI job `mpi` runs `test/mpi/runtests.jl` on Ubuntu, Julia 1.12, MPICH.
 
-The prototype is not yet the plan's extension layout (`ext/FEMToolsMPIExt.jl`,
-`FEMTools.distribute_mesh`, `scatter_field!`, `gather_owned`); phase 2 moves it.
+Phase 3 remaining work: move the thermal glue behind the public solver
+(`ThermalDiffusionDR(distributed_mesh, material)` and `solve!` forwarding),
+which is the phase 4 user surface.
 
 ### Gate records
 
 All runs on 2026-10-19, working tree on `adm/mpi` after `9957536`, Linux,
-24 CPU cores, one NVIDIA GeForce RTX 3080. Examples environment: Julia 1.13.1,
-MPI.jl 0.20.29 with MPICH 5.0.2 (`MPICH_jll`), PartitionedArrays 0.5.14,
-Metis 1.5.0, CUDA.jl 6.4.1. Package tests: Julia 1.12.7.
+24 CPU cores, one NVIDIA GeForce RTX 3080. MPI environment (`test/mpi`) and
+examples environment: Julia 1.13.1, MPI.jl 0.20.29 with MPICH 5.0.2
+(`MPICH_jll`), PartitionedArrays 0.5.14, Metis 1.5.0, CUDA.jl 6.4.1. Package
+tests: Julia 1.12.7.
 
 | Gate | Command | Result |
 |---|---|---|
-| Phase 1 metadata, Float32/Float64, T3 and Q9, shuffled numbering, zero-owned-node and empty parts, Metis balance | `TestEnv` include of `test/test_partition.jl` | pass (493 tests) |
-| CPU worker, 1/2/4 ranks, Float32/Float64 | `julia --project=examples test/mpi/runtests.jl` | pass (119/81/77 tests per rank) |
-| CUDA worker, 1 rank, `allowscalar(false)` | `mpiexec -n 1 julia --project=examples test/mpi/thermal_worker.jl --cuda` | pass (119 tests) |
-| CPU driver, 2 ranks, 16×16, 2 steps | `FEMTOOLS_MPI_N=16 FEMTOOLS_MPI_STEPS=2 mpiexec -n 2 julia --project=examples .../2D_heat_diffusion_MPI.jl` | pass, range (273, 873) |
-| CUDA, 2 ranks on distinct GPUs | — | unrun: one GPU available |
+| Phase 1 metadata and local meshes, Float32/Float64, T3 and Q9, shuffled numbering, zero-owned-node and empty parts, Metis balance | `TestEnv` include of `test/test_partition.jl` | pass (526 tests) |
+| CPU exchange + thermal workers, 1/2/4 ranks, Float32/Float64 | `julia --project=test/mpi test/mpi/runtests.jl` | pass |
+| CUDA exchange + thermal workers, 1 rank, `allowscalar(false)` | `julia --project=test/mpi test/mpi/runtests.jl --cuda --ranks=1` | pass |
+| CPU driver, 2 ranks, 16×16, 2 steps, Float64 | `FEMTOOLS_MPI_N=16 FEMTOOLS_MPI_STEPS=2 mpiexec -n 2 julia --project=examples .../2D_heat_diffusion_MPI.jl` | pass, range (273, 873) |
+| Driver, 1 rank, 16×16, 2 steps, `--float32` (CPU and CUDA) | same with `--float32` | fail: step 2 stalls at relative residual 1.32e-5 against tolerance 1e-5 |
+| CUDA, 2 ranks on distinct GPUs | `... runtests.jl --cuda` | unrun: one GPU available |
 | Transfer volume, allocations, cached-buffer reuse evidence | — | unrun |
-| Setup-failure fixtures (control mismatch, root Metis/input failure, injected allocation failure) | — | unrun |
+| Injected allocation failure during setup | — | unrun |
 
 The phase 0 transport choice (PartitionedArrays with host staging) is
-provisional until the two-GPU gate passes.
+provisional until the two-GPU gate passes. The Float32 driver tolerance is
+an open issue: the worker's Float32 cases use `2e-5` and pass.
 
 ## First deliverable
 

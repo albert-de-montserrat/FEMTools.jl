@@ -68,6 +68,22 @@ end
     @test_throws "node 10 is referenced by no element" FEMTools.partition_mesh(orphaned, ones(Int, 8), 1)
 end
 
+@testset "partition local meshes" begin
+    for (FP, element) in ((Float32, LinearElement{2, 3, Float32}), (Float64, QuadraticElement{2, 9, Float64}))
+        mesh = Mesh((FP(0) .. FP(1)) × (FP(0) .. FP(1)), ReferenceElement(element), (2, 2))
+        for part in FEMTools.partition_mesh(mesh, [mod1(e, 3) for e in 1:mesh.nels], 4)
+            local_mesh = FEMTools.local_mesh(part, mesh.element)
+            @test local_mesh.nnodes == length(part.nodes) && local_mesh.nels == length(part.elements)
+            @test local_mesh.el2n == part.el2n && local_mesh.coords == part.coords
+            # Physical boundary only: interface nodes stay interior.
+            @test local_mesh.Γnodes == part.Γnodes
+            @test local_mesh.geometry == mesh.geometry[part.elements]
+        end
+    end
+    # Without MPI loaded, the execution layer names the missing packages.
+    @test_throws "run `using MPI, PartitionedArrays`" FEMTools.distribute_mesh(nothing, nothing, nothing)
+end
+
 @testset "partitioned Dirichlet constraints and reconstruction" begin
     mesh = Mesh((0.0 .. 1.0) × (0.0 .. 1.0), ReferenceElement(LinearElement{2, 3, Float64}), (2, 2))
     parts = FEMTools.partition_mesh(mesh, [1, 1, 2, 1, 2, 3, 2, 2], 3)

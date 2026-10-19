@@ -49,6 +49,23 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+  mpi:
+    name: MPI / Julia 1.12 / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate MPI test environment
+        run: julia --project=test/mpi -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+      - name: Run MPI workers on 1, 2, and 4 ranks
+        run: julia --project=test/mpi test/mpi/runtests.jl
+        env:
+          FEMTOOLS_MPI_TEST_TIMEOUT: "900"
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

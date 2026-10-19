@@ -59,20 +59,20 @@ not implemented. Consult the distributed guide for the proposed MPI work.
 | `src/elements/` | Element tags, shape functions, and quadrature |
 | `src/mesh/` | Mesh containers, connectivity, geometry, sparsity, and coloring |
 | `src/boundary_conditions/` | Boundary-condition data and application |
-| `src/distributed/` | MPI-free mesh partition metadata for distributed runs |
+| `src/distributed/` | MPI-free mesh partition metadata and MPI-extension entry points |
 | `src/dynamic_relaxation/` | Shared DR iteration and update kernels |
 | `src/heat_diffusion/` | Thermal state, residual assembly, and solver wrapper |
 | `src/lithostatic_pressure/` | Pressure state, residual assembly, and solver wrapper |
 | `src/stokes/` | 2-D/3-D Stokes states, rheology, operators, forward and adjoint solvers |
 | `src/postprocess/` | Derived fields and VTK writers |
-| `ext/` | Optional CUDA backend mapping, Triangulate meshing, and Metis partitioning |
+| `ext/` | Optional CUDA backend mapping, Triangulate meshing, Metis partitioning, and MPI execution |
 | `test/` | Unit, API, inference, allocation, convergence, and reference tests |
 | `examples/` | Runnable scientific drivers, plotting, meshing, and benchmarks |
 | `benchmarks/` | Exact-field verification, refinement, CUDA checks, and experiments |
 | `docs/` | Documenter configuration and user documentation |
 | `.agents/` | Shared subsystem contracts and living engineering notes |
 | `CLAUDE.md` | Claude Code entry point importing this shared contract |
-| `.github/workflows/CI.yml` | Package and documentation CI |
+| `.github/workflows/CI.yml` | Package, CPU MPI, and documentation CI |
 
 ## Working rules
 
@@ -195,12 +195,14 @@ From the repository root:
 julia --project=. -e 'using Pkg; Pkg.test()'
 julia --project=docs docs/make.jl
 julia --project=examples path/to/example.jl
+julia --project=test/mpi test/mpi/runtests.jl
 git diff --check
 ```
 
 `Project.toml` declares Julia 1.11, 1.12, and 1.13 compatibility. Use Julia 1.12
 for the current full-suite gate: CI tests it on Ubuntu and macOS (with a
-duplicate macOS matrix entry) and builds docs on Julia `1`. Declared
+duplicate macOS matrix entry), runs the CPU MPI workers on Ubuntu, and builds
+docs on Julia `1`. Declared
 compatibility is not proof that every version/backend was tested. See
 [testing](.agents/testing.md) before changing this matrix or claiming coverage
 for accelerators or MPI.

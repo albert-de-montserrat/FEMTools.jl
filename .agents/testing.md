@@ -85,7 +85,8 @@ GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11, 1.12, and 1.13 compatibility.
-No CI job currently executes CUDA, examples, benchmarks, or multi-rank MPI.
+No CI job currently executes CUDA, examples, or benchmarks; job `mpi` runs
+the CPU MPI workers.
 
 `test/test_partition.jl` covers MPI-free partition metadata on T3 and Q9
 meshes: element coverage, unique node ownership by lowest incident part,
@@ -94,24 +95,29 @@ excluded), halo-ID agreement and owner reciprocity, ownership invariance under
 node renumbering, zero-owned-node and empty parts, Dirichlet localization, and
 Metis label validity and balance. It needs no MPI.
 
-MPI tests are outside the automatic `test_*.jl` discovery. Run them in the
-examples environment, which carries MPI.jl, PartitionedArrays, and Metis:
+MPI tests are outside the automatic `test_*.jl` discovery and use their own
+environment, `test/mpi/Project.toml` (FEMTools from the working tree via
+`[sources]`, plus MPI.jl, PartitionedArrays, Metis, and CUDA):
 
 ```sh
-julia --project=examples test/mpi/runtests.jl          # CPU, 1/2/4 ranks
-julia --project=examples test/mpi/runtests.jl --cuda   # CUDA, 1/2 ranks, one GPU per rank
+julia --project=test/mpi test/mpi/runtests.jl                    # CPU, 1/2/4 ranks
+julia --project=test/mpi test/mpi/runtests.jl --cuda             # CUDA, 1/2 ranks, one GPU per rank
+julia --project=test/mpi test/mpi/runtests.jl --cuda --ranks=1   # one-GPU machine
 ```
 
-The launcher uses `MPI.mpiexec()`, `Base.julia_cmd()`, and a per-run timeout
+The launcher runs `exchange_worker.jl` (halo copy/add, scatter/gather, BC
+localization, empty/uneven ranks, multi-sharer vertices, split communicators,
+collective setup failures) and `thermal_worker.jl` (solver oracle and parity)
+under `MPI.mpiexec()` with `Base.julia_cmd()` and a per-run timeout
 (`FEMTOOLS_MPI_TEST_TIMEOUT`, default 300 s) that kills the job. The CUDA
-worker disables scalar indexing and errors when ranks outnumber local GPUs;
-it never shares one GPU between ranks. On a one-GPU machine run the one-rank
-case directly with `mpiexec -n 1 julia --project=examples
-test/mpi/thermal_worker.jl --cuda`. After a change to the package's
+workers disable scalar indexing and error when ranks outnumber local GPUs;
+they never share one GPU between ranks. After a change to the package's
 `Project.toml`, `Pkg.resolve()` the examples environment so the developed
 FEMTools entry picks up new weak dependencies and extensions.
+CI job `mpi` (Ubuntu, Julia 1.12, MPICH from `MPICH_jll`) runs the CPU
+launcher. No CI job runs CUDA.
 The worker's independent affine T3 oracle uses consistent mass/source matrices
-and elementwise absolute Jacobian diagnostics. No CI job runs MPI or CUDA.
+and elementwise absolute Jacobian diagnostics.
 A skipped or unrun GPU gate leaves the milestone incomplete. Results are
 recorded in `MPI_IMPLEMENTATION_PLAN.md`.
 
@@ -230,7 +236,7 @@ tests.
 | I/O | temporary-file structure, values, invalid lengths/topology |
 | Frontend/example | parse plus small headless execution when maintained |
 | 2-D/3-D miniapp | inventory update, parse check, smallest practical headless run |
-| Partition metadata | `test/test_partition.jl`, then `test/mpi/runtests.jl` |
+| Partition metadata / MPI extension | `test/test_partition.jl`, then `julia --project=test/mpi test/mpi/runtests.jl` |
 | MPI | one-rank equivalence, two-rank halo/reduction, timeout-safe failure |
 | MPI/CUDA | device-resident staged halo/solve parity, scalar indexing disabled, distinct GPUs, collective-safe failures |
 | Performance | correctness gate plus warmed representative benchmark |

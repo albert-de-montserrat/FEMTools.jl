@@ -12,16 +12,20 @@ GeoParams = "e018b62d-d9de-4a26-8697-af89c310ae38"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
+PartitionedArrays = "5a9dfac6-5c52-46f7-8278-5e2210713be9"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [extensions]
 FEMToolsCUDAExt = "CUDA"
+FEMToolsMPIExt = ["MPI", "PartitionedArrays"]
 FEMToolsMetisExt = "Metis"
 FEMToolsTriangulateExt = "Triangulate"
 
@@ -37,8 +41,11 @@ Gmsh = "0.3"
 JET = "0.11.5, 0.12"
 KernelAbstractions = "0.9"
 LinearAlgebra = "1.11, 1.12, 1.13"
+MPI = "0.20"
 Metis = "1.5"
+PartitionedArrays = "0.5"
 Printf = "1.11, 1.12, 1.13"
+Serialization = "1.11, 1.12, 1.13"
 SparseArrays = "1.11, 1.12, 1.13"
 StaticArrays = "1.9.18"
 Test = "1.11, 1.12, 1.13"

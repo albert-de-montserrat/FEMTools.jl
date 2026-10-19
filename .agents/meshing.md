@@ -137,7 +137,9 @@ from the partitioner's face graph, so vertex-only and high-order edge/bubble
 nodes are handled by the same rule. Local connectivity keeps the serial element
 node order and integer type. Local `Γnodes` are inherited from the serial
 mesh's physical boundary; never rebuild them with `_unstructured_boundary_nodes`
-on a local mesh, which would mark partition interfaces as boundary. A part can
+on a local mesh, which would mark partition interfaces as boundary;
+`local_mesh(partition, element, backend)` builds the local `Mesh` with the
+inherited list and host-precomputed geometry. A part can
 own elements whose nodes are all ghosts, and an empty part has `size(el2n, 2)
 == 0` with the serial integer type. Element/IP field maps and mixed-mesh
 partitioning are not implemented.

@@ -1,0 +1,25 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
+FEMTools = "ed1482a8-558d-4a41-9c93-204a47dfc9ef"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
+PartitionedArrays = "5a9dfac6-5c52-46f7-8278-5e2210713be9"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+FEMTools = {path = "../.."}
+
+[compat]
+CUDA = "6.1"
+DomainSets = "0.8"
+KernelAbstractions = "0.9"
+MPI = "0.20"
+Metis = "1.5"
+PartitionedArrays = "0.5"
+StaticArrays = "1.9"
+julia = "1.11"

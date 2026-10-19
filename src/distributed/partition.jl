@@ -154,6 +154,30 @@ function reconstruct_owned(nglobal::Integer, ids, values)
 end
 
 """
+    local_mesh(partition, element, backend = CPU()) -> Mesh
+
+Build the element-aware `Mesh` of one partition on `backend`. Its boundary nodes
+are the partition's inherited physical boundary nodes, not boundary detection
+on the local connectivity, which would also mark partition interfaces.
+Geometry is precomputed on the host and uploaded with the other arrays.
+"""
+function local_mesh(
+        partition::MeshPartition, element::ReferenceElement{T}, backend = CPU(),
+    ) where {nDim, T <: AbstractElement{nDim}}
+    TDev = TA(backend)
+    geometry = TDev(precompute_geometry(partition.coords, partition.el2n, element))
+    coords, el2n = TDev(partition.coords), TDev(partition.el2n)
+    DoFs, Γnodes = TDev(Int32.(1:length(partition.nodes))), TDev(partition.Γnodes)
+    return Mesh{
+        nDim, order(element), Nothing, Nothing, typeof(coords), typeof(DoFs),
+        typeof(el2n), typeof(Γnodes), typeof(element), typeof(geometry),
+    }(
+        nothing, nothing, coords, DoFs, el2n, Γnodes, length(partition.nodes),
+        length(partition.elements), element, geometry,
+    )
+end
+
+"""
     partition_elements(mesh, nparts) -> Vector{Int}
 
 Assign every element of `mesh` to a part in `1:nparts` by partitioning its

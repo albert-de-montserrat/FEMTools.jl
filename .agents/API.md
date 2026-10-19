@@ -288,8 +288,9 @@ way needs three pieces: a stub in `src/` that owns the docstring and raises an
 error naming the package to load, the method in `ext/`, and the weak dependency
 listed in both `[weakdeps]` and `[extras]` so the test target can exercise it.
 `FEMToolsMetisExt` follows the same pattern for the internal
-`partition_elements`; it and the other `src/distributed/` names stay internal
-until the distributed API is finalized.
+`partition_elements`, and `FEMToolsMPIExt` (`MPI` + `PartitionedArrays`) for
+the internal stubs in `src/distributed/execution.jl`. All `src/distributed/`
+names stay internal until the distributed API is finalized.
 
 Backend-generic API additions should:
 
