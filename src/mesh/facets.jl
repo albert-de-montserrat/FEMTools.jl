@@ -3,7 +3,8 @@
 
 Set of boundary edges of a 2-D mesh, stored as element ids `elements` and local
 edge indices `local_edges` (positions in the element's edge-path list, see
-`_boundary_edge_paths_2d`), both on the mesh backend.
+`_boundary_edge_paths_2d`), both on the mesh backend, and the element count
+`nels` of the mesh they were selected from.
 
 Facets hold topology only, so they stay valid when the mesh coordinates change;
 rebuild them after a remesh. Construct with [`boundary_facets`](@ref).
@@ -11,6 +12,7 @@ rebuild them after a remesh. Construct with [`boundary_facets`](@ref).
 struct BoundaryFacets{V <: AbstractVector{Int32}}
     elements::V
     local_edges::V
+    nels::Int
 end
 
 Base.length(facets::BoundaryFacets) = length(facets.elements)
@@ -27,8 +29,13 @@ Only true boundary edges, whose corner pair belongs to a single element, are
 candidates; an edge that touches the set at one corner only is not selected.
 Throws an `ArgumentError` when no edge is selected.
 """
-boundary_facets(mesh::Union{Mesh{2}, MixedMesh{2}}, nodes::AbstractVector{<:Integer}) =
-    _boundary_facets(mesh, in(Set(nodes)))
+function boundary_facets(mesh::Union{Mesh{2}, MixedMesh{2}}, nodes::AbstractVector{<:Integer})
+    all(in(1:mesh.nnodes), nodes) || throw(ArgumentError("node ids must lie in 1:$(mesh.nnodes)"))
+    return _boundary_facets(mesh, in(Set(nodes)))
+end
+
+boundary_facets(::Union{Mesh{2}, MixedMesh{2}}, ::AbstractVector{Bool}) =
+    throw(ArgumentError("boundary_facets takes node ids, not a Bool mask; pass findall(mask)"))
 
 function boundary_facets(mesh::Union{Mesh{2}, MixedMesh{2}}, predicate)
     coords = Array(mesh.coords)
@@ -59,5 +66,5 @@ function _boundary_facets(mesh, selected_node)
 
     backend = KA.get_backend(mesh.coords)
     to_backend(v) = copyto!(KA.allocate(backend, Int32, length(v)), v)
-    return BoundaryFacets(to_backend(elements), to_backend(local_edges))
+    return BoundaryFacets(to_backend(elements), to_backend(local_edges), size(el2n, 2))
 end

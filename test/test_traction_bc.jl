@@ -157,3 +157,27 @@ end
         traction = PressureBoundaryCondition(top, p), verbose = false,
     )
 end
+
+@testset "boundary load input checks" begin
+    element = ReferenceElement(QuadraticElement{2, 6, Float64})
+    mesh = Mesh(CPU(), (0.0 .. 2.0) × (0.0 .. 1.0), element, (4, 2); workgroup = 1)
+    @test_throws "node ids, not a Bool mask" boundary_facets(mesh, trues(mesh.nnodes))
+    @test_throws "node ids must lie in 1:$(mesh.nnodes)" boundary_facets(mesh, [1, mesh.nnodes + 1])
+
+    other = Mesh(CPU(), (0.0 .. 2.0) × (0.0 .. 1.0), element, (2, 2); workgroup = 1)
+    bc = PressureBoundaryCondition(boundary_facets(other, x -> x[2] ≈ 1.0), 1.0)
+    @test_throws "facets were built for a mesh with" FEMTools.assemble_boundary_load(bc, mesh)
+
+    # Loads reach the kernel in the mesh precision, so Float32 backends without
+    # Float64 support can run them.
+    top = boundary_facets(mesh, x -> x[2] ≈ 1.0)
+    x, n = SVector(0.5f0, 1.0f0), SVector(0.0f0, 1.0f0)
+    for bc in (
+            PressureBoundaryCondition(top, 1.0e5), PressureBoundaryCondition(top, x -> 2.0),
+            TractionBoundaryCondition(top, SVector(1.0, 0.0)), TractionBoundaryCondition(top, x -> SVector(1.0, 0.0)),
+        )
+        load = FEMTools._kernel_load(bc, Float32)
+        @test FEMTools._traction_at(load, x, n) isa SVector{2, Float32}
+    end
+    @test FEMTools._kernel_load(PressureBoundaryCondition(top, 1.0e5), Float32).pressure isa Returns{Float32}
+end

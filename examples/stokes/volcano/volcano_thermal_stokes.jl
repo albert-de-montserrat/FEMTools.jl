@@ -36,8 +36,9 @@ Background pure shear is imposed as `vx = ε̇_bg x` on the vertical walls with
 subside. An ice cap of density `ρ_ice` loads the cone with the pressure
 `ρ_ice g h(x)`, `h = ice_thickness (1 − (x/ice_radius)²)` within `ice_radius`
 of the summit, and thins linearly to nothing over `ice_melt_time`
-(`ice_thickness = 0` removes it); the rest of the topography is traction-free. Temperature is fixed at the
-surface and the base and insulating on the sides.
+(`ice_thickness = 0` removes it); the rest of the topography is
+traction-free. Temperature is fixed at the surface and the base and insulating
+on the sides.
 
 All arguments and returned fields are SI; the solve itself runs in the
 characteristic units defined below.
@@ -215,9 +216,9 @@ function main(;
     # -----------------------------------------------------------------------
     # Boundary conditions
     #   vx = ε̇ x on the vertical walls, vy = 0 on the base, free slip in the
-    #   unconstrained component; the topography carries no traction.
+    #   unconstrained component; the ice cap presses on the topography and its
+    #   load is rebuilt every step.
     #   T is fixed on the topography and the base, insulating on the sides.
-    #   The ice cap presses on the topography; its load is rebuilt every step.
     # -----------------------------------------------------------------------
     surface = boundary_facets(mesh_stokes, groups.surface)
     # SI ice pressure [Pa] at horizontal position x [m] and time t [s].

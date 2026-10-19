@@ -57,18 +57,25 @@ _pressure_load(p::Number) = Returns(p)
 _pressure_load(::Union{AbstractArray, Tuple}) = throw(ArgumentError(_PRESSURE_ERROR))
 _pressure_load(p) = p
 
-# Kernel-side views of the conditions: the load callable without the facet arrays.
+# Kernel-side views of the conditions: the load callable without the facet
+# arrays, with constant loads in the mesh precision `T`.
 struct _TractionLoad{L}
     traction::L
 end
 struct _PressureLoad{L}
     pressure::L
 end
-_kernel_load(bc::TractionBoundaryCondition) = _TractionLoad(bc.traction)
-_kernel_load(bc::PressureBoundaryCondition) = _PressureLoad(bc.pressure)
+_kernel_load(bc::TractionBoundaryCondition, ::Type{T}) where {T} = _TractionLoad(_in_precision(bc.traction, T))
+_kernel_load(bc::PressureBoundaryCondition, ::Type{T}) where {T} = _PressureLoad(_in_precision(bc.pressure, T))
 
-@inline _traction_at(load::_TractionLoad, x, n) = load.traction(x)
-@inline _traction_at(load::_PressureLoad, x, n) = -load.pressure(x) * n
+_in_precision(load::Returns{<:Number}, ::Type{T}) where {T} = Returns(T(load.value))
+_in_precision(load::Returns{<:SVector{2}}, ::Type{T}) where {T} = Returns(SVector{2, T}(load.value))
+_in_precision(load, ::Type) = load
+
+# Callable results are converted before any arithmetic, so the kernel stays in
+# the precision of `x` and `n`.
+@inline _traction_at(load::_TractionLoad, x, n) = SVector{2, eltype(n)}(load.traction(x))
+@inline _traction_at(load::_PressureLoad, x, n) = -convert(eltype(n), load.pressure(x)) * n
 
 # Lagrange basis on s ∈ [−1, 1] and its derivative, in edge-path node order:
 # (a, b) for linear edges, (a, midpoint, b) for quadratic edges.
@@ -76,8 +83,9 @@ _kernel_load(bc::PressureBoundaryCondition) = _PressureLoad(bc.pressure)
 @inline _edge_shape(s, ::Val{3}) =
     (SVector(s * (s - 1) / 2, 1 - s^2, s * (s + 1) / 2), SVector(s - one(s) / 2, -2s, s + one(s) / 2))
 
-# Three-point Gauss-Legendre rule: exact for the quadratic edge basis times a
-# linear traction on a curved quadratic edge.
+# Three-point Gauss-Legendre rule. A pressure load integrates `Nᵢ p x'(s)`,
+# exact for linear `p` on a curved quadratic edge; a traction load integrates
+# `Nᵢ t |x'(s)|`, exact only on straight edges.
 @inline function _edge_gauss_rule(::Type{T}) where {T}
     a = sqrt(T(3) / 5)
     return ((-a, T(5) / 9), (zero(T), T(8) / 9), (a, T(5) / 9))
@@ -129,6 +137,11 @@ function assemble_boundary_load!(
         F::NTuple{2, AbstractVector}, bc::_TractionLike, mesh::Union{Mesh{2}, MixedMesh{2}};
         workgroup = 256,
     )
+    bc.facets.nels == mesh.nels || throw(
+        DimensionMismatch(
+            "facets were built for a mesh with $(bc.facets.nels) elements, not $(mesh.nels)"
+        )
+    )
     all(f -> length(f) == mesh.nnodes, F) || throw(
         DimensionMismatch("load vectors must have one entry per mesh node ($(mesh.nnodes))")
     )
@@ -136,7 +149,7 @@ function assemble_boundary_load!(
     launch!(
         boundary_load_kernel!, backend, workgroup, length(bc.facets),
         F, mesh.coords, mesh.el2n, bc.facets.elements, bc.facets.local_edges,
-        _kernel_load(bc), Val(size(mesh.el2n, 1)),
+        _kernel_load(bc, eltype(eltype(mesh.coords))), Val(size(mesh.el2n, 1)),
     )
     return nothing
 end
