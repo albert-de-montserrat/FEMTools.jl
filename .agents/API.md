@@ -90,10 +90,10 @@ containers; its spatial dimension follows the length of `g`. Passing
 `plastic_history_size=(nq, nels)` additionally allocates zeroed integration-
 point `dr.plastic_history.γ` and `.θ` arrays for the experimental cap path;
 the default remains `nothing`.
-The revised cap plan targets a once-per-accepted-step commit of corrected
-pressure and plastic history, matching JustRelax without GeoParams. This is
-pending API/lifecycle work: `update_stokes_current_stress!` currently advances
-history on each call, so it is not yet a read-only diagnostic operation.
+`update_stokes_current_stress!` refreshes stress without advancing accumulated
+cap history. `commit_stokes_plastic_history!` advances that history exactly once
+per accepted physical step, before overwriting old stress. The caller also
+carries accepted corrected integration-point pressure into the next step.
 The `DruckerPragerCap` constructor takes radians, rejects nonfinite material
 parameters and nonpositive `Kb`, and requires positive cap radius at both
 `C` and `C_min`. The new scalar `cap_invariants` evaluator is internal API.
@@ -110,15 +110,16 @@ parameters and nonpositive `Kb`, and requires positive cap radius at both
   and Hex27 `CellPressureStokesDR`.
 - Stokes operations: `assemble_viscosity_weighted_pressure_scaling!`,
   `pressure_mass`, `rotate_stress!`, `update_stokes_current_stress!`,
-  `stokes_material_gradient_3d`.
+  `commit_stokes_plastic_history!`, `stokes_material_gradient_3d`.
 
 `solve!` mutates a scalar problem state and returns
 `(; converged, iterations, residual, history)`; non-convergence throws unless
 `throw_on_failure=false`. Stokes solvers mutate caller/state arrays and return a
 statistics `NamedTuple` with explicit convergence status. The scalar controls
 are `tolerance` (default `dr.ϵ`), `max_iterations`, `check_interval`, `verbose`,
-and `collect_history`; the Stokes solvers still use `ϵ_tol`, `iterMax`,
-`ncheck` until their entry points migrate.
+and `collect_history`. High-level Stokes `solve!`/`solve_adjoint!` also use
+`tolerance`, `max_iterations`, and `check_interval`; the prepared-scale
+`solve_stokes_dyrel!` retains its lower-level controls.
 
 ### Results and output
 
@@ -170,7 +171,8 @@ The module currently marks the following categories `public`:
   `straighten_t7_geometry!`, `rectangle_boundary_nodes`,
   `circle_boundary_nodes`, and the `triangulate_t7_mesh` stub whose method the
   Triangulate extension supplies;
-- result accessors: `velocity`, `stress`, `pressure`, `temperature`.
+- result accessors: `velocity`, `stress`, `stress_old`, `pressure`, `temperature`,
+  and `plastic_multiplier`.
 
 These names are callable as `FEMTools.name` but are deliberately not imported
 by `using FEMTools`. Before adding another public low-level method, confirm that
@@ -221,8 +223,7 @@ Lithostatic pressure follows the same mesh/material/BC shape with
 mesh_v = Mesh(backend, coords, el2n_v, element_v)
 mesh = MixedMesh(mesh_v, element_P; workgroup)
 material = StokesMaterial(; η, ηb, G, α, ρ0, K, g, Tref)
-dr = StokesDR(backend, mesh.nnodes, mesh.nnodesP, material;
-              stress_size=(nq, mesh.nels))
+dr = StokesDR(mesh, material)
 stats = solve!(dr, mesh, bc_vx, bc_vy; dt = Δt, pressure_factor = γfact)
 ```
 
@@ -234,8 +235,9 @@ velocity iteration and transfers continuous thermal-node values to the
 discontinuous Stokes pressure DoFs. Its statistics add `err_T` and
 `thermal_iterations`; `converged` requires both criteria.
 
-The expanded positional methods remain available for adjoints and specialized
-workflows, but new normal-user examples should start from the high-level forms.
+The prepared-scale `solve_stokes_dyrel!(dr, mesh, bc_v, dt, γP; ...)` remains
+available for specialized workflows. Array-positional forward and adjoint cores
+are internal; new normal-user examples should use the high-level forms.
 Repeated 2-D adjoint solves can pass a `StokesAdjointWorkspace`; its
 reverse-mode scratch is opt-in through `enzyme=true`, matching
 `operator = :enzyme` without charging the default block path for unused arrays.
@@ -317,21 +319,19 @@ is easier to document, optimize, and support across CPU/GPU/MPI backends.
 
 ## Current API pressure points
 
-[`API_SIMPLIFICATION_PLAN.md`](../API_SIMPLIFICATION_PLAN.md) proposes a
-breaking simplification driven by maintained examples and root benchmarks:
-mesh-aware state construction, solver-owned pressure preparation, canonical
-dispatch-based solver entry points, and removal of redundant call variants.
-Work on `refactor/api-simplification` includes caller inventory, baselines, and
-mesh-based constructors described below. Other proposed signatures remain
-planned changes rather than the current contract.
+Mesh-aware state construction, solver-owned pressure preparation, canonical
+dispatch-based solver entry points, and removal of redundant positional call
+variants are implemented. The current contracts are described below and in
+`src/FEMTools.jl`; historical API-simplification plans are not required inputs
+and must not be restored or followed as pending work.
 All changed code must remain GPU-friendly, with explicit host-only boundaries
 and CPU/CUDA checks with scalar indexing disabled. Preserve numerical layouts
 and explicit accepted-history ownership.
 
-- `solve!` covers the two scalar physics states, while Stokes uses named
-  entry points and distinct 2-D/3-D layouts.
-- Advanced Stokes/adjoint workflows still require long positional signatures;
-  high-level mesh-owned methods cover only the common paths.
+- `solve!` covers scalar and Stokes states, while mixed `StokesDR` and Hex27
+  `CellPressureStokesDR` retain distinct layouts and iteration schemes.
+- Specialized callers still use prepared scales and explicit workspaces;
+  high-level mesh-owned methods cover ordinary forward/adjoint workflows.
 - Several boundary-condition types exist internally but only Dirichlet behavior
   is exported and applied as supported API.
 - Example-local mesh import, plotting, and configuration are not core API.

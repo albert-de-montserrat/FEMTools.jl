@@ -11,7 +11,8 @@ Documentation has four layers:
 3. `docs/src/` contains the Documenter manual for elements, meshes, boundary
    conditions, heat diffusion, lithostatic pressure, Stokes, examples, and API
    reference.
-4. `AGENTS.md` and `.agents/*.md` are internal living engineering guidance.
+4. `AGENTS.md` and `.agents/*.md` are internal living engineering guidance shared
+   by Codex and Claude Code. The root `CLAUDE.md` imports `AGENTS.md`.
 
 `docs/make.jl` uses Documenter with `checkdocs=:exports`, a recursive
 `DocTestSetup`, a fixed page list, and deployment from `main`. Adding a Markdown
@@ -94,6 +95,7 @@ truth.
 | I/O format/field | mesh or postprocess docs, I/O guide, round-trip limitations |
 | MPI behavior | distributed guide and user manual page once actually supported |
 | Test/CI command | `AGENTS.md`, testing guide, contributor-facing docs |
+| Agent workflow/rules | `AGENTS.md`, `CLAUDE.md` import, affected subsystem guides |
 
 ## Verification
 
@@ -117,13 +119,21 @@ For documentation changes, check:
 - referenced example output is not accidentally committed unless it is a
   deliberate docs asset.
 
+Changes confined to agent instructions and internal guides need import, local
+link/path, and whitespace checks. They do not need a Documenter build or package
+test run unless executable behavior, public docs, or API contracts also change.
+Keep the `CLAUDE.md` import relative and acyclic, with one shared rule source.
+Codex discovers `AGENTS.md`; Claude's entry point uses its `@path` import format.
+Loading references: [Codex instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+and [Claude Code memory](https://code.claude.com/docs/en/memory#import-additional-files).
+
 ## Living-guide maintenance
 
 After each task, review all `.agents/` guides. Edit a guide when durable facts,
 decisions, invariants, accepted limitations, priorities, or validation commands
 changed. Remove resolved gaps instead of appending a chronological log. Keep
 deep investigation records in a dedicated plan such as
-`ADJOINT_PERF_PLAN.md` only when their measurements and history remain useful.
+`PRINCIPAL_STRESS_PLAN.md` only when their measurements and history remain useful.
 
 The benchmark manual and README also list all three `_quad.jl` scripts. The
 Stokes manual documents Q9 velocity with cell-local P1 pressure, pressure node

@@ -30,6 +30,19 @@ did not converge"`.
 """
 function dr_name end
 
+# Internal execution seams: the serial path uses its original arrays/reductions.
+# The MPI example supplies owner ranges, halo operations, and collective guards.
+@inline _dr_owned_count(::Nothing, n) = n
+@inline _dr_global_count(::Nothing, n) = n
+@inline _dr_owned_values(::Nothing, a) = a
+@inline _dr_sum(::Nothing, x) = x
+@inline _dr_norm(::Nothing, a) = norm(a)
+@inline _dr_spectral_bound(::Nothing, rows, diagonal, name) = _checked_λmax(rows, diagonal, name)
+@inline _dr_refresh!(::Nothing, a) = nothing
+@inline _dr_accumulate!(::Nothing, arrays...) = nothing
+@inline _dr_guard(f, ::Nothing) = f()
+@inline _dr_finish_update!(::Nothing, u, rate) = nothing
+
 """
     solve_dynamic_relaxation!(problem, assemble!, nnodes,
                               Γ_dofs, Γ_zero, Γ_vals, backend, workgroup;
@@ -67,10 +80,22 @@ function solve_dynamic_relaxation!(
         verbose = true,
         collect_history = false,
         throw_on_failure = true,
+        execution = nothing,
     )
     (; R, R0, ∂R∂u, PC, u, ∂u∂τ) = dr_fields(problem)
     name = dr_name(problem)
     history = NamedTuple[]
+    nowned = _dr_owned_count(execution, nnodes)
+    nglobal = _dr_global_count(execution, nnodes)
+    R_owned, R0_owned, PC_owned, rate_owned =
+        map(a -> _dr_owned_values(execution, a), (R, R0, PC, ∂u∂τ))
+    rows_owned = _dr_owned_values(execution, ∂R∂u)
+    _dr_guard(execution) do
+        check_interval > 0 || throw(ArgumentError("check_interval must be positive"))
+        max_iterations > 0 || throw(ArgumentError("max_iterations must be positive"))
+        # The first residual must see the same prescribed state as later ones.
+        apply_dirichlet!(u, Γ_dofs, Γ_vals, backend, workgroup)
+    end
 
     # α_dr, β: Chebyshev step and momentum, distinct from any material property
     # the problem happens to call α or β.
@@ -84,39 +109,51 @@ function solve_dynamic_relaxation!(
         do_jacobian = (mod(it, check_interval) == 0) || (it == 1)
         do_jacobian && copyto!(R0, R)
 
-        assemble!(do_jacobian)
+        _dr_refresh!(execution, u)
+        _dr_guard(execution) do
+            assemble!(do_jacobian)
+        end
+        _dr_accumulate!(execution, R)
+        do_jacobian && _dr_accumulate!(execution, ∂R∂u, PC)
 
         # Constrain residual and rate *before* the update so that boundary
         # reaction forces do not corrupt the λ_min spectral estimate.
         apply_dirichlet!(R, Γ_dofs, Γ_zero, backend, workgroup)
         apply_dirichlet!(∂u∂τ, Γ_dofs, Γ_zero, backend, workgroup)
 
-        do_jacobian && (λmax = _checked_λmax(∂R∂u, PC, name))
+        do_jacobian && (λmax = _dr_spectral_bound(execution, rows_owned, PC_owned, name))
 
-        update_rate_kernel!(backend, workgroup)(∂u∂τ, R, PC, β; ndrange = nnodes)
-        update_variable_kernel!(backend, workgroup)(u, ∂u∂τ, α_dr; ndrange = nnodes)
-
-        apply_dirichlet!(u, Γ_dofs, Γ_vals, backend, workgroup)
+        _dr_guard(execution) do
+            if nowned > 0
+                update_rate_kernel!(backend, workgroup)(∂u∂τ, R, PC, β; ndrange = nowned)
+                update_variable_kernel!(backend, workgroup)(u, ∂u∂τ, α_dr; ndrange = nowned)
+            end
+            apply_dirichlet!(u, Γ_dofs, Γ_vals, backend, workgroup)
+            _dr_finish_update!(execution, u, ∂u∂τ)
+        end
 
         if do_jacobian
-            nr = norm(R)
+            nr = _dr_norm(execution, R_owned)
             it == 1 && (nr0 = max(nr, eps(nr)))   # guard against exact-zero initial residual
             isnan(nr / nr0) && error("NaNs at PT iter $it")
 
             Δτ = 2 / √(λmax) * problem.CFL
-            denom = sum((Δτ .* ∂u∂τ) .^ 2)
+            denom = _dr_sum(execution, sum((Δτ .* rate_owned) .^ 2))
             λmin = (it == 1 || denom == 0) ? zero(eltype(R)) :
-                abs(sum(Δτ .* ∂u∂τ .* ((R .- R0) ./ PC))) / denom
+                abs(_dr_sum(execution, sum(Δτ .* rate_owned .* ((R_owned .- R0_owned) ./ PC_owned)))) / denom
             c = 2 * √(λmin) * problem.c_fact
             α_dr = 2 * Δτ^2 / (2 + c * Δτ)
             β = (2 - c * Δτ) / (2 + c * Δτ)
             last_rel = nr / nr0
-            collect_history && push!(history, (; iter = it, residual = nr / sqrt(nnodes), relative = last_rel))
+            collect_history && push!(history, (; iter = it, residual = nr / sqrt(nglobal), relative = last_rel))
             verbose && @printf("  PT %05d  res = %6.2e\n", it, last_rel)
-            last_rel < tolerance &&
+            if last_rel < tolerance
+                _dr_refresh!(execution, u)
                 return (; converged = true, iterations = it, residual = last_rel, history)
+            end
         end
     end
+    _dr_refresh!(execution, u)
     throw_on_failure && error("$(uppercasefirst(name)) DR solver did not converge after $max_iterations pseudo-transient iterations (relative residual = $last_rel)")
     return (; converged = false, iterations = max_iterations, residual = last_rel, history)
 end

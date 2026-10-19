@@ -37,9 +37,9 @@ Physics layers:
 
 Automatic differentiation is part of the numerical implementation:
 ForwardDiff builds selected element Jacobians and Enzyme supports transpose and
-material-gradient paths. `ADJOINT_PERF_PLAN.md` contains detailed historical
-measurements and decisions for the 2-D adjoint; consult it before revisiting
-those optimizations.
+material-gradient paths. The current adjoint operator definitions and
+`test/test_adjoint_full_system.jl` establish its storage and transpose contract;
+remeasure representative cases before changing performance-sensitive layouts.
 
 Primary checks are the residual, assembler, convergence, Stokes, adjoint,
 3-D reference, inference, and allocation tests under `test/`.
@@ -380,12 +380,13 @@ one; do not mix them. Consequences to hold onto:
   pressure quadrature so `Σ Q dΩ = Q2D`. `P_old` may be nodal or accepted
   `nq × nels` integration-point pressure. The finite-`K` mean is not removed,
   and the specialized 3-D cell-local pressure path does not carry `Q`.
-- The 2-D adjoint pressure residual is `ResλP = (∂Rv/∂P)ᵀλv` alone in every
-  operator path (`:blocks`, `:matrix_free`, `:enzyme`); the storage self-coupling
-  `(∂RP/∂P)ᵀλP = -M/(ηₚΔt)·λP` is omitted. The adjoint is therefore exact only in
-  the `ηₚ = Inf` incompressible gauge, and the choice of `ηb` versus finite `K`
-  never reaches it. Miniapps that run the adjoint with `ηb = K` rely on this
-  approximation.
+- The mixed adjoint pressure row includes both pressure-storage and augmentation
+  derivatives: `ResλP = Bᵀλv + Dᵀ(Wᵀλv + λP)`, where `D = ∂RP/∂P` and
+  `W = (∂Rv/∂Pnum)·diag(γP/M_P)`. Dropping `D` is valid only when storage
+  vanishes. `test/test_adjoint_full_system.jl` checks finite `ηb`, finite `K`,
+  elasticity, and augmentation against the full finite-difference Jacobian.
+  These operator checks do not establish differentiation through evolving
+  cap/softening history; match the actual forward coefficients and lifecycle.
 - The elastic bulk modulus must be finite, so the cap cannot be used in the
   `K=Inf` incompressible gauge. Any miniapp or adjoint test that wants the cap
   needs a finite `K` first.
@@ -514,14 +515,19 @@ difference. The 2-D sinking-block and pure-shear adjoint miniapps use the same
 positive contraction for their element and phase sensitivities.
 
 At the frozen 2-D forward state, the augmented linearization is stored per
-element as
+element as follows. `B` differentiates momentum with `Pnum` held independent;
+`W` captures the route through `Pnum`. These pressure derivatives differ when
+pressure also enters density.
 
 ```math
 A=\frac{\partial R^v_\mathrm{aug}}{\partial v},
 \qquad
 B=\frac{\partial R^v}{\partial P},
 \qquad
-C=\frac{\partial R^p}{\partial v}.
+C=\frac{\partial R^p}{\partial v},\qquad
+D=\frac{\partial R^p}{\partial P},\qquad
+W=\frac{\partial R^v}{\partial P_\mathrm{num}}
+\operatorname{diag}(γ_P/M_P).
 ```
 
 The adjoint residual applied in each iteration is
@@ -529,12 +535,14 @@ The adjoint residual applied in each iteration is
 ```math
 R^{λ_v}=J_v+A^Tλ_v+C^Tλ_P,
 \qquad
-R^{λ_P}=J_P+B^Tλ_v,
+R^{λ_P}=J_P+B^Tλ_v+D^T(W^Tλ_v+λ_P),
 ```
 
 with `J_P=0` in current drivers. The default frozen-operator path assembles
-`A`, `B`, and `C` once; the memory-light fallback obtains the same transpose
-products with Enzyme on every iteration. The velocity adjoint uses DYREL and
+`A`, `B`, `C`, `D`, and `W` once, omitting blocks only when their structural
+identities hold. The storage blocks `D` and `W` are absent in the incompressible
+bulk-viscosity limit. The memory-light fallback obtains the transpose products
+with Enzyme on every iteration. The velocity adjoint uses DYREL and
 homogeneous primal Dirichlet conditions; the pressure adjoint uses
 
 ```math
@@ -573,6 +581,15 @@ adjoint sign convention.
   oracles, not production solvers.
 
 ## Exact-field forward benchmarks
+
+The experimental `benchmarks/stokes/solcx2D_standalone/dyrel.jl` is an
+independently maintained extraction of the purely viscous, incompressible
+T7/P1-disc solve, including every numerical helper. It takes prepared arrays
+and quadrature tables through NamedTuples and imports no FEMTools code.
+Only its setup adapter uses the package; core solver behavior is unchanged.
+The extraction omits plasticity, elasticity, coupling, finite bulk storage,
+and measured spectra. Its regression compares heterogeneous fields, pressure
+scaling, and augmented preconditioners with the package solver.
 
 The standalone scripts under `benchmarks/stokes/solkz2D/` and `solcx2D/` run
 purely viscous T7/P1-disc SolKz and SolCx on a unit square with exact velocity

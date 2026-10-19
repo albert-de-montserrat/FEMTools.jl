@@ -228,6 +228,16 @@ an explicit hardware check in `check_cuda.jl`; no local hardware pass is claimed
 
 ## Benchmark and support files
 
+`benchmarks/stokes/solcx2D_standalone/SolCx2D_triangle.jl` uses the sibling
+`dyrel.jl` module for its complete purely viscous incompressible T7/P1-disc
+solve. `dyrel_setup.jl` borrows FEMTools state/mesh arrays and prepares
+quadrature tables; the numerical module imports no FEMTools functions and
+owns pressure scaling, residuals, AD preconditioning, boundary kernels, and
+PH/DYREL iteration. It retains the existing benchmark comparison/output
+helpers and headless/history environment controls. The quadrilateral script
+in that folder still uses the package solver. See the folder README for the
+supported specialization and independent maintenance boundary.
+
 `benchmarks/api_inventory.jl` is a host-only development inventory of public
 methods and textual references. `benchmarks/api_baseline.jl` runs small thermal
 and heterogeneous Stokes correctness smokes; `--cuda` requires CUDA and compares

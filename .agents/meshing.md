@@ -129,6 +129,23 @@ Priorities:
 5. Measure coloring and adjacency construction before replacing the current
    simple host algorithms.
 
+The proposed [MPI roadmap](../MPI_IMPLEMENTATION_PLAN.md) selects optional Metis
+for initial root-side element partitioning, reusing the existing face-adjacency
+builder. Explicit element assignments remain available. Physical boundary IDs
+and all-node sharing define the distributed topology independently of the
+partitioner's face graph. Root-side topology preparation stays on the host;
+local coordinates, connectivity, physical BC arrays, and exchange indices move
+to the selected CUDA device in bulk before kernels run. This adapter and its
+CPU/CUDA construction gates are planned, not implemented.
+
+The roadmap also requires explicit maps between serial positions, stable
+external IDs, local node indices, and owned element columns. Localization must
+preserve element node/quadrature ordering and geometry precision, with distinct
+nodal versus element/IP field layouts. A rank can own elements whose nodes are
+all ghosts; zero owned nodes must not suppress its element assembly. Root input
+is initially a host mesh, and inherited physical boundaries are established
+before local geometry/coloring and device upload. These are planned contracts.
+
 Do not add a mandatory mesher dependency to the core package merely to remove
 a few lines from examples. Prefer a small import boundary or optional extension
 once repeated real use justifies it. Triangulate reached that bar with two

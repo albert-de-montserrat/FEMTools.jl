@@ -45,6 +45,13 @@ function assemble_dr_matrices_atomix!(
         backend, workgroup; compute_jacobian = false,
     ) where {N}
     fill!(R, 0)
+    if nels == 0
+        if compute_jacobian
+            fill!(∂R∂u, 0)
+            fill!(PC, 0)
+        end
+        return nothing
+    end
     dr_residual_kernel!(backend, workgroup)(
         R, element_residual, args, nothing, Val(true), Val(N); ndrange = nels,
     )

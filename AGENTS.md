@@ -1,8 +1,14 @@
 # FEMTools.jl Agent Guide
 
-This file defines how coding agents work in this repository. It is both an
-operating contract and an index into the living subsystem notes under
-`.agents/`. Keep it accurate as the package changes.
+This is the shared repository contract for Codex and Claude Code. Codex reads
+`AGENTS.md`; the root `CLAUDE.md` imports it. Maintain project rules here and
+subsystem knowledge under `.agents/`, so both tools follow the same guidance.
+Keep personal settings, absolute machine paths, and tool permissions in each
+tool's user configuration.
+
+Source and executable tests establish current behavior. Check them when a guide,
+docstring, or plan disagrees; update affected guidance rather than implementing
+an obsolete plan. A roadmap or experimental benchmark is not package support.
 
 ## Mandatory reading
 
@@ -35,8 +41,15 @@ precomputation, mesh coloring, boundary conditions, matrix-free assembly, and
 pseudo-transient dynamic-relaxation solvers for heat diffusion, lithostatic
 pressure, and incompressible Stokes flow. KernelAbstractions makes compute paths
 backend-agnostic; CUDA array selection is supplied through a
-package extension. The package also contains discrete Stokes adjoints,
-post-processing, legacy ASCII VTK output, examples, and Documenter docs.
+package extension. Triangulate meshing is another optional extension. The package
+also contains discrete Stokes adjoints, post-processing, legacy ASCII VTK output,
+examples, and Documenter docs.
+
+The current package version is `0.2.0`. CPU is the default; CUDA is the only
+supported GPU backend. Mixed `StokesDR` and Hex27 cell-pressure
+`CellPressureStokesDR` have distinct layouts and solvers. Distributed meshes,
+MPI solvers, parallel output, checkpoint/restart, and a package frontend are
+not implemented. Consult the distributed guide for the proposed MPI work.
 
 ## Repository map
 
@@ -51,12 +64,14 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
 | `src/lithostatic_pressure/` | Pressure state, residual assembly, and solver wrapper |
 | `src/stokes/` | 2-D/3-D Stokes states, rheology, operators, forward and adjoint solvers |
 | `src/postprocess/` | Derived fields and VTK writers |
-| `ext/` | Optional GPU backend mappings |
+| `ext/` | Optional CUDA backend mapping and Triangulate meshing |
 | `test/` | Unit, API, inference, allocation, convergence, and reference tests |
 | `examples/` | Runnable scientific drivers, plotting, meshing, and benchmarks |
+| `benchmarks/` | Exact-field verification, refinement, CUDA checks, and experiments |
 | `docs/` | Documenter configuration and user documentation |
+| `.agents/` | Shared subsystem contracts and living engineering notes |
+| `CLAUDE.md` | Claude Code entry point importing this shared contract |
 | `.github/workflows/CI.yml` | Package and documentation CI |
-| `ADJOINT_PERF_PLAN.md` | Historical/current detailed adjoint performance work record |
 
 ## Working rules
 
@@ -86,6 +101,13 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
 10. Update user docs for user-visible behavior and the relevant `.agents/`
     notes for durable engineering knowledge.
 
+For normal user workflows, prefer typed materials, mesh-based state
+constructors, `DirichletBoundaryCondition(nodes, values)`, and
+`solve!`/`solve_adjoint!`. High-level mixed Stokes `solve!` prepares its own
+pressure mass/scaling; the adjoint reuses them. Retain the prepared-scale
+`solve_stokes_dyrel!` path for its specialized callers. Do not restore removed
+positional APIs or introduce aliases without a demonstrated compatibility need.
+
 ## Numerical and performance invariants
 
 - Connectivity is Julia 1-based and stored with one element per column.
@@ -97,12 +119,23 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
   explicitly assembles element blocks or a sparse oracle.
 - Dirichlet residual/rate constraints are applied before DR spectral estimates
   and field updates.
+- Physical time and pseudo time have different ownership. Hold previous-time
+  fields fixed during a solve; commit stress and plastic history once per
+  accepted physical step. Stress refresh must not advance accumulated history.
+- Pressure scaling must use the storage modulus used by the continuity
+  residual. Preserve the distinction between trial pressure, corrected physical
+  pressure, and the numerical augmentation `Pnum`, especially for the tensile cap.
+- Adjoint changes must transpose the actual discrete residual, including
+  storage, augmentation, and boundary projection. Preserve the sign convention
+  of the selected mixed or cell-pressure path and check gradients independently.
 - Solver convergence must be assessed from mathematically meaningful residuals,
   including global reductions once MPI exists.
 - Performance claims require a representative, warmed benchmark and a
   correctness gate. Do not optimize only a zero-contrast or tiny toy case.
 - Avoid new allocations in established hot paths. The current suite checks
   zero-allocation element construction and shape-function evaluation.
+- CUDA verification uses `CUDA.allowscalar(false)`. A CPU pass, a backend
+  dispatch check, or a skipped hardware test does not prove device correctness.
 
 ## Change workflow
 
@@ -113,6 +146,9 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
   to the change.
 - State the current behavior and the smallest acceptance check that proves the
   requested outcome.
+- Identify any nested agent instructions before editing their subtree. Keep
+  shared requirements in this file; tool-specific entry points must not copy
+  the rules into a second independently maintained contract.
 - Search for existing implementations before creating a new helper or
   dependency.
 
@@ -133,13 +169,22 @@ post-processing, legacy ASCII VTK output, examples, and Documenter docs.
 ### Before handing off
 
 - Run the narrowest relevant check, then the full package tests when risk or
-  scope warrants it.
+  scope warrants it. Shared element, geometry, DR, API, or module-load changes
+  require the full suite; use the testing guide's change-to-check map.
 - Build docs for changes to exports, docstrings, examples referenced by docs, or
   `docs/` content.
 - Review all nine subsystem guides and update affected ones.
 - Recheck `git diff --check`, `git status --short`, and the final diff for
   accidental files, generated output, or unrelated edits.
 - Report what changed, what was verified, and any remaining limitation.
+- Report exact commands, Julia version/backend, and passed, failed, skipped,
+  or unrun checks. Distinguish pre-existing working-tree or environment failures
+  from regressions; do not repair unrelated work to obtain a green run.
+
+For changes confined to agent instructions/internal notes, validate imports,
+local links, referenced paths, and `git diff --check`. A package test or
+Documenter build is unnecessary unless executable code, public docs, or their
+contracts also change.
 
 ## Standard commands
 
@@ -152,29 +197,30 @@ julia --project=examples path/to/example.jl
 git diff --check
 ```
 
-`Project.toml` declares Julia 1.11 compatibility. CI currently tests Julia 1.12
-on Ubuntu and macOS and builds the docs on Julia 1. See
+`Project.toml` declares Julia 1.11, 1.12, and 1.13 compatibility. Use Julia 1.12
+for the current full-suite gate: CI tests it on Ubuntu and macOS (with a
+duplicate macOS matrix entry) and builds docs on Julia `1`. Declared
+compatibility is not proof that every version/backend was tested. See
 [testing](.agents/testing.md) before changing this matrix or claiming coverage
 for accelerators or MPI.
 
 ### Persistent Julia session (Kaimon MCP)
 
-Compilation latency dominates iterative work here, so develop against one
-persistent Julia session rather than a fresh process per check. Kaimon serves
-that session over MCP; start it from the repository root before the agent
-session:
+Compilation latency dominates iterative work here. When available, use one
+persistent Kaimon Julia session for development checks, with the repository's
+project active. Start Kaimon from the repository root before the agent session:
 
 ```sh
 kaimon -r              # Revise loaded, MCP endpoint on http://localhost:2828/mcp
 kaimon -r --headless   # same, without the terminal dashboard
 ```
 
-The server is registered as `kaimon` in the user-scope Claude configuration and
-exposes `mcp__julia__julia_eval`, `mcp__julia__julia_list_sessions`, and
-`mcp__julia__julia_restart`. A server that is down when the agent session starts
-reports `ConnectionRefused` and its tools stay unavailable for that whole
-session, so start Kaimon first and restart the agent session if the tools are
-missing.
+Configure the MCP connection in each client's user settings; it is not a
+package dependency. The Julia tools are exposed here as `mcp__julia__julia_eval`,
+`mcp__julia__julia_list_sessions`, and `mcp__julia__julia_restart`; discover the
+actual names available in the client. Check the active environment/session
+before using persistent state. If MCP is unavailable, use shell Julia when
+permitted and report the fallback.
 
 `julia_eval` runs `Revise.revise()` before every evaluation, so edits under
 `src/` are already applied; do not call `Revise.revise()` again. Use

@@ -61,6 +61,20 @@ Near-term priorities:
 A checkpoint is accepted only after a round-trip continuation test reproduces
 the uninterrupted result. A visualization file is not a checkpoint.
 
+The proposed [MPI roadmap](../MPI_IMPLEMENTATION_PLAN.md) selects WriteVTK for
+later rank-local `.vtu` pieces plus one `.pvtu` header. Pieces contain owned
+elements and their referenced points, with refreshed interface values and
+global-ID/owner metadata. CUDA output explicitly downloads required local arrays
+once per output call and never relies on host scalar indexing of device data.
+Empty pieces and relocatable paths require validation; this is a planned
+visualization path, not current parallel I/O support.
+
+The planned output gate must also coordinate schema/step agreement and piece
+completion before publishing a new header. A rank-local write failure must not
+advertise an incomplete timestep; establish whether WriteVTK needs a temporary
+name/rename adapter for this ordering. This requires a separate integration
+check and does not add restart/transaction guarantees to current VTK output.
+
 ## Acceptance checks
 
 For writers:
@@ -85,7 +99,7 @@ For readers or checkpoints:
 - Whether high-order visualization should remain linearized or gain native
   high-order cell output.
 - Checkpoint format and compatibility policy.
-- Single-file versus per-rank parallel result layout.
+- WriteVTK piece/header integration and empty-rank handling for planned MPI output.
 
 ## Update this guide when
 

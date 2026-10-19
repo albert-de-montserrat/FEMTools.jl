@@ -84,8 +84,30 @@ The suite covers:
 GitHub Actions currently runs package tests on Julia 1.12 for Ubuntu and macOS.
 The matrix contains macOS twice, which is redundant unless one entry is later
 given distinct architecture or configuration. Docs build separately using
-Julia `1`. `Project.toml` declares Julia 1.11 compatibility. No CI job currently
-executes CUDA, examples, benchmarks, or multi-rank MPI.
+Julia `1`. `Project.toml` declares Julia 1.11, 1.12, and 1.13 compatibility.
+No CI job currently executes CUDA, examples, benchmarks, or multi-rank MPI.
+
+The proposed [MPI roadmap](../MPI_IMPLEMENTATION_PLAN.md) requires CPU and CUDA
+from the first thermal milestone. Planned CUDA gates run Float32/Float64 halo
+copy/add, owned reductions, thermal parity, empty ranks, and collective failures
+with `CUDA.allowscalar(false)`: one GPU rank, then two ranks on distinct GPUs.
+Exercise four-GPU/shared-node cases when hardware is available. Host-staged
+transport is required; optional CUDA-aware transport needs actual device-buffer
+exchange tests with the configured MPI implementation. Log device mapping,
+driver/runtime, Julia, MPI, and launcher. A skipped GPU gate leaves the milestone
+incomplete. These checks are planned; no MPI/CUDA CI coverage is added yet.
+
+The revised MPI gates also require repeated copy/add assemblies, an empty rank
+and a rank owning elements but no nodes, nonzero root/split communicators,
+changed nodal inputs/BCs across physical steps, context cleanup, and failures
+before scatter or the next exchange. The independent affine T3 thermal oracle
+uses consistent mass/source matrices and elementwise absolute Jacobian
+diagnostics, matching the current residual rather than a lumped formulation.
+Check fixed-state assembly, then fixed-step iteration, then converged fields;
+budget exhaustion between checks preserves existing last-check statistics.
+Gate records identify revision, environment, command, precision/backend/ranks,
+tolerances, evidence, and passed/failed/skipped/unrun status. None is run merely
+by revising the plan.
 
 Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
 environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in
@@ -112,14 +134,22 @@ run before package instantiation:
 
 ## Exact-field benchmark checks
 
-API simplification starts with `benchmarks/api_inventory.jl` (public names,
+`test/test_standalone_solcx_dyrel.jl` checks the local SolCx triangle solver
+against the package on a 4×4 mesh in Float64 (contrasts 2 and 1e6) and Float32
+(contrast 2), with assembled forcing, nonzero Dirichlet data, pressure gauge,
+scaling/preconditioner agreement, finite histories, and explicit budget
+failure. It loads only the function-only solver/setup files, so no default
+benchmark solve or plotting dependencies enter the package test suite.
+The example parse list also covers the standalone triangle and both helpers.
+
+API inspection uses `benchmarks/api_inventory.jl` (public names,
 runtime methods, textual references) and `benchmarks/api_baseline.jl` (small
 thermal and heterogeneous mixed Stokes CPU/optional CUDA correctness smokes).
 Run the latter with `--cuda` in an environment containing CUDA; it requires a
 functional device and disables scalar indexing. These tools do not replace
-the full suite or representative performance benchmarks. See
-[`API_SIMPLIFICATION_BASELINE.md`](../API_SIMPLIFICATION_BASELINE.md) for initial
-coverage and outstanding gates.
+the full suite or representative performance benchmarks. Historical
+API-simplification baseline notes are not a prerequisite; inspect the current
+scripts and record the checks actually run on the working tree.
 
 `test/test_stokes_quadrature_viscosity.jl` covers integration-point viscosity,
 constant-field equivalence, a varying field, pressure scaling, independent
@@ -195,7 +225,9 @@ tests.
 | Frontend/example | parse plus small headless execution when maintained |
 | 2-D/3-D miniapp | inventory update, parse check, smallest practical headless run |
 | MPI | one-rank equivalence, two-rank halo/reduction, timeout-safe failure |
+| MPI/CUDA | device-resident staged halo/solve parity, scalar indexing disabled, distinct GPUs, collective-safe failures |
 | Performance | correctness gate plus warmed representative benchmark |
+| Agent instructions/internal guides only | shared import, local links/paths, whitespace, preserved user changes |
 
 Run the full suite for shared element, mesh geometry, dynamic-relaxation,
 public API, or module-load changes. A narrowly isolated documentation edit may
