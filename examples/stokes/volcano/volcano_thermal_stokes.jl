@@ -17,7 +17,8 @@ const kyr       = 1000 * 365.25 * 24 * 3600.0
 include(joinpath(@__DIR__, "..", "..", "gmsh_meshing.jl"))
 
 """
-    main(; nsteps=10, Δt=10kyr, ε̇_bg=1e-15, max_area=1e6, refinement=8, ...) -> NamedTuple
+    main(; nsteps=10, Δt=10kyr, ε̇_bg=1e-15, max_area=1e6, refinement=8,
+         ice_thickness=1e3, ice_radius=8e3, ice_melt_time=50kyr, ...) -> NamedTuple
 
 Run the coupled thermal--Stokes model of an Etna-like volcano cross-section on
 an unstructured T7/P1-disc (Crouzeix-Raviart) mesh.
@@ -31,8 +32,11 @@ chamber, and enters the momentum balance through the thermal-expansion term of
 the equation of state, which makes the hot chamber buoyant.
 
 Background pure shear is imposed as `vx = ε̇_bg x` on the vertical walls with
-`vy = 0` on the base; the topography is a traction-free surface, so a positive
-`ε̇_bg` extends the section and lets it subside. Temperature is fixed at the
+`vy = 0` on the base, so a positive `ε̇_bg` extends the section and lets it
+subside. An ice cap of density `ρ_ice` loads the cone with the pressure
+`ρ_ice g h(x)`, `h = ice_thickness (1 − (x/ice_radius)²)` within `ice_radius`
+of the summit, and thins linearly to nothing over `ice_melt_time`
+(`ice_thickness = 0` removes it); the rest of the topography is traction-free. Temperature is fixed at the
 surface and the base and insulating on the sides.
 
 All arguments and returned fields are SI; the solve itself runs in the
@@ -64,6 +68,10 @@ function main(;
         T_magma = 1100 + 273.0,
         dTdz = 25.0e-3,
         ϵ_T = 1.0e-6,
+        ice_thickness = 1.0e3,
+        ice_radius = 8.0e3,
+        ice_melt_time = 50kyr,
+        ρ_ice = 917.0,
         show_plot = true, write_output = true, verbose = true,
     )
     # -----------------------------------------------------------------------
@@ -209,7 +217,14 @@ function main(;
     #   vx = ε̇ x on the vertical walls, vy = 0 on the base, free slip in the
     #   unconstrained component; the topography carries no traction.
     #   T is fixed on the topography and the base, insulating on the sides.
+    #   The ice cap presses on the topography; its load is rebuilt every step.
     # -----------------------------------------------------------------------
+    surface = boundary_facets(mesh_stokes, groups.surface)
+    # SI ice pressure [Pa] at horizontal position x [m] and time t [s].
+    ice_pressure(x, t) = ρ_ice * 9.81 * ice_thickness * max(0.0, 1 - t / ice_melt_time) *
+        max(0.0, 1 - (x / ice_radius)^2)
+    ice_load(t) = iszero(ice_thickness) ? nothing :
+        PressureBoundaryCondition(surface, x -> ice_pressure(x[1] * L_c, t) / σ_c)
     vx_nodes = vcat(groups.left, groups.right)
     bc_vx = DirichletBoundaryCondition(
         nothing, vx_nodes, [ε̇ * coords_cpu[n][1] for n in vx_nodes],
@@ -239,12 +254,13 @@ function main(;
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
 
-    # Warm-start the pressure with the crustal load of the overlying column so
-    # the first Powell-Hestenes step does not have to build it from zero.
+    # Warm-start the pressure with the crustal and ice load of the overlying
+    # column so the first Powell-Hestenes step does not have to build it from zero.
     P_init = zeros(mesh_stokes.nnodesP)
     for iel in axes(el2nP_cpu, 2), a in axes(el2nP_cpu, 1)
         c = coords_cpu[el2nP_cpu[a, iel]]
-        P_init[DoFsP_cpu[a, iel]] = ρ0[1] * abs(g[2]) * (topography(c[1]) - c[2])
+        P_init[DoFsP_cpu[a, iel]] = ρ0[1] * abs(g[2]) * (topography(c[1]) - c[2]) +
+            ice_pressure(c[1] * L_c, Δt) / σ_c
     end
     copyto!(dr.P, P_init)
 
@@ -283,7 +299,7 @@ function main(;
             thermal, dr, mesh_T, mesh_stokes,
             bc_T, bc_vx, bc_vy, Δτ, γP;
             Tref, phases_v = phases_v_cpu, phases_P = phases_P_cpu,
-            τ_old, plastic, workgroup,
+            τ_old, plastic, workgroup, traction = ice_load(t),
             ncheck = 100, ϵ_tol = 1.0e-6,
             iterMax = 50_000, total_iterMax = 50_000, rel_drop0 = 0.75,
             verbose, verbose_inner = false,
