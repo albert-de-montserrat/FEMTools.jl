@@ -25,7 +25,7 @@ end
     assemble_viscosity_weighted_pressure_scaling!(
         γP, dr, mesh, geo_P, element_v, element_P,
         γfact, Δt, backend, workgroup;
-        phases_v=dr.phases_v, η=dr.η, K=dr.K,
+        phases_v=dr.phases_v, η=dr.η, K=dr.K, penalty=:local,
     )
 
 Assemble the pressure mass and viscosity-weighted pressure scale using a
@@ -36,6 +36,11 @@ the pressure field enter this quadrature.
 
 `phases_v`, `η`, and `K` default to the solver state and may be overridden for
 element-wise phase layouts or alternate pressure-scaling material properties.
+`penalty=:local` uses local viscosity (the default). `penalty=:global` replaces
+viscosity in the numerical penalty only by its volume-weighted arithmetic mean
+`∫η dΩ / ∫dΩ` over the current mesh. Local bulk-modulus limiting is retained;
+therefore the final `γP` can still vary when `K` varies. Physical viscosity is
+unchanged. Global mode allocates element-sized reduction scratch.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
         γP,
@@ -50,13 +55,14 @@ function assemble_viscosity_weighted_pressure_scaling!(
         phases_v = dr.phases_v,
         η = dr.η,
         K = dr.K,
+        penalty = :local,
     )
     return assemble_viscosity_weighted_pressure_scaling!(
         dr.M_P, γP,
         mesh.el2n, mesh.DoFsP, geo_P, mesh.nels,
         element_v, element_P,
         phases_v, η, γfact, K, Δt,
-        backend, workgroup,
+        backend, workgroup; penalty,
     )
 end
 
@@ -89,6 +95,8 @@ where `γ_num = γfact * η_q`, `γ_phy = K_q * Δt`, and
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)`. If `K` is omitted, this falls back
 to the incompressible JustRelax penalty branch where
 `γ_eff = γ_num * γ_phy / (γ_num + γ_phy)` and `γ_num = γ_phy = γfact * η`.
+All overloads accept `penalty=:local` or `:global`; global mode uses the
+volume-weighted arithmetic mean viscosity for `γ_num` and retains local `K`.
 """
 function assemble_viscosity_weighted_pressure_scaling!(
         MP, γP,
@@ -100,11 +108,12 @@ function assemble_viscosity_weighted_pressure_scaling!(
         phases_v,
         η,
         γfact,
-        backend, workgroup,
+        backend, workgroup;
+        penalty = :local,
     ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
     return assemble_viscosity_weighted_pressure_scaling!(
         MP, γP, el2n_v, dofs_P, geo_P, nels, element_v, element_P,
-        phases_v, η, γfact, nothing, nothing, backend, workgroup,
+        phases_v, η, γfact, nothing, nothing, backend, workgroup; penalty,
     )
 end
 
@@ -120,15 +129,37 @@ function assemble_viscosity_weighted_pressure_scaling!(
         γfact,
         K,
         Δt,
-        backend, workgroup,
+        backend, workgroup;
+        penalty = :local,
     ) where {D, TV <: AbstractElement{D, NV}, TP <: AbstractElement{D, NP}} where {NV, NP}
+    penalty in (:local, :global) ||
+        throw(ArgumentError("penalty must be :local or :global"))
     NqV = shape_function_values(element_v)
     NqP = shape_function_values(element_P, element_v.integration_points)
+
+    η_scaling = if penalty === :global
+        ηdΩ = KA.allocate(backend, eltype(γP), nels)
+        volumes = similar(ηdΩ)
+        pressure_viscosity_integrals_kernel!(backend, workgroup)(
+            ηdΩ, volumes, el2n_v, geo_P, phases_v, η, NqV, Val(NV);
+            ndrange = nels,
+        )
+        KA.synchronize(backend)
+        volume = sum(volumes)
+        isfinite(volume) && volume > 0 ||
+            throw(ArgumentError("global penalty requires finite positive mesh volume"))
+        η_mean = sum(ηdΩ) / volume
+        isfinite(η_mean) && η_mean > 0 ||
+            throw(ArgumentError("global penalty requires finite positive mean viscosity"))
+        map(_ -> η_mean, η)
+    else
+        η
+    end
 
     fill!(MP, 0)
     fill!(γP, 0)
     viscosity_weighted_pressure_scaling_kernel!(backend, workgroup)(
-        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η, γfact, K, Δt,
+        MP, γP, el2n_v, dofs_P, geo_P, phases_v, η_scaling, γfact, K, Δt,
         NqV, NqP, Val(NV), Val(NP), Val(D);
         ndrange = nels,
     )
@@ -184,6 +215,25 @@ their linear pressure modes have zero or negative lumped integrals.
             Atomix.@atomic :monotonic γP[inod] += weight * γq
         end
     end
+end
+
+# Element-local sums avoid atomics; reductions remain on the selected backend.
+@kernel function pressure_viscosity_integrals_kernel!(
+        ηdΩ, volumes, @Const(el2n_v), @Const(geo_P), @Const(phases_v),
+        η, NqV, ::Val{NV},
+    ) where {NV}
+    iel = @index(Global)
+    nodes = local_nodes_of(el2n_v, iel, Val(NV))
+    phase_loc = _gather_phase(phases_v, nodes, iel, Val(NV))
+    integral = zero(eltype(ηdΩ))
+    volume = zero(eltype(volumes))
+    for q in eachindex(geo_P[iel])
+        dΩ = geo_P[iel][q]
+        integral += interp2ip_phase(NqV[q], η, phase_loc) * dΩ
+        volume += dΩ
+    end
+    ηdΩ[iel] = integral
+    volumes[iel] = volume
 end
 
 # Keyed on the velocity node count. On simplices the barycentric pressure

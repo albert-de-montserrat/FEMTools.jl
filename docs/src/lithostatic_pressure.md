@@ -87,6 +87,14 @@ P(y)=\rho g(-y), \qquad -L_y\le y\le0.
 The examples use this profile as the initial guess. A denser block with
 ``\rho_2=2\rho_1`` perturbs the pressure locally.
 
+A surface overburden is prescribed as a nonzero pressure Dirichlet condition,
+`P = p_surface(x)`, rather than a Stokes traction. For example, build `bc` from
+surface node indices and nodal values of `ρ_ice * abs(g[2]) * h(x)`, expressed
+in the same units as the pressure solve. Pass that boundary condition to
+`solver!(dr, mesh, bc; g, Tref)`. Unloaded surface nodes should be included
+with zero pressure; the other boundaries retain the natural flux condition.
+The 2-D volcano example uses this setup to initialize Stokes pressure.
+
 ## Dynamic-relaxation solver
 
 `LithostaticPressureDR` converges the steady equation through pseudo-time. For

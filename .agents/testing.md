@@ -183,6 +183,11 @@ meshing/setup includes and documented paths. It uses only `Test`, so it can
 run before package instantiation:
 `julia --startup-file=no test/test_example_paths.jl`.
 
+`test_global_pressure_penalty.jl` checks volume-weighted mean viscosity on
+unequal-volume two-phase T7 and Hex27 meshes in Float32/Float64, including an
+unused phase, local bulk limiting, unchanged default/mass/physical viscosity,
+the no-bulk overload, and invalid mode rejection.
+
 ## Commands
 
 Full package test from the repository root:

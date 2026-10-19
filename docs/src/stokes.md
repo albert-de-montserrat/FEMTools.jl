@@ -85,6 +85,25 @@ pressure mass `dr.M_P` must be assembled — see
 [`FEMTools.assemble_viscosity_weighted_pressure_scaling!`](@ref) — before the
 first call.
 
+Pressure scaling accepts `penalty=:local` (default) or `penalty=:global`:
+
+```julia
+assemble_viscosity_weighted_pressure_scaling!(
+    γP, dr, mesh, γfact, Δt; penalty=:global, phases_v,
+)
+```
+
+Global mode uses the volume-weighted arithmetic mean viscosity
+`η̄ = ∫η dΩ / ∫dΩ` in the numerical penalty `γ_num = γfact * η̄`.
+Unused material phases do not contribute. The local physical cap `K_q * Δt`
+is retained, so the effective pressure scale can still vary with bulk modulus.
+This affects pressure iteration only; constitutive viscosity is unchanged.
+The mean is recomputed on each assembly, including after mesh motion. Global
+mode allocates two element-sized scratch arrays for backend reductions.
+In the 2-D volcano driver, select `main(; pressure_penalty=:global, ...)`;
+the same mode applies to elastic initialization (where the auxiliary viscosity
+is the shear modulus) and physical evolution. Local mode remains the default.
+
 Velocity-node quantities are grouped as [field containers](field_containers.md).
 The velocity is `dr.v`, its pseudo-transient rate `dr.∂v∂τ`, the momentum
 residual `dr.Rv` with snapshot `dr.Rv0`, the row-sum Jacobian estimate
@@ -417,6 +436,38 @@ julia --project=examples examples/reykjanes/reykjanes_thermal_stokes.jl
 julia --project=examples examples/reykjanes/elliptical_cavity.jl
 julia --project=examples examples/miniapps/stokes/popov_extension_2D/popov_extension_2D.jl
 ```
+
+The 2-D volcano driver initializes pressure with `LithostaticPressureDR` on
+the continuous T7 mesh, using the initial temperature and material phases.
+Surface pressure is prescribed to the ice load at the first step's time `Δt`,
+including zero pressure outside the cap. The resulting corner values seed the
+discontinuous Stokes pressure. A fixed-mesh static elastic gravity solve follows,
+with frozen temperature, no plasticity, homogeneous displacement constraints on
+the walls/base, and the same surface load. It uses the exact mixed-operator
+substitution `η = G`, `G_Maxwell = Inf`, and a unit auxiliary step: the temporary
+velocity represents displacement, and pressure follows `P = -K div(u)` from an
+unstressed reference (`P0 = 0`). Lithostatic pressure is the iteration guess.
+The elastic pressure and stress initialize physical `P`, `P0`, and `τ_old`.
+Initialization displacements are discarded: the supplied geometry is treated
+as the loaded reference, and physical time and temperature do not advance.
+The returned `elastic_initialization` contains convergence statistics. Elastic
+stress may exceed plastic yield strength and relax during normal evolution. After every time step and mesh motion, it recomputes
+`Plitho` with the current temperature and ice load without overwriting Stokes
+`P` or its history. VTK files include cell-averaged `Plitho` and
+`P_dyn = P - Plitho` in Pa on the moved mesh.
+
+In the 2-D volcano driver, `ε̇_bg = 0` disables extension: the side walls
+and base remain impermeable with free tangential slip, and the top has no
+prescribed velocity. A fixed `1e15`-second time scale keeps nondimensional
+properties finite independently of the imposed strain rate.
+
+The 2-D volcano driver moves triangle corners by `Δt * v` after each converged
+solve, then resets T7 midside nodes and bubbles to midpoints and centroids.
+Temperature, phases, and stress history follow the mesh without remapping.
+Both geometry caches, pressure scaling, and wall velocities are refreshed.
+Inverted or collapsed cells stop the run; reduce the time step in that case.
+VTK output and returned `coords` (metres) use the moved mesh; stress diagnostics
+use the solve geometry. The dashed ellipse marks the initial chamber position.
 
 The Popov extension driver is a small unstructured T7/P1-discontinuous
 tensile-cap case using only the Table 1 / Figure 6b setup. It meshes the domain

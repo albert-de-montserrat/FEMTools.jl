@@ -418,6 +418,14 @@ one; do not mix them. Consequences to hold onto:
   `update_stokes_current_stress!` never do. The default remains `nothing` to
   preserve non-cap memory behavior.
 
+Pressure scaling optionally uses `penalty=:global`: the numerical coefficient
+is `γfact * (∫η dΩ / ∫dΩ)` instead of `γfact * ηq`, with the same local
+`Kq * Δt` cap. `:local` remains the default and its assembly path allocates no
+new scratch. Global reductions use the pressure quadrature volumes on the
+selected backend, allocating two element-sized arrays only in global mode.
+This is a numerical-penalty choice; physical viscosity and bulk storage remain
+local. The mean is recomputed whenever the caller reassembles scaling.
+
 ### Two-dimensional Powell-Hestenes/DYREL iteration
 
 The 2-D saddle-point solver forms a lumped pressure scale `M_P`. During each

@@ -395,15 +395,20 @@ struct DamageLaw{nphases, FP}
     end
 end
 
-struct DruckerPrager{nphases, FP}
+# The damage law is a type parameter so the struct stays a bitstype, which GPU
+# kernels require of their arguments.
+struct DruckerPrager{nphases, FP, D <: Union{Nothing, DamageLaw{nphases, FP}}}
     cosϕ::NTuple{nphases, FP}
     sinϕ::NTuple{nphases, FP}
     sinΨ::NTuple{nphases, FP}
     C::NTuple{nphases, FP}
     η_reg::NTuple{nphases, FP}
     Kb::NTuple{nphases, FP}
-    damage::Union{Nothing, DamageLaw{nphases, FP}}
+    damage::D
 end
+
+DruckerPrager{nphases, FP}(cosϕ, sinϕ, sinΨ, C, η_reg, Kb, damage) where {nphases, FP} =
+    DruckerPrager{nphases, FP, typeof(damage)}(cosϕ, sinϕ, sinΨ, C, η_reg, Kb, damage)
 
 """
     DruckerPrager(ϕ, Ψ, C, η_reg, Kb) -> DruckerPrager

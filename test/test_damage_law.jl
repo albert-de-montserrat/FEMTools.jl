@@ -102,3 +102,12 @@
     @test_throws ArgumentError FEMTools.DamageLaw((0.0f0,), (0.5f0,), (0.5f0,), (1.0f0,))
     @test_throws ArgumentError FEMTools.DamageLaw((1.0f0,), (1.1f0,), (0.5f0,), (1.0f0,))
 end
+
+# Kernels receive the yield model by value, so it must be plain data on GPU
+# backends both with and without a damage law.
+@testset "DruckerPrager is a bitstype" begin
+    args = ((0.5,), (0.0,), (1.0,), (10.0,), (100.0,))
+    law = FEMTools.DamageLaw((1.0,), (0.5,), (0.25,), (2.0,))
+    @test isbitstype(typeof(DruckerPrager(args...)))
+    @test isbitstype(typeof(DruckerPrager(args...; damage = law)))
+end

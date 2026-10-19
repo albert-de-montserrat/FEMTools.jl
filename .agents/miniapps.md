@@ -52,6 +52,41 @@ reporting a setup error:
   count means a coarser mesh on a wider domain; compare absolute element sizes,
   not element counts, when carrying settings between models.
 
+The 2-D volcano driver initializes Stokes `P` and `P0` with the built-in
+`LithostaticPressureDR` on its continuous T7 mesh. The function-only helper
+`examples/stokes/volcano/lithostatic_initialization.jl` copies initial temperature
+and nodal phases, prescribes the first step's ice pressure at every surface node,
+and samples the solved pressure at P1-disc corners. Each accepted step reuses
+that lithostatic state to recompute the reference after mesh motion, with current
+temperature, phases, and ice load, without modifying Stokes pressure/history.
+VTK includes cell-averaged `Plitho` and `P_dyn = P - Plitho` in Pa.
+Surface load is a pressure
+Dirichlet condition in this scalar solve, and remains a traction in Stokes.
+`test_volcano_lithostatic.jl` checks a thermally expanded loaded column, the
+zero-load case, nonuniform surface values, and the pressure-history transfer.
+
+After the lithostatic seed, `elastic_initialization.jl` performs static elastic
+gravity equilibration on the fixed mesh with frozen temperature and no plasticity.
+Its separate Stokes state uses `η=G`, `G_Maxwell=Inf`, and unit auxiliary step;
+velocity is displacement, pressure storage uses finite K and zero old pressure.
+Homogeneous wall/base displacement constraints suppress tectonic loading during
+initialization. Only pressure, pressure-temperature fields, and stress are copied
+back; physical velocities, temperature, time, and geometry do not advance.
+The mesh is treated as an already loaded reference. Initial elastic stress can
+exceed yield and relax in subsequent plastic steps. `test_volcano_elastic.jl`
+checks analytic constrained compression and that displacement is not advected
+or copied into physical velocity. Main returns `elastic_initialization` stats.
+
+The 2-D volcano `pressure_penalty=:local` keyword can be set to `:global`
+to use the volume-weighted mean viscosity in the numerical pressure penalty.
+It is forwarded to physical pressure scaling, post-advection reassembly, and
+elastic initialization (whose auxiliary viscosity is G). Local bulk limiting
+is retained; the default is unchanged.
+
+The 2-D volcano driver uses a fixed `1e15`-second characteristic time,
+independent of `ε̇_bg`. Zero strain rate keeps impermeable, free-slip sides
+and base and a velocity-unconstrained top; it must not produce infinite scales.
+
 The thermal half of `solve_coupled_dyrel!` converges on a relative residual. A
 time step far below the thermal diffusion time leaves that residual at its
 cancellation floor from the first iteration, so its tolerance has to be loosened
@@ -88,7 +123,7 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/miniapps/stokes/vevp/stokes_2D_shear_bands_triangle.jl` | Gmsh T7/P1-disc | Drucker-Prager shear-localization experiment |
 | `examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
-| `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear |
+| `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear; first-order corner advection with straight T7 edges, refreshed geometry and pressure scaling; rejects non-convergence and inverted cells |
 | `examples/reykjanes/reykjanes_thermal_stokes.jl` | Triangulate T7/P1-disc; CPU, or CUDA via the top-level `isCUDA` flag | Coupled thermal--Stokes cross-rift section with a flat surface and a thin elliptical magma sill under wall extension; the 2-D volcano driver without the cone. Geometry, geotherm and material values are illustrative, not calibrated. Starting point of the Reykjanes project in `REYKJANES_PLAN.md` |
 | `examples/reykjanes/elliptical_cavity.jl` | Triangulate T7/P1-disc; CPU | Milestone M0 of `REYKJANES_PLAN.md`: a soft compressible inclusion injected through `Q` inside a Maxwell host, one elastic step (`Δt ≪ η/G`) on a disc whose outer circle carries the infinite-plane displacement, compared with Muskhelishvili's closed form (`cavity_analytic.jl`). The driver runs the default case of `solve_elliptical_cavity`, which returns pressure, area change, displacement error and solver statistics and lives in the function-only `elliptical_cavity_setup.jl` shared with `test/test_elliptical_cavity.jl` and the benchmark. Iteration counts are in `solver.md` |
 | `examples/reykjanes/reykjanes_cycles.jl` | Triangulate T7/P1-disc; CPU | The event protocol of GAP-11 of `REYKJANES_PLAN.md` end to end: recharge the sill until a connected failed path reaches the shallow crust, bracket the step at which it first does, and open a dike on that path by the amount that drains the magma pressure to the closure stress of the path plus the arrest overpressure. The driver runs two events on a coarse section through `run_cycles` in `event_cycles.jl`; every rule it applies is a field of `EventProtocol` in `event_protocol.jl` and is a placeholder until Phase 0 of the science plan fixes it |

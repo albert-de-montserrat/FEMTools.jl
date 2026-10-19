@@ -184,6 +184,12 @@ signed local source, or paired with nonnegative weights and signed `Q2D` to
 enforce the discrete area-rate identity `Σ Q dΩ = Q2D`. `P_old` accepts either
 a nodal pressure vector or accepted `nq × nels` integration-point pressure.
 
+`assemble_viscosity_weighted_pressure_scaling!` accepts `penalty=:local`
+(default) or `:global` on every overload. Global mode uses the mesh-volume
+arithmetic mean viscosity for the numerical penalty, retains local bulk-modulus
+limiting, and does not change constitutive viscosity. It allocates two
+per-element backend reduction arrays; unused phases do not enter the mean.
+
 ## Canonical user flows
 
 ### Single-field problem

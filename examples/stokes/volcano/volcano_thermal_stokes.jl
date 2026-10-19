@@ -1,4 +1,11 @@
 # Coupled thermal-Stokes model of a volcano cross-section with a magma chamber.
+# Set to `true` to run the solve on an NVIDIA GPU; needs CUDA.jl in the active environment.
+# const isCUDA = false
+const isCUDA = true
+
+@static if isCUDA
+    using CUDA
+end
 
 using Printf
 using Statistics
@@ -10,11 +17,18 @@ using FEMTools
 using GLMakie: Figure, Axis, Colorbar, poly!, lines!, scatterlines!, axislegend, rowsize!, Relative,
     Point2f, DataAspect
 
-const backend   = CPU()
+@static if isCUDA
+    const backend = CUDA.CUDABackend()
+else
+    const backend = CPU()
+end
 const workgroup = 128
 const kyr       = 1000 * 365.25 * 24 * 3600.0
 
 include(joinpath(@__DIR__, "..", "..", "gmsh_meshing.jl"))
+include(joinpath(@__DIR__, "mesh_advection.jl"))
+include(joinpath(@__DIR__, "lithostatic_initialization.jl"))
+include(joinpath(@__DIR__, "elastic_initialization.jl"))
 
 """
     main(; nsteps=10, Δt=10kyr, ε̇_bg=1e-15, max_area=1e6, refinement=8,
@@ -31,6 +45,10 @@ modulus. Temperature starts on a `dTdz` geotherm and at `T_magma` inside the
 chamber, and enters the momentum balance through the thermal-expansion term of
 the equation of state, which makes the hot chamber buoyant.
 
+`ε̇_bg = 0` disables imposed extension while retaining impermeable side walls
+and base (free slip tangentially). The characteristic time is fixed at
+`1e15` seconds, so zero and small strain rates have finite solver scales.
+
 Background pure shear is imposed as `vx = ε̇_bg x` on the vertical walls with
 `vy = 0` on the base, so a positive `ε̇_bg` extends the section and lets it
 subside. An ice cap of density `ρ_ice` loads the cone with the pressure
@@ -40,8 +58,37 @@ of the summit, and thins linearly to nothing over `ice_melt_time`
 traction-free. Temperature is fixed at the surface and the base and insulating
 on the sides.
 
+`pressure_penalty=:global` uses the volume-weighted mean viscosity for the
+numerical pressure penalty; `:local` (default) uses local viscosity. The local
+bulk-modulus cap is retained in both modes, including elastic initialization.
+
+Initial pressure is computed with `LithostaticPressureDR`, using the initial
+temperature and phases, with surface pressure prescribed to the ice load at
+`Δt` (the first Stokes solve's load). Its continuous pressure is sampled at
+cell corners to seed the discontinuous Stokes pressure. This is an approximate
+lithostatic equilibrium, not a full Stokes equilibrium under topography.
+Next, a fixed-mesh static elastic solve loads an initially unstressed body
+under gravity and the same surface load. Temperature is frozen, plasticity is
+disabled, and wall/base displacement constraints are homogeneous. The resulting
+pressure and deviatoric stress initialize `P`, `P0`, and `τ_old`. Initialization
+displacements are discarded; the supplied geometry is treated as the loaded
+reference and physical time is not advanced. Elastic initial stresses may exceed
+the plastic yield strength and relax when normal evolution begins.
+The reference is recomputed after mesh motion every step with the current
+temperature and ice load, without changing Stokes pressure history. VTK files
+include cell-averaged `Plitho` and `P_dyn = P - Plitho`, both in Pa.
+
+After each converged step, triangle corners move by `Δt * v`. Midside nodes
+and bubbles are reset to edge midpoints and centroids, keeping straight edges.
+Temperature, phases, and stress history follow the mesh without remapping;
+this is a first-order Lagrangian geometry update with no remeshing. Inverted
+or collapsed triangles abort the run; reduce `Δt` if this occurs. Geometry,
+pressure scaling, and wall velocities are refreshed for the following solve.
+
 All arguments and returned fields are SI; the solve itself runs in the
-characteristic units defined below.
+characteristic units defined below. It runs on the backend selected by the
+top-level `isCUDA` flag; meshing, boundary-condition set-up and post-processing
+stay on the host.
 
 At the default `ε̇_bg = 1e-15` s⁻¹ the section deforms in the viscous regime,
 `Δt = 10` kyr spans several Maxwell times `η/G`, and conduction is resolved
@@ -66,6 +113,7 @@ function main(;
         refinement = 8,
         η_vp = 1.0e21,
         γfact = 100.0,
+        pressure_penalty = :global,
         T_magma = 1100 + 273.0,
         dTdz = 25.0e-3,
         ϵ_T = 1.0e-6,
@@ -75,10 +123,12 @@ function main(;
         ρ_ice = 917.0,
         show_plot = true, write_output = true, verbose = true,
     )
+    pressure_penalty in (:local, :global) ||
+        throw(ArgumentError("pressure_penalty must be :local or :global"))
     # -----------------------------------------------------------------------
     # Geometry [m]
     # -----------------------------------------------------------------------
-    Lx, depth = 40.0e3, 20.0e3
+    Lx, depth = 100.0e3, 20.0e3
     cone_base, cone_top, cone_height = 10.0e3, 0.5e3, 3.3e3
     chamber_center = (0.0, -5.0e3)
     chamber_radii  = (3.0e3, 1.5e3)
@@ -92,7 +142,7 @@ function main(;
     # units and scaled back for output. Temperature stays in Kelvin.
     # -----------------------------------------------------------------------
     L_c  = depth                  # length [m]
-    t_c  = 1 / abs(ε̇_bg)          # time [s]
+    t_c  = 1.0e15                 # fixed time scale [s], independent of forcing
     σ_c  = 1.0e8                  # stress [Pa]
     η_c  = σ_c * t_c              # viscosity [Pa s]
     ρ_c  = σ_c * t_c^2 / L_c^2    # density [kg m⁻³]
@@ -107,7 +157,7 @@ function main(;
     # Chamber viscosity is that of a crystal-rich mush. Lower values are
     # physically defensible but push the contrast past 10³, where the
     # velocity relaxation needs several times more iterations to converge.
-    η    = (1.0e21, 1.0e19) ./ η_c    # shear viscosity [Pa s]
+    η    = (1.0e22, 1.0e19) ./ η_c    # shear viscosity [Pa s]
     G    = (3.0e10, 1.0e9)  ./ σ_c    # shear modulus [Pa]
     K    = (5.0e10, 1.0e10) ./ σ_c    # bulk modulus [Pa]
     ηb   = K                          # pressure storage modulus; residual uses ηb * Δt
@@ -120,7 +170,7 @@ function main(;
 
     ϕ = deg2rad(30)                   # friction angle
     Ψ = deg2rad(0)                    # dilation angle (non-associated)
-    C_crust = 1.0e7 / σ_c             # cohesion [Pa]; yield stress = C cosϕ + P sinϕ
+    C_crust = 3.0e7 / σ_c             # cohesion [Pa]; yield stress = C cosϕ + P sinϕ
     # The chamber stays visco-elastic. Its cohesion is set far above any
     # attainable stress rather than to `Inf`, because per-phase properties are
     # interpolated with T7 shape functions, which are negative at some
@@ -145,8 +195,6 @@ function main(;
     element_v = ReferenceElement(QuadraticElement{2, 7, Float64})   # T7 (bubble)
     element_P = ReferenceElement(LinearElement{2, 3, Float64})      # P1-disc
 
-    topography(x) = volcano_topography(x; cone_base = cone_base / L_c,
-        cone_top = cone_top / L_c, cone_height = cone_height / L_c)
     coords_cpu, el2n_cpu, groups = build_gmsh_t7_volcano_mesh(;
         Lx = Lx / L_c, depth = depth / L_c,
         cone_base = cone_base / L_c, cone_top = cone_top / L_c,
@@ -155,13 +203,8 @@ function main(;
         chamber_radii = chamber_radii ./ L_c,
         max_area = max_area / L_c^2, refinement,
     )
-    DoFs_cpu = Int32.(1:length(coords_cpu))
-    mesh_v = Mesh(
-        element_v, nothing, nothing,
-        coords_cpu, DoFs_cpu, el2n_cpu, groups.Γnodes,
-    )
-    mesh_stokes = MixedMesh(mesh_v, element_P)
-    mesh_T = Mesh(backend, coords_cpu, el2n_cpu, element_v; workgroup)
+    mesh_v = Mesh(backend, coords_cpu, el2n_cpu, element_v; workgroup)
+    mesh_stokes = MixedMesh(mesh_v, element_P; workgroup)
     geo_v = mesh_stokes.geometry.geo_v
 
     NQ_v = length(element_v.integration_points.ω)
@@ -176,14 +219,15 @@ function main(;
     # -----------------------------------------------------------------------
     in_chamber(c) = in_magma_chamber(c;
         chamber_center = chamber_center ./ L_c, chamber_radii = chamber_radii ./ L_c)
-    cell_phase = Int[
+    cell_phase = Int32[
         in_chamber(sum(coords_cpu[el2n_cpu[a, iel]] for a in 1:3) / 3) ? 2 : 1
         for iel in axes(el2n_cpu, 2)
     ]
-    phases_v_cpu = repeat(reshape(cell_phase, 1, :), NV, 1)
-    phases_P_cpu = repeat(reshape(cell_phase, 1, :), NP, 1)
+    TDev = FEMTools.TA(backend)
+    phases_v = TDev(repeat(reshape(cell_phase, 1, :), NV, 1))
+    phases_P = TDev(repeat(reshape(cell_phase, 1, :), NP, 1))
 
-    node_phase = ones(Int, length(coords_cpu))
+    node_phase = ones(Int32, length(coords_cpu))
     for iel in axes(el2n_cpu, 2), a in axes(el2n_cpu, 1)
         cell_phase[iel] == 2 && (node_phase[el2n_cpu[a, iel]] = 2)
     end
@@ -209,9 +253,9 @@ function main(;
     τ_old = (dr.τ_old.xx, dr.τ_old.yy, dr.τ_old.xy)
 
     thermal = ThermalDiffusionDR(
-        backend, mesh_T.nnodes, ThermalMaterial(; k, Cp, ρ0, α, K); ϵ = ϵ_T,
+        backend, mesh_v.nnodes, ThermalMaterial(; k, Cp, ρ0, α, K); ϵ = ϵ_T,
     )
-    copyto!(thermal.phases, node_phase)
+    copyto!(thermal.phases, TDev(node_phase))
 
     # -----------------------------------------------------------------------
     # Boundary conditions
@@ -228,15 +272,15 @@ function main(;
         PressureBoundaryCondition(surface, x -> ice_pressure(x[1] * L_c, t) / σ_c)
     vx_nodes = vcat(groups.left, groups.right)
     bc_vx = DirichletBoundaryCondition(
-        nothing, vx_nodes, [ε̇ * coords_cpu[n][1] for n in vx_nodes],
+        nothing, TDev(vx_nodes), TDev([ε̇ * coords_cpu[n][1] for n in vx_nodes]),
     )
     bc_vy = DirichletBoundaryCondition(
-        nothing, groups.bottom, zeros(length(groups.bottom)),
+        nothing, TDev(groups.bottom), TDev(zeros(length(groups.bottom))),
     )
     bc_T = DirichletBoundaryCondition(
         nothing,
-        vcat(groups.surface, groups.bottom),
-        vcat(fill(T_surface, length(groups.surface)), fill(T_base, length(groups.bottom))),
+        TDev(vcat(groups.surface, groups.bottom)),
+        TDev(vcat(fill(T_surface, length(groups.surface)), fill(T_base, length(groups.bottom)))),
     )
 
     # Linear geotherm below the ground surface; the edifice sits at T_surface.
@@ -255,15 +299,21 @@ function main(;
     apply_bc!(dr.v.x, bc_vx)
     apply_bc!(dr.v.y, bc_vy)
 
-    # Warm-start the pressure with the crustal and ice load of the overlying
-    # column so the first Powell-Hestenes step does not have to build it from zero.
-    P_init = zeros(mesh_stokes.nnodesP)
-    for iel in axes(el2nP_cpu, 2), a in axes(el2nP_cpu, 1)
-        c = coords_cpu[el2nP_cpu[a, iel]]
-        P_init[DoFsP_cpu[a, iel]] = ρ0[1] * abs(g[2]) * (topography(c[1]) - c[2]) +
-            ice_pressure(c[1] * L_c, Δt) / σ_c
-    end
-    copyto!(dr.P, P_init)
+    # Approximate equilibrium with the temperature-dependent density and the
+    # same surface ice pressure used by the first Stokes solve.
+    litho = initialize_volcano_lithostatic_pressure!(
+        dr, thermal, mesh_v, mesh_stokes, groups.surface,
+        c -> ice_pressure(c[1] * L_c, Δt) / σ_c;
+        g, Tref, workgroup, verbose,
+    )
+
+    # Static elastic self-weight support, without advancing physical time or
+    # advecting the mesh. The physical pure-shear velocity seed stays intact.
+    elastic_initialization = initialize_volcano_elastic_stress!(
+        dr, thermal, mesh_stokes, bc_vx, bc_vy;
+        phases_v, phases_P, traction = ice_load(Δt), workgroup, verbose,
+        pressure_penalty,
+    )
 
     @info "BCs" n_vx = length(vx_nodes) n_vy = length(groups.bottom) n_T =
         length(bc_T.DoFs) max_vx_SI = maximum(abs, bc_vx.vals) * L_c / t_c T_base
@@ -272,7 +322,7 @@ function main(;
     # correction while adapting the step to the local viscosity.
     γP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
     assemble_viscosity_weighted_pressure_scaling!(
-        γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v = phases_v_cpu,
+        γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v, penalty = pressure_penalty,
     )
 
     # -----------------------------------------------------------------------
@@ -297,26 +347,27 @@ function main(;
         copyto!(thermal.T0, thermal.T)
 
         solve_stats = solve_coupled_dyrel!(
-            thermal, dr, mesh_T, mesh_stokes,
+            thermal, dr, mesh_v, mesh_stokes,
             bc_T, bc_vx, bc_vy, Δτ, γP;
-            Tref, phases_v = phases_v_cpu, phases_P = phases_P_cpu,
+            Tref, phases_v, phases_P,
             τ_old, plastic, workgroup, traction = ice_load(t),
             ncheck = 100, ϵ_tol = 1.0e-6,
             iterMax = 50_000, total_iterMax = 50_000, rel_drop0 = 0.75,
             verbose, verbose_inner = false,
         )
+        solve_stats.converged || error("Coupled solve did not converge at step $istep")
         push!(solve_stats_history, solve_stats)
 
         update_stokes_current_stress!(
             dr, mesh_stokes, τ, Δτ;
-            phases_v = phases_v_cpu, τ_old, plastic, workgroup,
+            phases_v, τ_old, plastic, workgroup,
         )
 
         P_cpu  = Array(dr.P)
         vx_cpu = Array(dr.v.x)
         vy_cpu = Array(dr.v.y)
         post = compute_strain_rate_stress_postprocess(
-            vx_cpu, vy_cpu, el2n_v_cpu, Array(geo_v), τ, element_v,
+            vx_cpu, vy_cpu, el2n_v_cpu, Array(geo_v), map(Array, τ), element_v,
         )
         mean_tauII_history[istep] = mean(post.tauII) * σ_c
         max_tauII_history[istep]  = maximum(post.tauII) * σ_c
@@ -331,6 +382,27 @@ function main(;
             max_tauII_history[istep] / 1.0e6 iter = solve_stats.iter err =
             solve_stats.err err_T = solve_stats.err_T
 
+        # Diagnose on the solve geometry before moving the material mesh.
+        advect_volcano_mesh!(coords_cpu, el2n_v_cpu, vx_cpu, vy_cpu, Δτ)
+        copyto!(mesh_v.coords, coords_cpu)
+        copyto!(mesh_stokes.coords, coords_cpu)
+        update_geometry!(mesh_v; workgroup)
+        update_geometry!(mesh_stokes; workgroup)
+        assemble_viscosity_weighted_pressure_scaling!(
+            γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v, penalty = pressure_penalty,
+        )
+        copyto!(bc_vx.vals, [ε̇ * coords_cpu[n][1] for n in vx_nodes])
+
+        # Reference pressure on the output geometry, at the current temperature
+        # and ice load. This diagnostic must not overwrite Stokes P or P0.
+        recompute_volcano_lithostatic_pressure!(
+            litho, thermal, mesh_v, groups.surface,
+            c -> ice_pressure(c[1] * L_c, t) / σ_c;
+            g, Tref, workgroup, verbose,
+        )
+        Plitho_cpu = volcano_lithostatic_stokes_pressure(litho, mesh_stokes)
+        P_dyn_cpu = P_cpu .- Plitho_cpu
+
         if write_output
             T_cpu = Array(thermal.T)
             el_T = [mean(T_cpu[el2n_v_cpu[1:3, iel]]) for iel in 1:mesh_stokes.nels]
@@ -342,7 +414,11 @@ function main(;
                 merge(map(f -> f .* σ_c, post),
                     map(f -> f ./ t_c, post[(:εxx, :εyy, :εzz, :εxy, :εII)]));
                 title = "volcano thermal-Stokes",
-                cell_data = (; phase = cell_phase, T = el_T),
+                cell_data = (; phase = cell_phase, T = el_T,
+                    Plitho = [mean(Plitho_cpu[DoFsP_cpu[:, i]]) * σ_c
+                        for i in 1:mesh_stokes.nels],
+                    P_dyn = [mean(P_dyn_cpu[DoFsP_cpu[:, i]]) * σ_c
+                        for i in 1:mesh_stokes.nels]),
             )
             @info "Wrote VTK file" vtk_path
         end
@@ -374,6 +450,7 @@ function main(;
         ax = Axis(fig[1, 2col - 1]; aspect = DataAspect(), title,
             xlabel = "x [km]", ylabel = "y [km]")
         poly!(ax, polys; color = field, colormap = cmap, colorrange = clims, strokewidth = 0)
+        # Dashed ellipse marks the initial chamber position.
         lines!(ax, chamber_x, chamber_y; color = :white, linewidth = 1.5, linestyle = :dash)
         Colorbar(fig[1, 2col]; colormap = cmap, limits = clims, label, width = 15,
             tellheight = false)
@@ -393,8 +470,12 @@ function main(;
     return (;
         time = time_history, mean_tauII = mean_tauII_history,
         max_tauII = max_tauII_history, mean_P_chamber, post,
-        solve_stats = solve_stats_history,
+        solve_stats = solve_stats_history, coords = coords_cpu .* L_c,
+        elastic_initialization,
     )
 end
 
-main()
+# main()
+
+main(; nsteps=100, Δt=5kyr, ε̇_bg=0*1e-15, max_area=1e6, refinement=8,
+         ice_thickness=0, ice_radius=15e3, ice_melt_time=50kyr)
