@@ -65,6 +65,7 @@ include("mesh/connectivity.jl")
 include("mesh/utils.jl")
 include("mesh/mesh.jl")
 include("mesh/mixed_mesh.jl")
+include("mesh/facets.jl")
 include("mesh/sparsity.jl")
 include("mesh/coloring.jl")
 
@@ -123,6 +124,7 @@ export order
 export Mesh, MixedMesh, MixedMeshCache, update_geometry!
 export QuadraturePointGeometry, ElementGeometry, element_geometry
 export DirichletBoundaryCondition, apply_bc!
+export BoundaryFacets, boundary_facets
 
 # Mesh construction and graph utilities.
 export generate_element2node,
