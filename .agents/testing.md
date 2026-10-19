@@ -87,27 +87,33 @@ given distinct architecture or configuration. Docs build separately using
 Julia `1`. `Project.toml` declares Julia 1.11, 1.12, and 1.13 compatibility.
 No CI job currently executes CUDA, examples, benchmarks, or multi-rank MPI.
 
-The proposed [MPI roadmap](../MPI_IMPLEMENTATION_PLAN.md) requires CPU and CUDA
-from the first thermal milestone. Planned CUDA gates run Float32/Float64 halo
-copy/add, owned reductions, thermal parity, empty ranks, and collective failures
-with `CUDA.allowscalar(false)`: one GPU rank, then two ranks on distinct GPUs.
-Exercise four-GPU/shared-node cases when hardware is available. Host-staged
-transport is required; optional CUDA-aware transport needs actual device-buffer
-exchange tests with the configured MPI implementation. Log device mapping,
-driver/runtime, Julia, MPI, and launcher. A skipped GPU gate leaves the milestone
-incomplete. These checks are planned; no MPI/CUDA CI coverage is added yet.
+`test/test_partition.jl` covers MPI-free partition metadata on T3 and Q9
+meshes: element coverage, unique node ownership by lowest incident part,
+exact local-topology reconstruction, inherited physical boundaries (interfaces
+excluded), halo-ID agreement and owner reciprocity, ownership invariance under
+node renumbering, zero-owned-node and empty parts, Dirichlet localization, and
+Metis label validity and balance. It needs no MPI.
 
-The revised MPI gates also require repeated copy/add assemblies, an empty rank
-and a rank owning elements but no nodes, nonzero root/split communicators,
-changed nodal inputs/BCs across physical steps, context cleanup, and failures
-before scatter or the next exchange. The independent affine T3 thermal oracle
-uses consistent mass/source matrices and elementwise absolute Jacobian
-diagnostics, matching the current residual rather than a lumped formulation.
-Check fixed-state assembly, then fixed-step iteration, then converged fields;
-budget exhaustion between checks preserves existing last-check statistics.
-Gate records identify revision, environment, command, precision/backend/ranks,
-tolerances, evidence, and passed/failed/skipped/unrun status. None is run merely
-by revising the plan.
+MPI tests are outside the automatic `test_*.jl` discovery. Run them in the
+examples environment, which carries MPI.jl, PartitionedArrays, and Metis:
+
+```sh
+julia --project=examples test/mpi/runtests.jl          # CPU, 1/2/4 ranks
+julia --project=examples test/mpi/runtests.jl --cuda   # CUDA, 1/2 ranks, one GPU per rank
+```
+
+The launcher uses `MPI.mpiexec()`, `Base.julia_cmd()`, and a per-run timeout
+(`FEMTOOLS_MPI_TEST_TIMEOUT`, default 300 s) that kills the job. The CUDA
+worker disables scalar indexing and errors when ranks outnumber local GPUs;
+it never shares one GPU between ranks. On a one-GPU machine run the one-rank
+case directly with `mpiexec -n 1 julia --project=examples
+test/mpi/thermal_worker.jl --cuda`. After a change to the package's
+`Project.toml`, `Pkg.resolve()` the examples environment so the developed
+FEMTools entry picks up new weak dependencies and extensions.
+The worker's independent affine T3 oracle uses consistent mass/source matrices
+and elementwise absolute Jacobian diagnostics. No CI job runs MPI or CUDA.
+A skipped or unrun GPU gate leaves the milestone incomplete. Results are
+recorded in `MPI_IMPLEMENTATION_PLAN.md`.
 
 Use Julia 1.12 for the current full-suite gate. The local Enzyme 0.13.181
 environment fails on Julia 1.13 with `AssertionError: VERSION < v"1.13"` in
@@ -224,6 +230,7 @@ tests.
 | I/O | temporary-file structure, values, invalid lengths/topology |
 | Frontend/example | parse plus small headless execution when maintained |
 | 2-D/3-D miniapp | inventory update, parse check, smallest practical headless run |
+| Partition metadata | `test/test_partition.jl`, then `test/mpi/runtests.jl` |
 | MPI | one-rank equivalence, two-rank halo/reduction, timeout-safe failure |
 | MPI/CUDA | device-resident staged halo/solve parity, scalar indexing disabled, distinct GPUs, collective-safe failures |
 | Performance | correctness gate plus warmed representative benchmark |

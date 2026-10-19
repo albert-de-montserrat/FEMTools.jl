@@ -17,10 +17,12 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [extensions]
 FEMToolsCUDAExt = "CUDA"
+FEMToolsMetisExt = "Metis"
 FEMToolsTriangulateExt = "Triangulate"
 
 [compat]
@@ -35,6 +37,7 @@ Gmsh = "0.3"
 JET = "0.11.5, 0.12"
 KernelAbstractions = "0.9"
 LinearAlgebra = "1.11, 1.12, 1.13"
+Metis = "1.5"
 Printf = "1.11, 1.12, 1.13"
 SparseArrays = "1.11, 1.12, 1.13"
 StaticArrays = "1.9.18"
@@ -47,10 +50,11 @@ Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 Gmsh = "705231aa-382f-11e9-3f0c-b7cb4346fdeb"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Triangulate = "f7e6ffb2-c36d-4f8f-a77e-16e897189344"
 
 [targets]
-test = ["Aqua", "JET", "Test", "StaticArrays", "DomainSets", "Gmsh", "SparseArrays", "Triangulate"]
+test = ["Aqua", "JET", "Test", "StaticArrays", "DomainSets", "Gmsh", "SparseArrays", "Triangulate", "Metis"]

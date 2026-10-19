@@ -63,8 +63,8 @@ function run_case(comm, FP, nels; uniform = false, ghost_only = false, backend =
             counts[node] += 1
         end
         chosen = findfirst(e -> all(n -> counts[n] > 1, problem.mesh.el2n[:, e]), 1:problem.mesh.nels)
-        owners = zeros(Int, problem.mesh.nels)
-        owners[chosen] = size - 1
+        owners = ones(Int, problem.mesh.nels)
+        owners[chosen] = size
         owners
     end
     context = MPIThermal.distribute(problem, comm; backend, root, assignment, workgroup = 32)

@@ -70,6 +70,9 @@ include("mesh/coloring.jl")
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
 
+# Host-side mesh partitioning for distributed runs; no MPI dependency.
+include("distributed/partition.jl")
+
 # Dynamic relaxation: the scatter kernels, Dirichlet enforcement, update
 # kernels, and pseudo-transient loop shared by every DR problem.
 include("dynamic_relaxation/solver.jl")

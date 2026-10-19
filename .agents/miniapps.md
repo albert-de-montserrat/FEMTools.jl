@@ -49,6 +49,7 @@ These exercise FEMTools solver states and public solver entry points.
 |---|---|---|
 | `examples/miniapps/thermal/2D_heat_diffusion/2D_heat_diffusion.jl` | structured Q2/Q9 | Multi-phase transient heat diffusion with the DR solver |
 | `examples/miniapps/thermal/2D_heat_diffusion_triangles/2D_heat_diffusion_triangles.jl` | structured T3 | Linear-triangle variant of the thermal DR problem |
+| `examples/miniapps/thermal/2D_heat_diffusion_MPI/2D_heat_diffusion_MPI.jl` | structured T3, Metis parts | MPI copy of the triangle variant; run under `mpiexec`, `--cuda`/`--float32` flags, `FEMTOOLS_MPI_N`/`FEMTOOLS_MPI_STEPS` sizes |
 | `examples/miniapps/thermal/2D_heat_diffusion_unstructured/2D_heat_diffusion_unstructured.jl` | Gmsh T3 with circular holes | Coupled lithostatic initialization and transient heat diffusion |
 | `examples/miniapps/thermal/2D_heat_diffusion_unstructured_T6/2D_heat_diffusion_unstructured_T6.jl` | Gmsh T6 with holes | Quadratic unstructured thermal/lithostatic workflow with node reordering |
 | `examples/miniapps/stokes/lithostatic_pressure2D/lithostatic_pressure2D.jl` | unstructured T3 | Dense-inclusion lithostatic-pressure solve and visualization |

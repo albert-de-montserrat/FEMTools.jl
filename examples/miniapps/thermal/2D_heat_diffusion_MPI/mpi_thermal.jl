@@ -1,6 +1,6 @@
 module MPIThermal
 
-using FEMTools, KernelAbstractions, StaticArrays, LinearAlgebra, SparseArrays
+using FEMTools, KernelAbstractions, StaticArrays, LinearAlgebra
 using MPI, Metis, PartitionedArrays, Serialization
 import KernelAbstractions as KA
 import PartitionedArrays as PA
@@ -31,63 +31,15 @@ function agree(value, comm; root = 0)
     return nothing
 end
 
-function element_assignment(mesh, nparts)
-    active = min(nparts, mesh.nels)
-    active == 1 && return zeros(Int, mesh.nels)
-    adjacency = generate_element_adjacency(mesh.el2n; shared = :face, dimension = 2)
-    rows, columns = Int[], Int[]
-    for (i, neighbors) in enumerate(adjacency), j in neighbors
-        push!(rows, i)
-        push!(columns, j)
-    end
-    graph = sparse(rows, columns, ones(Int, length(rows)), mesh.nels, mesh.nels)
-    return Int.(Metis.partition(graph, active)) .- 1
-end
-
 function partition_problem(problem, nparts; assignment = nothing)
     (; mesh, fields, bc) = problem
     mesh.element isa ReferenceElement{<:LinearElement{2, 3}} ||
         throw(ArgumentError("this example supports conforming 2D T3 meshes"))
     mesh.nels > 0 || throw(ArgumentError("the global mesh is empty"))
-    owners_e = isnothing(assignment) ? element_assignment(mesh, nparts) : assignment
-    length(owners_e) == mesh.nels || throw(DimensionMismatch("element assignment length"))
-    all(r -> 0 <= r < nparts, owners_e) || throw(ArgumentError("element assignment rank outside communicator"))
     all(a -> length(a) == mesh.nnodes, values(fields)) || throw(DimensionMismatch("nodal input length"))
-    incidence = [Int[] for _ in 1:mesh.nnodes]
-    for e in 1:mesh.nels, node in mesh.el2n[:, e]
-        push!(incidence[node], owners_e[e])
-    end
-    all(x -> !isempty(x), incidence) || throw(ArgumentError("orphan global node"))
-    foreach(unique!, incidence)
-    owner = minimum.(incidence)
-    shared = findall(x -> length(x) > 1, incidence)
-    shared_id = Dict(node => i for (i, node) in enumerate(shared))
-    constraints = Dict{Int, eltype(bc.vals)}()
-    for (node, value) in zip(bc.DoFs, bc.vals)
-        1 <= node <= mesh.nnodes || throw(ArgumentError("boundary node outside global mesh"))
-        haskey(constraints, node) && constraints[node] != value &&
-            throw(ArgumentError("conflicting boundary values at global node $node"))
-        constraints[node] = value
-    end
-    return map(0:(nparts - 1)) do rank
-        elements = findall(==(rank), owners_e)
-        touched = sort!(unique(vec(mesh.el2n[:, elements])))
-        owned = filter(n -> owner[n] == rank, touched)
-        ghosts = filter(n -> owner[n] != rank, touched)
-        nodes = vcat(owned, ghosts)
-        local_id = Dict(node => i for (i, node) in enumerate(nodes))
-        connectivity = map(n -> Int32(local_id[n]), mesh.el2n[:, elements])
-        boundary = Int32[local_id[n] for n in mesh.Γnodes if haskey(local_id, n)]
-        fixed = filter(n -> haskey(constraints, n), owned)
-        halo = findall(n -> haskey(shared_id, n), nodes)
-        halo_owned = count(i -> i <= length(owned), halo)
-        halo_ids = Int[shared_id[nodes[i]] for i in halo]
-        halo_owners = Int32[owner[nodes[i]] + 1 for i in halo]
-        (; nodes, elements, nowned = length(owned), nglobal = mesh.nnodes,
-            coords = mesh.coords[nodes], connectivity, boundary,
-            fields = map(a -> a[nodes], fields),
-            bc_nodes = Int32[local_id[n] for n in fixed], bc_values = [constraints[n] for n in fixed],
-            halo = Int32.(halo), halo_owned, halo_ids, halo_owners, nshared = length(shared))
+    assignment = isnothing(assignment) ? FEMTools.partition_elements(mesh, nparts) : assignment
+    return map(FEMTools.partition_mesh(mesh, assignment, nparts)) do part
+        (; part, fields = map(a -> a[part.nodes], fields), bc = FEMTools.localize_dirichlet(part, bc))
     end
 end
 
@@ -125,9 +77,11 @@ end
     field[indices[i]] = buffer[i]
 end
 
-struct ThermalContext{P, M, H, B}
+struct ThermalContext{P, F, D, M, H, B}
     comm::MPI.Comm
     part::P
+    fields::F
+    bc::D
     mesh::M
     halo::H
     backend::B
@@ -149,15 +103,15 @@ function distribute(problem, comm; backend = CPU(), root = 0, assignment = nothi
         parts = collective(private) do
             MPI.Comm_rank(private) == root ? partition_problem(problem, MPI.Comm_size(private); assignment) : nothing
         end
-        part = scatter_parts(parts, private; root)
+        (; part, fields, bc) = scatter_parts(parts, private; root)
         local_data = collective(private) do
             TDev = FEMTools.TA(backend)
             FP = eltype(eltype(part.coords))
             element = ReferenceElement(LinearElement{2, 3, FP})
-            coords, connectivity = TDev(part.coords), TDev(part.connectivity)
-            dofs, boundary = TDev(Int32.(1:length(part.nodes))), TDev(part.boundary)
+            coords, connectivity = TDev(part.coords), TDev(part.el2n)
+            dofs, boundary = TDev(Int32.(1:length(part.nodes))), TDev(part.Γnodes)
             # Carry physical boundaries explicitly: local exterior edges include interfaces.
-            geometry = TDev(precompute_geometry(part.coords, part.connectivity, element))
+            geometry = TDev(precompute_geometry(part.coords, part.el2n, element))
             mesh = Mesh{2, 1, Nothing, Nothing, typeof(coords), typeof(dofs), typeof(connectivity),
                 typeof(boundary), typeof(element), typeof(geometry)}(
                 nothing, nothing, coords, dofs, connectivity, boundary, length(part.nodes),
@@ -170,14 +124,14 @@ function distribute(problem, comm; backend = CPU(), root = 0, assignment = nothi
         distributed_parts = PA.distribute_with_mpi(LinearIndices((MPI.Comm_size(private),));
             comm = private, duplicate_comm = false)
         indices = map(distributed_parts) do p
-            n = part.halo_owned
+            n = count(<=(part.nowned), part.halo)
             PA.OwnAndGhostIndices(PA.OwnIndices(part.nshared, p, part.halo_ids[1:n]),
                 PA.GhostIndices(part.nshared, part.halo_ids[(n + 1):end], part.halo_owners[(n + 1):end]))
         end
         float = halo_buffer(local_data.FP, indices, distributed_parts, backend, length(part.halo))
         integer = halo_buffer(Int32, indices, distributed_parts, backend, length(part.halo))
         halo = (; float, integer, indices = local_data.halo_indices)
-        return ThermalContext(private, part, local_data.mesh, halo, backend, workgroup)
+        return ThermalContext(private, part, fields, bc, local_data.mesh, halo, backend, workgroup)
     catch
         MPI.free(private)
         rethrow()
@@ -253,11 +207,11 @@ end
 function prepare_state(context, material; CFL = 0.9, tolerance = 1.0e-8)
     return collective(context.comm) do
         dr = ThermalDiffusionDR(context.mesh, material; CFL, ϵ = tolerance)
-        for key in keys(context.part.fields)
-            copyto!(getproperty(dr, key), getproperty(context.part.fields, key))
+        for key in keys(context.fields)
+            copyto!(getproperty(dr, key), getproperty(context.fields, key))
         end
         TDev = FEMTools.TA(context.backend)
-        bc = DirichletBoundaryCondition(TDev(context.part.bc_nodes), TDev(context.part.bc_values))
+        bc = DirichletBoundaryCondition(TDev(context.bc.DoFs), TDev(context.bc.vals))
         (; dr, bc)
     end
 end
@@ -288,11 +242,7 @@ function gather_field(field, context; root = 0)
     gathered = MPI.gather(local_data, context.comm; root)
     return collective(context.comm) do
         MPI.Comm_rank(context.comm) == root || return nothing
-        result = Vector{eltype(field)}(undef, context.part.nglobal)
-        for chunk in gathered
-            result[chunk.ids] = chunk.values
-        end
-        result
+        FEMTools.reconstruct_owned(context.part.nglobal, [c.ids for c in gathered], [c.values for c in gathered])
     end
 end
 

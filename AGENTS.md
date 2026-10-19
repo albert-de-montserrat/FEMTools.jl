@@ -59,12 +59,13 @@ not implemented. Consult the distributed guide for the proposed MPI work.
 | `src/elements/` | Element tags, shape functions, and quadrature |
 | `src/mesh/` | Mesh containers, connectivity, geometry, sparsity, and coloring |
 | `src/boundary_conditions/` | Boundary-condition data and application |
+| `src/distributed/` | MPI-free mesh partition metadata for distributed runs |
 | `src/dynamic_relaxation/` | Shared DR iteration and update kernels |
 | `src/heat_diffusion/` | Thermal state, residual assembly, and solver wrapper |
 | `src/lithostatic_pressure/` | Pressure state, residual assembly, and solver wrapper |
 | `src/stokes/` | 2-D/3-D Stokes states, rheology, operators, forward and adjoint solvers |
 | `src/postprocess/` | Derived fields and VTK writers |
-| `ext/` | Optional CUDA backend mapping and Triangulate meshing |
+| `ext/` | Optional CUDA backend mapping, Triangulate meshing, and Metis partitioning |
 | `test/` | Unit, API, inference, allocation, convergence, and reference tests |
 | `examples/` | Runnable scientific drivers, plotting, meshing, and benchmarks |
 | `benchmarks/` | Exact-field verification, refinement, CUDA checks, and experiments |

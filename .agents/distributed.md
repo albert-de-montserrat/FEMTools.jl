@@ -2,20 +2,39 @@
 
 ## Current reality
 
-FEMTools.jl does not currently implement distributed-memory parallelism.
-`MPI.jl` is not a core, weak, test, or examples dependency. MPI runtime
-artifacts visible in the examples manifest arrive transitively and do not
-constitute MPI support.
+The package has MPI-free partition metadata but no distributed solver API.
+`MPI.jl` and PartitionedArrays are examples-only dependencies; Metis is a weak
+dependency.
+
+- `src/distributed/partition.jl` (internal names): `partition_mesh(mesh,
+  assignment, nparts)` returns one `MeshPartition` per part with serial node and
+  element IDs, owned-first local nodes, local connectivity, inherited physical
+  boundary nodes, and halo entries carrying a dense interface-node ID and owning
+  part. `localize_dirichlet` keeps owner constraints only; `reconstruct_owned`
+  rebuilds serial order and rejects missing or duplicate owners.
+  `partition_elements` (Metis extension) partitions the face-adjacency graph.
+- Parts are labelled `1:nparts`. A node is owned by its lowest incident part.
+- The shared DR loop accepts an `execution` keyword; `nothing` is the serial
+  path. An execution context supplies owner ranges, halo refresh/accumulate,
+  global reductions, and a collective guard through the `_dr_*` hooks in
+  `src/dynamic_relaxation/solver.jl`.
+- `examples/miniapps/thermal/2D_heat_diffusion_MPI/mpi_thermal.jl` is a working
+  T3 thermal prototype of plan phases 2-4 on that hook: PartitionedArrays
+  transport with KA pack/unpack and host staging, a private communicator, and
+  collective error agreement. `test/mpi/` launches its worker suite. CPU
+  1/2/4 ranks and one CUDA rank pass; the two-GPU gate is unrun. Gate records
+  live in `MPI_IMPLEMENTATION_PLAN.md`.
 
 Existing parallel foundations are local to one process/device:
 
 - KernelAbstractions kernels target CPU and optional GPU backends.
 - Atomix supports concurrent scatter within a backend.
 - Mesh coloring provides conflict-free element groups.
-- Meshes currently use process-local node and element numbering with no
-  owned/ghost distinction.
-- Solver norms, sums, maxima, pressure means, and spectral estimates are local
-  reductions.
+- `Mesh` itself has process-local numbering with no owned/ghost distinction;
+  ownership lives in `MeshPartition`.
+- Without an execution context, solver norms, sums, maxima, pressure means,
+  and spectral estimates are local reductions. Only the shared scalar DR loop
+  has hooks; Stokes reductions remain local.
 - VTK output is serial and unaware of partitions.
 
 Distributed work must therefore start with data ownership, not by wrapping the
@@ -67,7 +86,7 @@ maps, additive assembly accumulation, global DR reductions, CPU one/two/four-ran
 gates, and required one/two-GPU gates.
 CUDA iteration stays device-resident; the portable baseline stages packed halos
 through reusable host buffers and globally reduces device-computed scalars.
-These are planned choices, not implemented capabilities. Lithostatic reuse
+Lithostatic reuse
 precedes forward Stokes; adjoints, CUDA-aware transport optimization, scalable
 mesh loading, and parallel persistence have separate acceptance gates.
 
@@ -78,8 +97,9 @@ visualization. Direct MPI transport is a fallback for a demonstrated library
 integration blocker. Preserve ordinary local KA arrays and verify communicator
 ownership, local ordering, empty ranks, ghost-clearing semantics, CUDA buffer
 aliasing, and halo-only staging before adopting the distributed array adapter.
-CPU-only integration success is insufficient. These packages are proposed,
-not current dependencies or validated capabilities.
+CPU-only integration success is insufficient. The prototype uses
+PartitionedArrays with dense interface-node IDs as its index space; the choice
+stays provisional until the two-GPU gate passes.
 
 The first proposed solver combination is fixed conforming T3 thermal diffusion
 in Float32/Float64, with all ranks on CPU or all on CUDA. A high-order metadata
@@ -180,8 +200,8 @@ A CUDA skip is missing hardware coverage, not completion of the first milestone.
 - PartitionedArrays CPU/CUDA integration result and selected transport adapter.
 - Scalability ceiling of root-side Metis setup and later distributed partitioning.
 - Package compatibility ranges and supported MPI implementations.
-- Implementation of the specified lowest-incident-rank nodal ownership and
-  later pressure-layout maps; split-communicator and ghost-only-rank validation.
+- Later pressure-layout and element/IP field maps.
+- Whether the public distributed API wraps `MeshPartition` or replaces it.
 - CUDA-aware optimization availability; host staging is the required baseline.
 - WriteVTK integration details and checkpoint format/continuation contract.
 - CPU MPI CI and required multi-GPU hardware runner/deployment environments.
