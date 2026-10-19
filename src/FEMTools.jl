@@ -72,6 +72,7 @@ include("mesh/coloring.jl")
 # Boundary-condition containers and in-place application routines.
 include("boundary_conditions/boundary_conditions.jl")
 include("boundary_conditions/apply.jl")
+include("boundary_conditions/traction.jl")
 
 # Dynamic relaxation: the scatter kernels, Dirichlet enforcement, update
 # kernels, and pseudo-transient loop shared by every DR problem.
@@ -124,7 +125,7 @@ export order
 export Mesh, MixedMesh, MixedMeshCache, update_geometry!
 export QuadraturePointGeometry, ElementGeometry, element_geometry
 export DirichletBoundaryCondition, apply_bc!
-export BoundaryFacets, boundary_facets
+export BoundaryFacets, boundary_facets, TractionBoundaryCondition, PressureBoundaryCondition
 
 # Mesh construction and graph utilities.
 export generate_element2node,
@@ -177,6 +178,7 @@ export compute_strain_rate_stress_postprocess,
 # solver-loop utilities live here rather than in the exported user API.
 public TA, interp2ip, interp2ip_phase
 public apply_dirichlet!
+public assemble_boundary_load, assemble_boundary_load!
 public assemble_diffusion_matrices_atomix!,
     assemble_diffusion_matrices_colored!,
     assemble_lithostatic_pressure_matrices_atomix!,

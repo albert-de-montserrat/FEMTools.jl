@@ -20,6 +20,8 @@ import FEMTools
         :DirichletBoundaryCondition,
         :BoundaryFacets,
         :boundary_facets,
+        :TractionBoundaryCondition,
+        :PressureBoundaryCondition,
         :apply_bc!,
         :generate_element2node,
         :generate_node2element,

@@ -227,6 +227,12 @@ function _boundary_edge_paths_2d(nlocal::Int)
     end
 end
 
+# Compile-time edge paths for kernels; same tuples as the `Int` method.
+_boundary_edge_paths_2d(::Val{3}) = ((1, 2), (2, 3), (3, 1))
+_boundary_edge_paths_2d(::Val{4}) = ((1, 2), (2, 3), (3, 4), (4, 1))
+_boundary_edge_paths_2d(::Union{Val{6}, Val{7}}) = ((1, 4, 2), (2, 5, 3), (3, 6, 1))
+_boundary_edge_paths_2d(::Union{Val{8}, Val{9}}) = ((1, 5, 2), (2, 6, 3), (3, 7, 4), (4, 8, 1))
+
 _boundary_face_paths_3d(nlocal::Int) = _boundary_face_paths_3d(Val(nlocal))
 _boundary_face_paths_3d(::Val{4}) =
     ((1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4))

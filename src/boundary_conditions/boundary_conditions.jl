@@ -48,18 +48,3 @@ struct TangentialFreeSlipBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
     DoFs::T
     vals::V
 end
-
-"""
-    TractionBoundaryCondition(Γ, DoFs, vals)
-
-Container for a traction (Neumann) boundary condition.
-
-Structure mirrors `DirichletBoundaryCondition`: `Γ` is the boundary marker,
-`DoFs` are the traction degrees of freedom, and `vals` are the prescribed
-traction values.
-"""
-struct TractionBoundaryCondition{D, T, V} <: AbstractBoundaryCondition
-    Γ::D
-    DoFs::T
-    vals::V
-end

@@ -31,3 +31,68 @@ facet_pairs(f) = Set(zip(Array(f.elements), Array(f.local_edges)))
     mixed = MixedMesh(mesh, ReferenceElement(LinearElement{2, 3, Float64}); workgroup = 1)
     @test facet_pairs(boundary_facets(mixed, x -> x[2] ≈ 1.0)) == facet_pairs(top)
 end
+
+@testset "boundary load" begin
+    element = ReferenceElement(QuadraticElement{2, 6, Float64})
+    mesh = Mesh(CPU(), (0.0 .. 2.0) × (0.0 .. 1.0), element, (4, 2); workgroup = 1)
+    coords = Array(mesh.coords)
+    el2n = Array(mesh.el2n)
+    top = boundary_facets(mesh, x -> x[2] ≈ 1.0)
+    bottom = boundary_facets(mesh, x -> x[2] ≈ 0.0)
+    p = 3.0
+    load(bc, m = mesh) = map(Array, FEMTools.assemble_boundary_load(bc, m; workgroup = 1))
+
+    F = load(PressureBoundaryCondition(top, p))
+    @test sum(F[2]) ≈ -p * 2
+    @test abs(sum(F[1])) < 1.0e-12
+    @test sum(load(PressureBoundaryCondition(top, x -> x[1]))[2]) ≈ -2.0
+    # The outward normal of the base points in -y.
+    @test sum(load(PressureBoundaryCondition(bottom, p))[2]) ≈ p * 2
+    @test sum(load((PressureBoundaryCondition(top, p), PressureBoundaryCondition(bottom, p)))[2]) ≈ 0 atol = 1.0e-12
+
+    Ft = load(TractionBoundaryCondition(top, SVector(1.0, 0.0)))
+    @test sum(Ft[1]) ≈ 2.0
+    @test abs(sum(Ft[2])) < 1.0e-12
+    @test load(TractionBoundaryCondition(top, (1.0, 0.0))) == Ft
+    @test_throws "traction must be" TractionBoundaryCondition(top, 1.0)
+    @test_throws "pressure must be" PressureBoundaryCondition(top, SVector(1.0, 0.0))
+
+    # Consistent load of a straight quadratic edge: h/6, 2h/3, h/6.
+    edge_nodes = findall(x -> x[2] ≈ 1.0 && x[1] <= 0.5 + 1.0e-12, coords)
+    F1 = load(PressureBoundaryCondition(boundary_facets(mesh, edge_nodes), p))
+    h = 0.5
+    expected = Dict(0.0 => h / 6, 0.25 => 2h / 3, 0.5 => h / 6)
+    @test all(F1[2][n] ≈ -p * expected[coords[n][1]] for n in edge_nodes)
+    @test count(!iszero, F1[2]) == 3
+
+    top_nodes = findall(x -> x[2] ≈ 1.0, coords)
+    remesh(c) = Mesh(CPU(), c, el2n, element; workgroup = 1)
+
+    # A symmetric bump on one edge leaves the total load unchanged but pushes
+    # the edge's corners apart.
+    bumped = copy(coords)
+    mid = findfirst(x -> x ≈ SVector(0.25, 1.0), coords)
+    bumped[mid] = SVector(0.25, 1.1)
+    bumped_mesh = remesh(bumped)
+    Fb = load(PressureBoundaryCondition(boundary_facets(bumped_mesh, top_nodes), p), bumped_mesh)
+    @test sum(Fb[2]) ≈ -p * 2
+    @test abs(sum(Fb[1])) < 1.0e-12
+    left, right = findfirst(x -> x ≈ SVector(0.0, 1.0), coords), findfirst(x -> x ≈ SVector(0.5, 1.0), coords)
+    @test Fb[1][left] * Fb[1][right] < 0
+
+    # Raising the top-right corner by 0.2 tilts the last edge: ΣFx = p Δy.
+    tilted = copy(coords)
+    corner = findfirst(x -> x ≈ SVector(2.0, 1.0), coords)
+    edge_mid = findfirst(x -> x ≈ SVector(1.75, 1.0), coords)
+    tilted[corner] = SVector(2.0, 1.2)
+    tilted[edge_mid] = SVector(1.75, 1.1)
+    tilted_mesh = remesh(tilted)
+    Ftilt = load(PressureBoundaryCondition(boundary_facets(tilted_mesh, top_nodes), p), tilted_mesh)
+    @test sum(Ftilt[1]) ≈ p * 0.2
+
+    element32 = ReferenceElement(QuadraticElement{2, 6, Float32})
+    mesh32 = Mesh(CPU(), (0.0f0 .. 2.0f0) × (0.0f0 .. 1.0f0), element32, (4, 2); workgroup = 1)
+    F32 = load(PressureBoundaryCondition(boundary_facets(mesh32, x -> x[2] ≈ 1), 3.0f0), mesh32)
+    @test eltype(F32[1]) == Float32
+    @test sum(F32[2]) ≈ -6.0f0
+end
