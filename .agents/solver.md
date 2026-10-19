@@ -216,6 +216,16 @@ selected backend. The 2-D pressure residual and adjoint treat it as an input
 coefficient; the specialized 3-D cell-local pressure residual does not yet
 carry `Q`.
 
+Boundaries without a Dirichlet constraint are traction-free unless a 2-D
+`traction` keyword supplies `TractionBoundaryCondition`/`PressureBoundaryCondition`
+loads. Their nodal load `F_i = ∫_Γ N_i t ds` (`t = −p n` for a pressure,
+outward `n`) is assembled once per solve from the current coordinates and the
+solver drives `R^v − F → 0`; it is subtracted before Dirichlet zeroing, so a
+Dirichlet component overrides it. The load is velocity-independent, so the
+momentum Jacobian, Gershgorin bounds, and pressure scaling are unchanged. The
+3-D state path rejects `traction`; its `load` keyword takes nodal loads
+directly.
+
 In 2-D, velocity and pressure live on the two fields of `MixedMesh` (commonly
 T7/P1-discontinuous). In the 3-D state path, velocity is continuous T11 or
 Hex27/Q2 and pressure has four cell-local linear modes.

@@ -65,7 +65,12 @@ implementation; unsupported combinations must fail explicitly.
 ### Meshes and boundary conditions
 
 - Types: `AbstractMesh`, `Mesh`, `MixedMesh`, `MixedMeshCache`,
-  `AbstractBoundaryCondition`, `DirichletBoundaryCondition`.
+  `AbstractBoundaryCondition`, `DirichletBoundaryCondition`,
+  `TractionBoundaryCondition`, `PressureBoundaryCondition`, `BoundaryFacets`.
+- Boundary edges: `boundary_facets(mesh, nodes_or_predicate)` selects 2-D
+  boundary edges whose nodes all lie in the set; empty selections throw.
+  Traction/pressure loads are constants or callables of coordinates in mesh
+  units; public `assemble_boundary_load[!]` integrates them.
 - Mesh producers: `generate_element2node`, `generate_node2element`,
   `generate_element_adjacency`,
   `generate_boundary_elements`, `generate_coordinates`, `generate_dofs`,
