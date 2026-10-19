@@ -96,3 +96,64 @@ end
     @test eltype(F32[1]) == Float32
     @test sum(F32[2]) ≈ -6.0f0
 end
+
+@testset "stokes under surface pressure" begin
+    backend = CPU()
+    workgroup = 1
+    Δt = 1.0
+    element_v = ReferenceElement(QuadraticElement{2, 6, Float64})
+    element_P = ReferenceElement(LinearElement{2, 3, Float64})
+    mesh_v = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0), element_v, (4, 4); workgroup)
+    mesh = MixedMesh(mesh_v, element_P; workgroup)
+    coords = Array(mesh.coords)
+    p = 2.0
+
+    # Free slip on the walls and the base; the top carries the load.
+    wall_nodes = findall(x -> x[1] ≈ 0 || x[1] ≈ 1, coords)
+    base_nodes = findall(x -> x[2] ≈ 0, coords)
+    bc_vx = DirichletBoundaryCondition(nothing, wall_nodes, zeros(length(wall_nodes)))
+    bc_vy = DirichletBoundaryCondition(nothing, base_nodes, zeros(length(base_nodes)))
+    top = boundary_facets(mesh, x -> x[2] ≈ 1)
+
+    function solve(traction; ρ0 = (0.0,), g = (0.0, 0.0))
+        stokes = StokesDR(
+            backend, mesh.nnodes, mesh.nnodesP,
+            StokesMaterial(; η = (1.0,), ηb = (Inf,), G = (Inf,), α = (0.0,), ρ0, g),
+        )
+        γP = zeros(mesh.nnodesP)
+        assemble_viscosity_weighted_pressure_scaling!(γP, stokes, mesh, 1.0, Δt; workgroup)
+        stats = solve_stokes_dyrel!(
+            stokes, mesh, bc_vx, bc_vy, Δt, γP;
+            traction, workgroup, ncheck = 10, ϵ_tol = 1.0e-9,
+            iterMax = 20_000, total_iterMax = 20_000, verbose = false,
+        )
+        return stats, stokes
+    end
+
+    stats, stokes = solve(PressureBoundaryCondition(top, p))
+    @test stats.converged
+    @test all(P -> isapprox(P, p; rtol = 1.0e-5), stokes.P)
+    @test maximum(abs, stokes.v.y) < 1.0e-6
+    # The top corners are wall nodes, so their vx stays prescribed.
+    @test all(iszero, Array(stokes.v.x)[wall_nodes])
+
+    left_top = boundary_facets(mesh, x -> x[2] ≈ 1 && x[1] <= 0.5 + 1.0e-12)
+    right_top = boundary_facets(mesh, x -> x[2] ≈ 1 && x[1] >= 0.5 - 1.0e-12)
+    _, split = solve((PressureBoundaryCondition(left_top, p), PressureBoundaryCondition(right_top, p)))
+    @test split.P ≈ stokes.P
+
+    # Under gravity the static pressure is the load plus the overburden.
+    stats_g, gravity = solve(PressureBoundaryCondition(top, p); ρ0 = (1.0,), g = (0.0, -1.0))
+    @test stats_g.converged
+    P_exact = [p + 1 - coords[n][2] for n in Array(mesh.el2nP)]
+    @test Array(gravity.P)[Array(mesh.DoFsP)] ≈ P_exact rtol = 1.0e-4
+
+    element3 = ReferenceElement(QuadraticElement{3, 27, Float64})
+    mesh3 = Mesh(backend, (0.0 .. 1.0) × (0.0 .. 1.0) × (0.0 .. 1.0), element3, (1, 1, 1))
+    @test_throws "implemented only in 2-D" solve_stokes_dyrel!(
+        ntuple(_ -> zeros(mesh3.nnodes), 3), zeros(4, mesh3.nels), mesh3,
+        ones(Int, mesh3.nels), (1.0,), (1.0,), (0.0, 0.0, 0.0),
+        ntuple(_ -> mesh3.Γnodes, 3);
+        traction = PressureBoundaryCondition(top, p), verbose = false,
+    )
+end

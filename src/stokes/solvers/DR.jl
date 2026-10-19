@@ -7,6 +7,12 @@
     return nothing
 end
 
+const _TRACTION_2D_ERROR = "traction boundary conditions are implemented only in 2-D"
+
+# The momentum residual balances a traction load `F` as `R − F`.
+_subtract_boundary_load!(Rv, ::Nothing) = nothing
+_subtract_boundary_load!(Rv, F) = foreach((R, f) -> R .-= f, Rv, F)
+
 # Preconditioner-diagnostic labels reported by `_checked_λmax`, indexed by
 # spatial direction.
 const _VELOCITY_LABELS = ("stokes vx", "stokes vy", "stokes vz")
@@ -232,6 +238,11 @@ the raw `geo_v`, `geo_P` arrays.
   the legacy `ηb` choice.
 - `Qq`, `Q2D`: optional nonnegative pressure-node source weights and signed
   plane-strain area rate. The solver normalizes them so `∑ Q dΩ = Q2D`.
+- `traction = nothing`: a [`TractionBoundaryCondition`](@ref) or
+  [`PressureBoundaryCondition`](@ref), or a tuple of them, applied as a dead
+  load: [`FEMTools.assemble_boundary_load`](@ref) integrates it once per call
+  from the current coordinates, so the momentum Jacobian is unchanged. A
+  Dirichlet constraint overrides the load in its component. 2-D only.
 - `P_old = dr.P0`: accepted pressure of the previous step in the continuity
   rate `(P - P_old)/(KΔt)`. A nodal vector is interpolated; an `nq × nels`
   matrix is read directly at the velocity quadrature points. With
@@ -312,8 +323,10 @@ function solve_stokes_dyrel!(
         finite_K = plastic isa DruckerPragerCap,
         Q2D = nothing,
         Qq = nothing,
+        traction = nothing,
         _thermal = nothing,
     ) where {D}
+    traction === nothing || D == 2 || throw(ArgumentError(_TRACTION_2D_ERROR))
     ip_size = (length(element_v.integration_points.ω), mesh_stokes.nels)
     P_old isa AbstractMatrix && size(P_old) != ip_size && throw(
         DimensionMismatch(
@@ -351,6 +364,8 @@ function solve_stokes_dyrel!(
 
     foreach(a -> fill!(a, 0), rate)
     foreach(a -> fill!(a, 0), Rv0)
+    boundary_load = traction === nothing ? nothing :
+        assemble_boundary_load(traction, mesh_stokes; workgroup)
 
     # Shared by every element, so the residual kernels read them from the backend
     # rather than carry them in the argument pack of each of their launches.
@@ -461,6 +476,7 @@ function solve_stokes_dyrel!(
             Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
             nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
         )
+        _subtract_boundary_load!(Rv, boundary_load)
         _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
 
         err_P = norm(dr.RP ./ M_P) / sqrt(mesh_stokes.nnodesP)
@@ -588,6 +604,7 @@ function solve_stokes_dyrel!(
                 Nq_v, Nq_P, ∂N∂ξ_v, valNV, valNP, workgroup,
                 nothing, nothing, _plastic_history_gamma(dr.plastic_history), dr.Pf,
             )
+            _subtract_boundary_load!(Rv, boundary_load)
 
             _apply_dirichlet_all!(Rv, v_nodes, zero_bc, backend, workgroup)
             _apply_dirichlet_all!(rate, v_nodes, zero_bc, backend, workgroup)
@@ -899,7 +916,9 @@ function solve_stokes_dyrel!(
         velocity_step = 0.6, γP = 0.2, bc_values = nothing, load = nothing,
         workgroup = 256, verbose = true,
         workspace = Stokes3DWorkspace(velocity, pressure, mesh, fixed_nodes),
+        traction = nothing,
     )
+    traction === nothing || throw(ArgumentError(_TRACTION_2D_ERROR))
     all(length(workspace.zero_bc[i]) == length(fixed_nodes[i]) for i in 1:3) ||
         throw(
         DimensionMismatch(
