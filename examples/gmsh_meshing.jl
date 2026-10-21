@@ -102,12 +102,13 @@ end
 `half_width` retains the original square-inclusion interface.  Supplying
 `half_width_x` and `half_width_y` allows anisotropic inclusions, while
 `refinement > 1` grades the mesh from `mesh_size / refinement` at the
-interface to `mesh_size` away from it.
+interface to `mesh_size` away from it. `rotation` turns the inclusion
+counter-clockwise by that many radians about its centre `(cx, cy)`.
 """
 function build_gmsh_t7_rectangle_inclusion_mesh(;
         Lx, Ly, cx, cy, half_width = nothing, half_width_x = nothing,
         half_width_y = nothing, max_area = nothing, refinement = 1.0,
-        refinement_distance = nothing)
+        refinement_distance = nothing, rotation = 0.0)
     half_width_x = isnothing(half_width_x) ? half_width : half_width_x
     half_width_y = isnothing(half_width_y) ? half_width : half_width_y
     isnothing(half_width_x) && throw(ArgumentError("provide half_width or half_width_x"))
@@ -118,31 +119,42 @@ function build_gmsh_t7_rectangle_inclusion_mesh(;
     mesh_size = _mesh_size(max_area, Lx, Ly)
     xlo, xhi = cx - half_width_x, cx + half_width_x
     ylo, yhi = cy - half_width_y, cy + half_width_y
-    0 < xlo < xhi < Lx || throw(ArgumentError("rectangle must fit inside the domain in x"))
-    -Ly < ylo < yhi < 0 || throw(ArgumentError("rectangle must fit inside the domain in y"))
+    sθ, cθ = sincos(rotation)
+    corners = [
+        (cx + cθ * dx - sθ * dy, cy + sθ * dx + cθ * dy)
+        for dx in (-half_width_x, half_width_x), dy in (-half_width_y, half_width_y)
+    ]
+    all(c -> 0 < c[1] < Lx, corners) || throw(ArgumentError("rectangle must fit inside the domain in x"))
+    all(c -> -Ly < c[2] < 0, corners) || throw(ArgumentError("rectangle must fit inside the domain in y"))
     gmsh.initialize()
     try
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("rectangular_inclusion")
         rectangle = gmsh.model.occ.addRectangle(0, -Ly, 0, Lx, Ly)
         inclusion = gmsh.model.occ.addRectangle(xlo, ylo, 0, 2half_width_x, 2half_width_y)
-        gmsh.model.occ.fragment([(2, rectangle)], [(2, inclusion)])
+        iszero(rotation) ||
+            gmsh.model.occ.rotate([(2, inclusion)], cx, cy, 0.0, 0.0, 0.0, 1.0, rotation)
+        _, fragments = gmsh.model.occ.fragment([(2, rectangle)], [(2, inclusion)])
         gmsh.model.occ.synchronize()
         gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
         if refinement > 1
-            tol = sqrt(eps(Float64)) * max(Lx, Ly)
-            interface_curves = Int32[]
-            for (dim, tag) in gmsh.model.getEntities(1)
-                xmin, ymin, _, xmax, ymax, _ = gmsh.model.getBoundingBox(dim, tag)
-                xmin >= xlo - tol && xmax <= xhi + tol &&
-                    ymin >= ylo - tol && ymax <= yhi + tol && push!(interface_curves, tag)
-            end
+            interface_curves = [tag for (_, tag) in gmsh.model.getBoundary(fragments[2], false, false)]
             distance = isnothing(refinement_distance) ? max(2half_width_x, 2half_width_y) : refinement_distance
             _refine_near_curves!(interface_curves, mesh_size / refinement, mesh_size, distance)
         end
         coords, el2n = FEMTools.add_t7_bubbles!(_gmsh_triangles(2)...)
         outer_nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, Lx, -Ly, 0.0)
-        interface_nodes = FEMTools.rectangle_boundary_nodes(coords, xlo, xhi, ylo, yhi)
+        # Interface nodes lie on the rectangle's edges in its own rotated frame.
+        tol = sqrt(eps(Float64)) * max(Lx, Ly)
+        function on_interface(c)
+            u = abs(cθ * (c[1] - cx) + sθ * (c[2] - cy))
+            w = abs(-sθ * (c[1] - cx) + cθ * (c[2] - cy))
+            return u ≤ half_width_x + tol && w ≤ half_width_y + tol &&
+                (abs(u - half_width_x) ≤ tol || abs(w - half_width_y) ≤ tol)
+        end
+        interface_nodes = iszero(rotation) ?
+            FEMTools.rectangle_boundary_nodes(coords, xlo, xhi, ylo, yhi) :
+            eltype(outer_nodes)[i for i in eachindex(coords) if on_interface(coords[i])]
         return coords, el2n, outer_nodes, interface_nodes
     finally
         gmsh.isInitialized() == 1 && gmsh.finalize()
