@@ -81,7 +81,10 @@ sensitivity against the proposed 2% gate, and compares the elastic displacement
 with the existing Mogi line source driven by the *measured expansion*. Domain
 truncation and finite chamber size affect that approximate spatial oracle;
 it is not an exact pressure or injected-area solution. A printed `NOT YET` is
-an unmet time-step gate, not a successful convergence claim.
+an unmet time-step gate, not a successful convergence claim. On the default
+mesh (1221 cells), halving Δt changes the vertical displacement by 0.48%
+(PASS against 2%), and the elastic-host displacement differs from the
+same-area Mogi line source by 13.4%, systematically below it at every station.
 
 Outputs are `<case>_budget.csv`, `<case>_stations.csv`, and `<case>.jls` for the
 three cases. CSV headers carry SI units; displacement includes its initial zero
@@ -278,9 +281,11 @@ grids at a fixed physical withdrawal duration.
 
 Next: finer mesh levels (now that `surface_size` co-scales, a true h-refinement
 sequence should close the remaining 3.7–5.5% mesh gap) and a much wider domain
-sweep (100s of km) to test truncation properly; an iterated (Gauss–Newton)
-fit for the other targets (error bars from `posterior_σ`); uncertain
-initial memory; pressure-dependent feeding; and the plan's model-family
-comparison (elastic vs viscoelastic, constant vs pressure-dependent feeding). The later multi-step adjoint needs its own
+sweep (100s of km) to test truncation properly; uncertain initial memory
+(low-dimensional spin-up modes); pressure-dependent feeding and the plan's
+E-P / V-C / V-P model-family comparison with known-rheology and no-recharge
+controls; the supply-change Gauss–Newton test repeated over several truths,
+noise seeds, and the event-end and vertical-only samplings; then withheld-cycle
+prediction. The later multi-step adjoint needs its own
 independent transpose/gradient gate. These prototypes make none of those
 publication claims by themselves.
