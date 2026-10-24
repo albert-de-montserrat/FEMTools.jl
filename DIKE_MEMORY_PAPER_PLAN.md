@@ -170,6 +170,26 @@ within 1% of an independent FD plateau with expected Taylor behavior. Report
 achieved limits. Rerun relevant adjoint tests after current solver edits. No
 publication figure from unqualified dike memory.
 
+**Status (24 October 2026, fixed-mesh linear Maxwell plane-strain chamber):**
+
+- FD step plateau (item 3, Jacobian used by S2): **passes**. At
+  `fd_step ∈ {0.20, 0.05, 0.02, 0.01}` the two finest steps agree in marginal
+  `σ(log recharge)` to 0.006% in all sampling experiments; the default
+  `fd_step = 0.02` lies on the plateau. ±5%/±20% paired-perturbation
+  comparisons and controlled-initial-state repeats are not yet run.
+- Time step: **passes** (see S1).
+- Mesh/domain refinement: **open**. With the station-region `surface_size`
+  co-scaled with `√max_area`, successive mesh levels change the 9-station L2
+  displacement by 3.7–5.5% (bounded but non-monotone); the central-station
+  `uz` sequence is monotone (99.68 → 99.46 → 99.33 → 98.96 mm). Domain widths
+  of 20–160 km change it by 3.1–5.6%, non-monotone, with the widest domain
+  swinging back toward the smallest. Neither meets the 2% gate; all
+  quantitative chamber results are provisional until it closes.
+- Items 1 (old dike step controls), 4 (independent tiny full-system transpose),
+  and 5 (multi-step directional FD/Taylor checks of the adjoint) are not yet run.
+  The chamber pilots use central finite differences of full forward runs, not
+  the adjoint.
+
 ### S1 — Plane-strain chamber benchmark and synthetic baseline
 
 Use the existing plane-strain circular/elliptical cavity solutions and Mogi
@@ -196,6 +216,25 @@ response before interpreting 2-D synthetic recovery. A spherical Segall benchmar
 and the targeted 3-D comparison follow after the synthetic workflow is settled;
 they do not block S2–S4 in plane strain.
 
+**Status (24 October 2026):** a fixed-mesh linear Maxwell chamber (circular
+chamber at 4 km depth, concentric shell, nearly elastic host; three cycles of
+40, 50, and 30 days, each ending in a ten-day withdrawal) is implemented in
+module `ChamberMemory2D`
+([chamber_memory_setup2D.jl](examples/stokes/volcano/chamber_memory_setup2D.jl))
+and tested in `test/test_chamber_memory.jl`.
+
+- Discrete continuity budget (pressure quadrature, divergence-integrated
+  expansion): **passes**, maximum relative error ≈ 5e-6, decreasing with mesh
+  refinement (5.40e-6 → 4.48e-6).
+- Time step: **passes**; halving Δt changes the vertical displacement history
+  by 0.48% at fixed physical withdrawal duration.
+- Elastic reference: the elastic-host FEM displacement differs from a Mogi line
+  source given the same measured area change by ≈13%. The line source is an
+  approximate oracle; finite chamber size and domain truncation are not yet
+  separated, so this is a consistency check, not a passed benchmark. The
+  plane-strain circular-cavity solution is not yet compared.
+- Mesh/domain: **open** (see S0).
+
 ### S2 — Identifiability before design
 
 Compare three model families: E-P (elastic, pressure-dependent recharge),
@@ -213,6 +252,17 @@ actual noisy inversions. Variable supply and viscoelasticity may coexist.
 **Gate:** classify regimes as data-resolved, prior-dominated, or unresolved.
 Demonstrate separation with uncertain rheology before promising design gains.
 In unresolved cases retain alternative histories and supply bounds.
+
+**Status (24 October 2026): open; first plane-strain classification only.**
+With shell viscosity, withdrawal amplitude, and magma bulk modulus uncertain,
+the recent supply change (last 30 days relative to before) is data-resolved
+and the absolute recharge amplitude is prior-dominated (see
+[prototype results](#plane-strain-chamber-prototype-results-october-2026)).
+This rests on one synthetic configuration with known geometry and initial
+state, constant (not pressure-dependent) recharge, and local Gaussian or
+Gauss–Newton inference. The E-P/V-C/V-P comparison, no-recharge and
+known-rheology controls, uncertain initial memory, and varied repose intervals
+remain to be run.
 
 ### S3 — Recovery, withheld cycles, and Svartsengi
 
@@ -337,15 +387,108 @@ campaign outside the minimum paper.
 
 ## Immediate next actions
 
-1. Implement the fixed-mesh linear plane-strain chamber pilot using the existing
-   FEMTools mesher, finite-K solver, normalized source, and history updates.
-2. Run S0's no-plasticity/fixed/tied controls and separately qualify the current
-   compressible/history adjoint.
-3. Run the small 2-D S2 pilot with uncertain rheology and withdrawals; decide
-   whether spatial design can help before building all its adjoint kernels.
-4. Obtain real observation products and define the training/held-out split.
-5. Freeze target windows, priors/noise, metrics, and gates before production;
+The fixed-mesh linear plane-strain chamber pilot and a first S2 pilot with
+uncertain viscosity, withdrawals, and compressibility exist. In order:
+
+1. Close the S0 mesh/domain gate: finer nested mesh levels (keeping
+   `surface_size ∝ √max_area`) and domains of hundreds of km, against the 2%
+   gate. Re-check the elastic reference against the plane-strain cavity
+   solution, separating finite-source and finite-domain error.
+2. Add uncertain initial memory as low-dimensional spin-up modes and repeat
+   the supply-change identifiability test.
+3. Add pressure-dependent feeding `Q_in = C_f (p_deep − p)` and run the
+   E-P / V-C / V-P model-family comparison with known-rheology and no-recharge
+   controls.
+4. Repeat the supply-change Gauss–Newton test for several truths and noise
+   seeds, and for event-end and vertical-only sampling.
+5. Then S3 withheld-cycle prediction. S6 (3-D) stays after the 2-D workflow.
+6. Separately qualify the compressible/history adjoint (S0 items 4–5) before
+   using it in place of finite differences, and run the old dike-step controls
+   (S0 item 1) if dike results are to be used.
+7. Obtain real observation products and define the training/held-out split.
+8. Freeze target windows, priors/noise, metrics, and gates before production;
    retain failed gates and negative results.
+
+### Continuing the work
+
+- Run commands for every chamber driver are listed at the top of
+  [CHAMBER_MEMORY.md](examples/stokes/volcano/CHAMBER_MEMORY.md). Run from the
+  repository root with `julia --project=examples ...`. Tests:
+  `julia --project=. -e 'include("test/test_chamber_memory.jl")'`.
+- Drivers in `examples/stokes/volcano/`: `chamber_memory2D.jl` (budget,
+  time step, elastic vs Mogi), `chamber_memory_convergence2D.jl` (mesh and
+  domain sweeps), `chamber_memory_fd_plateau2D.jl`,
+  `chamber_memory_identifiability2D.jl`, `chamber_memory_cycle_sweep2D.jl`,
+  `chamber_memory_supply_change2D.jl`, `chamber_memory_gauss_newton2D.jl`, and
+  `chamber_memory_figures2D.jl` (plots saved output; no simulation). Reusable
+  functions (`build_chamber_memory_mesh`, `chamber_cycle_history` with
+  per-cycle `withdrawal_fraction`, `run_chamber_memory`, `pilot_setup`,
+  `chamber_identifiability_pilot`, `chamber_gauss_newton`) live in module
+  `ChamberMemory2D` in `chamber_memory_setup2D.jl`.
+- Parallelism: on the laptop used so far, Julia threads made these small 2-D
+  CPU runs about 3× slower (one 4-step forward run: 152 s with 1 thread, 481 s
+  with 4, 436 s with 10), because KernelAbstractions per-iteration overhead
+  dominates on the ~1221-cell mesh and dynamic relaxation needs ~16,000
+  pseudo-iterations per step. Those absolute timings may be inflated by
+  machine state, but a threaded sweep independently ran ~3× slower per step.
+  Run each forward solve single-threaded and parallelize independent forward
+  runs across processes: `chamber_identifiability_pilot` and
+  `chamber_gauss_newton` take a `mapper` keyword, and the supply-change and
+  Gauss–Newton drivers use `Distributed.pmap` over `CHAMBER_WORKERS` workers
+  (default 4). On a larger machine set `CHAMBER_WORKERS` to the physical core
+  count, and re-measure threaded performance (especially on the finer meshes
+  needed for item 1) before changing this advice.
+
+## Plane-strain chamber prototype results (October 2026)
+
+Detail, tables, and caveats are in
+[CHAMBER_MEMORY.md](examples/stokes/volcano/CHAMBER_MEMORY.md). These are
+prototype results on one synthetic configuration with known geometry and
+initial state, constant recharge, and local Gaussian or Gauss–Newton
+inference. The S0 mesh/domain gate is open, so every number below is
+provisional. Rates are m²/s and areas m² per unit strike.
+
+- **Qualification.** Budget closure ≈ 5e-6 relative, 0.48% change on halving
+  Δt, FD plateau to 0.006%, elastic host vs same-area Mogi line source ≈13%
+  (approximate oracle). Mesh L2 change 3.7–5.5% and domain (20–160 km) change
+  3.1–5.6%, both non-monotone: the mesh/domain gate is open. Earlier
+  non-monotone mesh behavior was caused by `surface_size` not being co-scaled
+  with `max_area`; the sweep now co-scales it.
+- **Setup.** Central full-history finite-difference Jacobians in log
+  parameters; 3 mm Gaussian noise; 100 noise realizations; priors σ = 0.5 in
+  log except shell viscosity (σ = 1.0); truth ×1.2 recharge, ×1.5 viscosity,
+  ×1.3 withdrawals, ×0.8 magma bulk modulus, ×0.8 recent supply ratio.
+- **Fixing nuisance parameters is overconfident.** With uncertain viscosity
+  and withdrawal amplitude, fixing them at nominal understates σ(log recharge
+  amplitude) by ≈8× (dense sampling) to >60× (event-end sampling), with ~0%
+  interval coverage versus 96–100% when marginalized.
+- **Repetition alone does not separate supply from withdrawal.** Identical
+  repeated cycles shrink the fixed-nuisance σ but leave recharge and
+  withdrawal amplitude correlated near −1; varied per-cycle withdrawal
+  fractions at equal total withdrawal do not help.
+- **Absolute recharge amplitude is prior-dominated** once magma compressibility
+  is uncertain: marginal σ ≈ 0.25 against a 0.5 prior for one cycle and ≈ 0.2
+  for five. Displacement constrains roughly recharge times the fraction that
+  expands the chamber rather than compressing magma.
+- **The recent supply change is data-resolved.** For a 20% decline in the
+  final 30 days, σ(log ratio) is 0.030–0.035 under every nuisance subset,
+  whereas σ(log amplitude) ranges from 0.004 (nothing marginalized) to 0.248
+  (all marginalized). The one-step linear estimate under-covers (0.88, bias
+  +0.027); an iterated Gauss–Newton MAP fit converges in three iterations and
+  gives bias +0.002, σ 0.042, RMSE 0.041, coverage 0.96.
+- **Observationally equivalent alternatives.** The converged nuisance
+  parameters differ from the truth (less supply, stiffer magma; log offsets
+  recharge −0.02 vs +0.18, bulk modulus +0.04 vs −0.22) yet fit the data to
+  1.7% of the noise: concrete alternative absolute-supply histories the data
+  cannot exclude.
+
+Implications: these results support a *supply change* rather than absolute
+amplitude as the primary target and give a first plane-strain S2
+classification (recent change data-resolved; absolute amplitude
+prior-dominated with uncertain compressibility). They do not yet test
+pressure-dependent feeding, the E-P/V-C/V-P families, uncertain initial memory,
+other truths or noise seeds, or prediction of withheld cycles; H2–H4 remain
+untested beyond this configuration.
 
 ## Historical exploratory evidence
 
