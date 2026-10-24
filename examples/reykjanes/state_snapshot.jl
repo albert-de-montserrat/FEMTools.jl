@@ -39,7 +39,7 @@ physical_state(thermal::ThermalDiffusionDR) = (; thermal.T, thermal.T0, thermal.
 function physical_state(dr::StokesDR)
     return (;
         v = Tuple(dr.v), τ = physical_state_tensor(dr.τ), τ_old = physical_state_tensor(dr.τ_old),
-        dr.P, dr.P0, dr.T, dr.T0, dr.Q, dr.M_P, dr.phases_v, dr.phases_P,
+        dr.P, dr.P0, dr.T, dr.T0, dr.Q, dr.Pf, dr.M_P, dr.phases_v, dr.phases_P,
         plastic_history = physical_state(dr.plastic_history),
     )
 end

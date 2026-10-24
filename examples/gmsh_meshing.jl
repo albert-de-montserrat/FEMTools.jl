@@ -39,7 +39,7 @@ function _set_circle_mesh_size!(circles, mesh_size, n_circle)
 end
 
 """Grade the element size from `size_min` on `curves` up to `size_max` at `dist_max`."""
-function _refine_near_curves!(curves, size_min, size_max, dist_max)
+function _threshold_near_curves(curves, size_min, size_max, dist_max)
     distance = gmsh.model.mesh.field.add("Distance")
     gmsh.model.mesh.field.setNumbers(distance, "CurvesList", collect(Float64, curves))
     threshold = gmsh.model.mesh.field.add("Threshold")
@@ -48,7 +48,32 @@ function _refine_near_curves!(curves, size_min, size_max, dist_max)
     gmsh.model.mesh.field.setNumber(threshold, "SizeMax", size_max)
     gmsh.model.mesh.field.setNumber(threshold, "DistMin", 0.0)
     gmsh.model.mesh.field.setNumber(threshold, "DistMax", dist_max)
-    gmsh.model.mesh.field.setAsBackgroundMesh(threshold)
+    return threshold
+end
+
+function _refine_near_curves!(curves, size_min, size_max, dist_max)
+    gmsh.model.mesh.field.setAsBackgroundMesh(_threshold_near_curves(curves, size_min, size_max, dist_max))
+    return
+end
+
+# Size `size_in` inside the box, growing linearly to `size_out` over `thickness`.
+function _box_field(xmin, xmax, ymin, ymax, size_in, size_out, thickness)
+    box = gmsh.model.mesh.field.add("Box")
+    for (name, value) in (("XMin", xmin), ("XMax", xmax), ("YMin", ymin), ("YMax", ymax),
+            ("VIn", size_in), ("VOut", size_out), ("Thickness", thickness))
+        gmsh.model.mesh.field.setNumber(box, name, value)
+    end
+    return box
+end
+
+function _set_min_background!(fields)
+    if length(fields) == 1
+        gmsh.model.mesh.field.setAsBackgroundMesh(only(fields))
+    elseif length(fields) > 1
+        combined = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(combined, "FieldsList", collect(Float64, fields))
+        gmsh.model.mesh.field.setAsBackgroundMesh(combined)
+    end
     return
 end
 
@@ -104,11 +129,15 @@ end
 `refinement > 1` grades the mesh from `mesh_size / refinement` at the
 interface to `mesh_size` away from it. `rotation` turns the inclusion
 counter-clockwise by that many radians about its centre `(cx, cy)`.
+A `surface_size` meshes the top edge at that size over `surface_xrange`,
+growing to `mesh_size` over `surface_transition`; the finer of the two
+refinements applies where they overlap.
 """
 function build_gmsh_t7_rectangle_inclusion_mesh(;
         Lx, Ly, cx, cy, half_width = nothing, half_width_x = nothing,
         half_width_y = nothing, max_area = nothing, refinement = 1.0,
-        refinement_distance = nothing, rotation = 0.0)
+        refinement_distance = nothing, rotation = 0.0,
+        surface_size = nothing, surface_xrange = (0.0, Lx), surface_transition = nothing)
     half_width_x = isnothing(half_width_x) ? half_width : half_width_x
     half_width_y = isnothing(half_width_y) ? half_width : half_width_y
     isnothing(half_width_x) && throw(ArgumentError("provide half_width or half_width_x"))
@@ -137,11 +166,19 @@ function build_gmsh_t7_rectangle_inclusion_mesh(;
         _, fragments = gmsh.model.occ.fragment([(2, rectangle)], [(2, inclusion)])
         gmsh.model.occ.synchronize()
         gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+        distance = isnothing(refinement_distance) ? max(2half_width_x, 2half_width_y) : refinement_distance
+        fields = Int32[]
         if refinement > 1
             interface_curves = [tag for (_, tag) in gmsh.model.getBoundary(fragments[2], false, false)]
-            distance = isnothing(refinement_distance) ? max(2half_width_x, 2half_width_y) : refinement_distance
-            _refine_near_curves!(interface_curves, mesh_size / refinement, mesh_size, distance)
+            push!(fields, _threshold_near_curves(interface_curves, mesh_size / refinement, mesh_size, distance))
         end
+        if !isnothing(surface_size)
+            0 < surface_size <= mesh_size ||
+                throw(ArgumentError("surface_size must lie in (0, mesh_size = $mesh_size], got $surface_size"))
+            transition = isnothing(surface_transition) ? distance : surface_transition
+            push!(fields, _box_field(surface_xrange..., -surface_size, 0.0, surface_size, mesh_size, transition))
+        end
+        _set_min_background!(fields)
         coords, el2n = FEMTools.add_t7_bubbles!(_gmsh_triangles(2)...)
         outer_nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, Lx, -Ly, 0.0)
         # Interface nodes lie on the rectangle's edges in its own rotated frame.
@@ -155,6 +192,61 @@ function build_gmsh_t7_rectangle_inclusion_mesh(;
         interface_nodes = iszero(rotation) ?
             FEMTools.rectangle_boundary_nodes(coords, xlo, xhi, ylo, yhi) :
             eltype(outer_nodes)[i for i in eachindex(coords) if on_interface(coords[i])]
+        return coords, el2n, outer_nodes, interface_nodes
+    finally
+        gmsh.isInitialized() == 1 && gmsh.finalize()
+    end
+end
+
+"""Build a T7 Gmsh mesh of `[0, Lx] × [-Ly, 0]` with conforming concentric
+circular interfaces of `radii` about `(cx, cy)`.
+
+`refinement > 1` grades the mesh from `mesh_size / refinement` on the circles
+to `mesh_size` at `refinement_distance` from them. A `surface_size` meshes the
+top edge at that size over `surface_xrange`, growing to `mesh_size` over
+`surface_transition`; the finer of the two refinements applies where they
+overlap.
+"""
+function build_gmsh_t7_concentric_disk_mesh(;
+        Lx, Ly, cx, cy, radii, max_area = nothing, refinement = 1.0,
+        refinement_distance = nothing, surface_size = nothing,
+        surface_xrange = (0.0, Lx), surface_transition = nothing)
+    isempty(radii) && throw(ArgumentError("provide at least one radius"))
+    allunique(radii) && all(>(0), radii) || throw(ArgumentError("radii must be positive and distinct, got $radii"))
+    r_max = maximum(radii)
+    0 < cx - r_max && cx + r_max < Lx && -Ly < cy - r_max && cy + r_max < 0 ||
+        throw(ArgumentError("the outermost circle must fit inside the domain"))
+    refinement >= 1 || throw(ArgumentError("refinement must be at least one"))
+    mesh_size = _mesh_size(max_area, Lx, Ly)
+    gmsh.initialize()
+    try
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("concentric_disks")
+        rectangle = gmsh.model.occ.addRectangle(0, -Ly, 0, Lx, Ly)
+        disks = [(2, gmsh.model.occ.addDisk(cx, cy, 0, r, r)) for r in radii]
+        gmsh.model.occ.fragment([(2, rectangle)], disks)
+        gmsh.model.occ.synchronize()
+        gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+        # The circles are the curves whose bounding box is centred on (cx, cy).
+        circles = Int32[]
+        for (dim, tag) in gmsh.model.getEntities(1)
+            xmin, ymin, _, xmax, ymax, _ = gmsh.model.getBoundingBox(dim, tag)
+            hypot((xmin + xmax) / 2 - cx, (ymin + ymax) / 2 - cy) < minimum(radii) / 2 && push!(circles, tag)
+        end
+        length(circles) >= length(radii) || error("Gmsh returned $(length(circles)) circle curves for $(length(radii)) radii")
+        distance = isnothing(refinement_distance) ? 2r_max : refinement_distance
+        fields = Int32[]
+        refinement > 1 && push!(fields, _threshold_near_curves(circles, mesh_size / refinement, mesh_size, distance))
+        if !isnothing(surface_size)
+            0 < surface_size <= mesh_size ||
+                throw(ArgumentError("surface_size must lie in (0, mesh_size = $mesh_size], got $surface_size"))
+            transition = isnothing(surface_transition) ? distance : surface_transition
+            push!(fields, _box_field(surface_xrange..., -surface_size, 0.0, surface_size, mesh_size, transition))
+        end
+        _set_min_background!(fields)
+        coords, el2n = FEMTools.add_t7_bubbles!(_gmsh_triangles(2)...)
+        outer_nodes = FEMTools.rectangle_boundary_nodes(coords, 0.0, Lx, -Ly, 0.0)
+        interface_nodes = [FEMTools.circle_boundary_nodes(coords, cx, cy, r) for r in radii]
         return coords, el2n, outer_nodes, interface_nodes
     finally
         gmsh.isInitialized() == 1 && gmsh.finalize()

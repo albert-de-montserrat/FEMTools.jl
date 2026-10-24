@@ -291,12 +291,17 @@ function main(;
     apply_bc!(dr.v.y, bc_vy)
     apply_bc!(dr.v.z, bc_vz)
 
-    # Warm-start the pressure with the crustal load of the overlying column so
-    # the first Powell-Hestenes step does not have to build it from zero.
+    # Warm-start the pressure with the lithostatic load of the initial density
+    # field, so the first Powell-Hestenes step does not have to build it from zero.
+    litho = LithostaticPressureDR(backend, mesh_T.nnodes, ρ0, α, K)
+    copyto!(litho.phases, node_phase)
+    copyto!(litho.T, thermal.T)
+    bc_P = DirichletBoundaryCondition(nothing, groups.surface, zeros(length(groups.surface)))
+    solver!(litho, mesh_T, bc_P; workgroup, Tref, g, verbose = false)
+    P_litho = Array(litho.P)
     P_init = zeros(mesh_stokes.nnodesP)
     for iel in axes(el2nP_cpu, 2), a in axes(el2nP_cpu, 1)
-        c = coords_cpu[el2nP_cpu[a, iel]]
-        P_init[DoFsP_cpu[a, iel]] = ρ0[1] * abs(g[3]) * (topography(c[1], c[2]) - c[3])
+        P_init[DoFsP_cpu[a, iel]] = P_litho[el2nP_cpu[a, iel]]
     end
     copyto!(dr.P, P_init)
 

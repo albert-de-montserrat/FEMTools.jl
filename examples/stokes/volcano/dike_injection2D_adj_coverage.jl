@@ -14,9 +14,15 @@ using FEMTools
 using GLMakie: Figure, Axis, Colorbar, Label, poly!, lines!, scatter!, scatterlines!, heatmap!,
     vlines!, axislegend, Point2f, DataAspect, save
 
-const backend   = CPU()
-const workgroup = 128
-const yr        = 365.25 * 24 * 3600.0
+const _use_cuda = lowercase(get(ENV, "FEMTOOLS_BACKEND", "cpu")) == "cuda"
+@static if _use_cuda
+    using CUDA
+    const _default_backend = CUDA.CUDABackend()
+else
+    const _default_backend = CPU()
+end
+
+const yr = 365.25 * 24 * 3600.0
 
 include(joinpath(@__DIR__, "..", "..", "gmsh_meshing.jl"))
 
@@ -97,6 +103,9 @@ stress history is rotated with the material (Jaumann).
 
 All arguments and returned fields are SI unless their names say otherwise; the
 solve itself runs in the characteristic units defined below.
+Set `FEMTOOLS_BACKEND=cuda` when launching the script, or pass a
+KernelAbstractions backend through `backend`; meshing, sensitivity contractions,
+plotting, and output remain on the CPU.
 
 Returns, per snapshot, the time, station coordinates, `G_Q`, the K and η kernels,
 the station vertical velocity, the selected stations and their information
@@ -135,6 +144,7 @@ function main(;
         prior_lnQ = 1.0,
         out_dir = joinpath(@__DIR__, "output_dike_adj_coverage"),
         show_plot = true, write_output = true, verbose = true,
+        backend = _default_backend, workgroup = 128,
     )
     all(s -> 1 <= s <= nsteps, snapshot_steps) ||
         throw(ArgumentError("snapshot_steps must lie in 1:$nsteps, got $snapshot_steps"))
@@ -240,11 +250,8 @@ function main(;
     bottom  = select(c -> abs(c[2] + depth / L_c) <= tol)
     left    = select(c -> abs(c[1] + x1) <= tol)
     right   = select(c -> abs(c[1] - x1) <= tol)
-    Γnodes  = sort!(union(surface, bottom, left, right))
-
-    DoFs_cpu = Int32.(1:length(coords_cpu))
-    mesh_v = Mesh(element_v, nothing, nothing, coords_cpu, DoFs_cpu, el2n_cpu, Γnodes)
-    mesh_stokes = MixedMesh(mesh_v, element_P)
+    mesh_v = Mesh(backend, coords_cpu, el2n_cpu, element_v; workgroup)
+    mesh_stokes = MixedMesh(mesh_v, element_P; workgroup)
     mesh_T = Mesh(backend, coords_cpu, el2n_cpu, element_v; workgroup)
     geo_v = mesh_stokes.geometry.geo_v
 
@@ -265,11 +272,14 @@ function main(;
             abs(dx * dike_along[1] + dy * dike_along[2]) <= dike_height / 2 / L_c
     end
     centroid(iel) = sum(coords_cpu[el2n_cpu[a, iel]] for a in 1:3) / 3
-    cell_phase = Int[in_dike(centroid(iel)) ? 2 : 1 for iel in axes(el2n_cpu, 2)]
+    cell_phase = Int32[in_dike(centroid(iel)) ? 2 : 1 for iel in axes(el2n_cpu, 2)]
     phases_v_cpu = repeat(reshape(cell_phase, 1, :), NV, 1)
     phases_P_cpu = repeat(reshape(cell_phase, 1, :), NP, 1)
+    TDev = FEMTools.TA(backend)
+    phases_v = TDev(phases_v_cpu)
+    phases_P = TDev(phases_P_cpu)
 
-    node_phase = ones(Int, length(coords_cpu))
+    node_phase = ones(Int32, length(coords_cpu))
     for iel in axes(el2n_cpu, 2), a in axes(el2n_cpu, 1)
         cell_phase[iel] == 2 && (node_phase[el2n_cpu[a, iel]] = 2)
     end
@@ -303,8 +313,9 @@ function main(;
     nstations = length(station_nodes)
 
     # Uniform source weight on the dike; the solver rescales it to Q2D.
-    Qq = zeros(mesh_stokes.nnodesP)
-    Qq[dike_P_dofs] .= 1.0
+    Qq_cpu = zeros(mesh_stokes.nnodesP)
+    Qq_cpu[dike_P_dofs] .= 1.0
+    Qq = TDev(Qq_cpu)
 
     @info "Phases and stations" n_dike_cells = length(dike_cells) n_dike_nodes =
         count(==(2), node_phase) nstations n_segments
@@ -325,7 +336,7 @@ function main(;
     thermal = ThermalDiffusionDR(
         backend, mesh_T.nnodes, ThermalMaterial(; k, Cp, ρ0, α, K); ϵ = ϵ_T,
     )
-    copyto!(thermal.phases, node_phase)
+    copyto!(thermal.phases, TDev(node_phase))
 
     # -----------------------------------------------------------------------
     # Boundary conditions
@@ -335,13 +346,13 @@ function main(;
     # -----------------------------------------------------------------------
     vx_nodes = vcat(left, right)
     bc_vx = DirichletBoundaryCondition(
-        nothing, vx_nodes, [ε̇ * coords_cpu[n][1] for n in vx_nodes],
+        nothing, TDev(vx_nodes), TDev([ε̇ * coords_cpu[n][1] for n in vx_nodes]),
     )
-    bc_vy = DirichletBoundaryCondition(nothing, bottom, zeros(length(bottom)))
+    bc_vy = DirichletBoundaryCondition(nothing, TDev(bottom), TDev(zeros(length(bottom))))
     bc_T = DirichletBoundaryCondition(
         nothing,
-        vcat(surface, bottom),
-        vcat(fill(T_surface, length(surface)), fill(T_base, length(bottom))),
+        TDev(vcat(surface, bottom)),
+        TDev(vcat(fill(T_surface, length(surface)), fill(T_base, length(bottom)))),
     )
 
     geotherm(c) = T_surface - dTdz * L_c * c[2]
@@ -364,8 +375,8 @@ function main(;
     # Powell-Hestenes step does not have to build it from zero, and is the
     # reference of the overpressure output.
     litho = LithostaticPressureDR(backend, mesh_T.nnodes, ρ0, α, K)
-    copyto!(litho.phases, node_phase)
-    bc_P = DirichletBoundaryCondition(nothing, surface, zeros(length(surface)))
+    copyto!(litho.phases, TDev(node_phase))
+    bc_P = DirichletBoundaryCondition(nothing, TDev(surface), TDev(zeros(length(surface))))
     function lithostatic_pressure!()
         copyto!(litho.T, thermal.T)
         solver!(litho, mesh_T, bc_P; workgroup, Tref, g, verbose = false)
@@ -384,10 +395,10 @@ function main(;
     # with the warm start. The fourth stress slot receives the cap's corrected
     # pressure after each step.
     NqP = shape_function_values(element_P, element_v.integration_points)
-    P_old = [
+    P_old = TDev([
         sum(NqP[q][a] * P_litho[DoFsP_cpu[a, iel]] for a in 1:NP)
         for q in 1:NQ_v, iel in 1:mesh_stokes.nels
-    ]
+    ])
     P_corrected = similar(P_old)
     τ_and_P = (τ..., P_corrected)
 
@@ -419,15 +430,15 @@ function main(;
         copyto!(thermal.T0, thermal.T)
 
         # The walls and the element geometry move with the mesh.
-        bc_vx.vals .= [ε̇ * coords_cpu[n][1] for n in vx_nodes]
+        copyto!(bc_vx.vals, [ε̇ * coords_cpu[n][1] for n in vx_nodes])
         assemble_viscosity_weighted_pressure_scaling!(
-            γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v = phases_v_cpu,
+            γP, dr, mesh_stokes, γfact, Δτ; workgroup, phases_v,
         )
 
         solve_stats = solve_coupled_dyrel!(
             thermal, dr, mesh_T, mesh_stokes,
             bc_T, bc_vx, bc_vy, Δτ, γP;
-            Tref, phases_v = phases_v_cpu, phases_P = phases_P_cpu,
+            Tref, phases_v, phases_P,
             τ_old, P_old, plastic, workgroup, Qq, Q2D, shear_heating,
             ncheck = 100, ϵ_tol = 1.0e-6,
             iterMax = 50_000, total_iterMax = 50_000, rel_drop0 = 0.75,
@@ -447,7 +458,7 @@ function main(;
                 ∂N∂ξ = FEMTools.quadrature_table(CPU(), FEMTools.shape_function_gradients(element_v)),
                 Nq = FEMTools.quadrature_table(CPU(), FEMTools.shape_function_values(element_v)),
                 NqP = FEMTools.quadrature_table(CPU(), NqP),
-                T = Array(dr.T), T0 = Array(dr.T0), P_old = copy(P_old), Pf = Array(dr.Pf),
+                T = Array(dr.T), T0 = Array(dr.T0), P_old = Array(P_old), Pf = Array(dr.Pf),
                 Q = Array(dr.Q), P_litho = copy(P_litho), τ_old = map(Array, τ_old),
                 phases_v = phases_v_cpu, phases_P = phases_P_cpu,
                 dr.η, dr.G, dr.α, dr.ρ0, dr.K, dr.ηb, dr.g, dr.Tref, Δt = Δτ, plastic,
@@ -463,12 +474,15 @@ function main(;
             t_adjoint = @elapsed for (i, node) in enumerate(station_nodes)
                 load_y = zeros(nnodes)
                 load_y[node] = 1.0
-                λv = (zeros(nnodes), zeros(nnodes))
-                λP = zeros(mesh_stokes.nnodesP)
+                objective = (
+                    KernelAbstractions.zeros(backend, Float64, nnodes), TDev(load_y),
+                )
+                λv = ntuple(_ -> KernelAbstractions.zeros(backend, Float64, nnodes), 2)
+                λP = KernelAbstractions.zeros(backend, Float64, mesh_stokes.nnodesP)
                 adjoint_stats = solve_stokes_adjoint_dyrel!(
                     dr, mesh_stokes, geo_v, mesh_stokes.geometry.geo_P, element_v, element_P,
-                    phases_v_cpu, phases_P_cpu, τ_old, plastic, dr.G, Δτ, γP,
-                    (zeros(nnodes), load_y), λv, λP, backend, workgroup;
+                    phases_v, phases_P, τ_old, plastic, dr.G, Δτ, γP,
+                    objective, λv, λP, backend, workgroup;
                     v_nodes = (bc_vx.DoFs, bc_vy.DoFs), workspace = adjoint_workspace,
                     # The graded mesh can make the power estimate stop below the stable bound.
                     measure_λmax = false,
@@ -478,7 +492,9 @@ function main(;
                 adjoint_stats.converged ||
                     error("station $i adjoint did not converge at step $istep: err = $(adjoint_stats.err)")
                 # Absolute ∂vy/∂ln m per element, despite the dlnJ_ field names.
-                derivatives, _ = log_sensitivities(data, λv, λP, Val(NV), Val(NP))
+                derivatives, _ = log_sensitivities(
+                    data, map(Array, λv), Array(λP), Val(NV), Val(NP),
+                )
                 for (iel, j) in zip(dike_cells, dike_segment)
                     G_Q[i, j] += derivatives.dlnJ_dlnQ[iel] * mm_yr
                 end
@@ -505,10 +521,10 @@ function main(;
 
         update_stokes_current_stress!(
             dr, mesh_stokes, τ_and_P, Δτ;
-            phases_v = phases_v_cpu, τ_old, plastic, workgroup,
+            phases_v, τ_old, plastic, workgroup,
         )
         commit_stokes_plastic_history!(
-            dr, mesh_stokes, Δτ; phases_v = phases_v_cpu, τ_old, plastic, workgroup,
+            dr, mesh_stokes, Δτ; phases_v, τ_old, plastic, workgroup,
         )
         copyto!(P_old, P_corrected)
         θ_cell = vec(mean(Array(dr.plastic_history.θ); dims = 1))
@@ -533,7 +549,7 @@ function main(;
 
         if write_output && !isempty(cell_fields)
             post = compute_strain_rate_stress_postprocess(
-                vx_cpu, vy_cpu, el2n_v_cpu, Array(geo_v), τ, element_v,
+                vx_cpu, vy_cpu, el2n_v_cpu, Array(geo_v), map(Array, τ), element_v,
             )
             vtk_path = joinpath(out_dir, @sprintf("dike_coverage_%04d.vtk", istep))
             write_stokes_vtk(

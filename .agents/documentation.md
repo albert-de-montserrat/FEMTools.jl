@@ -102,6 +102,24 @@ available through git history, not as a required local document. The canonical
 science proposal is `reykjanes/reykjanes_thermomechanical_memory_project_v3_adjoint.typ`;
 the root-level file of the same name differs and must not be substituted silently.
 
+`DIKE_MEMORY_PAPER_PLAN.md` is a separate chamber-recharge/geodetic-inference
+study, not a replacement for that Reykjanes failure proposal. It owns the
+experiment specification; `DIKE_MEMORY_PAPER_DRAFT.typ` is its prospective
+science draft. Plane strain is the agreed benchmark and synthetic-inference
+setting; targeted 3-D transfer follows once that workflow is settled. The study
+gates numerical memory and, independently, compressible/history adjoints before
+claims that rely on them. The first forward/FD prototype is documented in
+`examples/stokes/volcano/CHAMBER_MEMORY.md`; it is a local two-parameter pilot,
+not completed general joint inference. Its retained dike measurements are historical,
+unrevalidated evidence. Compile the plain Typst source from the repository root
+with `typst compile DIKE_MEMORY_PAPER_DRAFT.typ output/pdf/dike_memory_paper_draft.pdf`
+after creating `output/pdf/`; this artifact is separate from the Documenter manual.
+The study's local reference collection is `literature/dike_memory_review/`.
+Its README distinguishes full papers, the conference abstract, manuscript
+versions, and unrecovered references; `manifest.csv` records source provenance,
+page counts, and file checksums. Copies of existing literature PDFs preserve
+their local provenance rather than implying a new publisher download.
+
 ## Update this guide when
 
 - documentation structure, build, deployment, or environments change;

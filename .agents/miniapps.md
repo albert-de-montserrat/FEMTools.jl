@@ -124,6 +124,7 @@ These exercise FEMTools solver states and public solver entry points.
 | `examples/miniapps/stokes/stokes_2D_viscous_inclusion_triangle/stokes_2D_viscous_inclusion_triangle.jl` | Gmsh T7/P1-disc | Viscous-inclusion benchmark against an analytical solution |
 | `examples/miniapps/stokes/stokes_2D_pure_shear_triangle_hole/stokes_2D_pure_shear_triangle_hole.jl` | Gmsh T7/P1-disc | Pure shear around an empty circular hole |
 | `examples/stokes/volcano/volcano_thermal_stokes.jl` | Gmsh T7/P1-disc | Coupled thermal--Stokes volcano cross-section with a magma chamber under pure shear; first-order corner advection with straight T7 edges, refreshed geometry and pressure scaling; rejects non-convergence and inverted cells |
+| `examples/stokes/volcano/dike_injection2D_adj_coverage.jl` | Gmsh T7/P1-disc; CPU or `FEMTOOLS_BACKEND=cuda` | Coupled dike injection with per-station adjoints, segmented source sensitivities, and greedy D-optimal station coverage; meshing and sensitivity contractions remain host-side |
 | `examples/reykjanes/reykjanes_thermal_stokes.jl` | Triangulate T7/P1-disc; CPU, or CUDA via the top-level `isCUDA` flag | Coupled thermal--Stokes cross-rift section with a flat surface and a thin elliptical magma sill under wall extension; the 2-D volcano driver without the cone. Geometry, geotherm and material values are illustrative, not calibrated. Starting point of the Reykjanes project in `REYKJANES_PLAN.md` |
 | `examples/reykjanes/elliptical_cavity.jl` | Triangulate T7/P1-disc; CPU | Milestone M0 of `REYKJANES_PLAN.md`: a soft compressible inclusion injected through `Q` inside a Maxwell host, one elastic step (`Δt ≪ η/G`) on a disc whose outer circle carries the infinite-plane displacement, compared with Muskhelishvili's closed form (`cavity_analytic.jl`). The driver runs the default case of `solve_elliptical_cavity`, which returns pressure, area change, displacement error and solver statistics and lives in the function-only `elliptical_cavity_setup.jl` shared with `test/test_elliptical_cavity.jl` and the benchmark. Iteration counts are in `solver.md` |
 | `examples/reykjanes/reykjanes_cycles.jl` | Triangulate T7/P1-disc; CPU | The event protocol of GAP-11 of `REYKJANES_PLAN.md` end to end: recharge the sill until a connected failed path reaches the shallow crust, bracket the step at which it first does, and open a dike on that path by the amount that drains the magma pressure to the closure stress of the path plus the arrest overpressure. The driver runs two events on a coarse section through `run_cycles` in `event_cycles.jl`; every rule it applies is a field of `EventProtocol` in `event_protocol.jl` and is a placeholder until Phase 0 of the science plan fixes it |
@@ -224,6 +225,28 @@ solver guide: it spent the full `iterMax` budget every step while reporting
 of 501, with the physics unchanged to 11 significant figures.
 
 ## 2-D building-block miniapps
+
+### Chamber-memory synthetic prototypes
+
+`examples/stokes/volcano/chamber_memory2D.jl` runs fixed-reference linear Maxwell
+chamber/shell cycles on a Gmsh T7/P1-disc mesh with finite-K storage and signed
+recharge/withdrawals. It reports SI budgets, elastic line-source disagreement,
+and time-step response changes. `chamber_memory_identifiability2D.jl` uses the
+same forward solver for central full-history FD in global log recharge and log
+shell viscosity, and local Gaussian recovery against an independently simulated
+FEM truth. The comparisons use common noise for observation subsets. Geometry,
+withdrawals, compressibility, and initial memory are fixed in this pilot; it is
+not full nonlinear joint inference or optimized station placement.
+
+Their function-only setup is `chamber_memory_setup2D.jl`, in module
+`ChamberMemory2D`, shared with `test/test_chamber_memory.jl` and the warmed
+time-step sweep `examples/benchmarks/stokes/chamber_memory/chamber_memory.jl`.
+The new drivers execute unconditionally and accept an output directory as their
+first argument. They are CPU/headless, with no thermal solve, gravity, yielding,
+corotation, or mesh advection; pressure and stress commit once per accepted step.
+Rates and cumulative volumes are m²/s and m² per unit strike. Plane strain is
+the agreed benchmark/synthetic stage before later 3-D transfer. Commands and
+limitations are in `examples/stokes/volcano/CHAMBER_MEMORY.md`.
 
 These use FEMTools elements, meshes, geometry, coloring, or kernels while
 owning substantial assembly or solve logic in the script.

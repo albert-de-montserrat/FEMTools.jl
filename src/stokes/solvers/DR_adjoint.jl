@@ -24,8 +24,9 @@ preconditioner, and λmax are frozen at that state, so only λmin (hence the
 Chebyshev pair) is re-estimated during the solve.
 
 `objective_v` carries the velocity part of `∂J/∂u`, one array per direction (the
-consistently assembled objective load); the pressure adjoint has no explicit
-objective term. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
+consistently assembled objective load), and the optional `objective_P` keyword
+its pressure part, on the pressure DoFs. The returned `λP` is that of the
+Powell-Hestenes augmented system for either load. `M_P = dr.M_P` and the augmentation scaling `γP` must match the
 forward solve. Homogeneous Dirichlet conditions are applied to each adjoint
 velocity component on the matching entry of `v_nodes`.
 
@@ -94,6 +95,7 @@ function solve_stokes_adjoint_dyrel!(
         backend,
         workgroup;
         v_nodes::NTuple{D},
+        objective_P = nothing,
         ncheck = 50,
         adjoint_tol = 1.0e-6,
         rel_drop = 0.1,
@@ -153,6 +155,9 @@ function solve_stokes_adjoint_dyrel!(
         DimensionMismatch(
             "adjoint workspace pressure residual axes $(axes(ResλP)) do not match $(axes(dr.P))"
         )
+    )
+    isnothing(objective_P) || axes(objective_P) == axes(dr.P) || throw(
+        DimensionMismatch("objective_P axes $(axes(objective_P)) do not match the pressure axes $(axes(dr.P))")
     )
     # The DYREL rates carry momentum between iterations, so a reused workspace
     # must start every solve from rest.
@@ -283,6 +288,7 @@ function solve_stokes_adjoint_dyrel!(
             @. Resλv[c] = objective_v[c] + dv[c]
             apply_dirichlet!(Resλv[c], v_nodes[c], zero_bc[c], backend, workgroup)
         end
+        isnothing(objective_P) || (ResλP .+= objective_P)
         return nothing
     end
 

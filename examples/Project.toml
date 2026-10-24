@@ -1,6 +1,7 @@
 [deps]
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 ExactFieldSolutions = "2a6b1ac7-2de5-4354-bffb-bf009f6a4bef"
@@ -22,6 +23,7 @@ WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
 FEMTools = {path = ".."}
 
 [compat]
+CairoMakie = "0.12, 0.13, 0.14, 0.15"
 Enzyme = "0.13.199"
 ExactFieldSolutions = "0.2.3"
 JLD2 = "0.5, 0.6"

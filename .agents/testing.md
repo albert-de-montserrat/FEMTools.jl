@@ -16,7 +16,8 @@ The suite covers:
 - constructor, export/public API, helper, and verbosity contracts;
 - `Float32`/`Float64`, type inference, JET optimization checks, Aqua quality
   checks, and selected zero-allocation hot paths;
-- parsing of maintained example scripts, including the volcano drivers;
+- parsing of maintained example scripts, including the CUDA-capable 2-D dike
+  coverage driver and the volcano drivers;
 - field-container constructor inference, continuity-source storage, and the
   distinct 3-D Voigt versus Stokes assembler stress orders;
 - chamber-interface conformance and phase separation for the unstructured 3-D volcano mesh,
@@ -189,6 +190,15 @@ unused phase, local bulk limiting, unchanged default/mass/physical viscosity,
 the no-bulk overload, and invalid mode rejection.
 
 ## Commands
+
+`test/test_chamber_memory.jl` checks the fixed-reference plane-strain chamber
+prototype on a small Gmsh mesh: schedule invariance under refinement, source
+quadrature normalization, signed withdrawal symmetry, elastic shutoff (pressure
+and stress memory), delayed Maxwell response, fresh-state replay, invalid inputs,
+and SI output round trips. This is not mesh/domain convergence, full joint
+inference, or time-dependent-adjoint qualification. The standalone chamber
+benchmark owns the response/time-step campaign; its new drivers and setup are
+parse-listed in `test/test_example_paths.jl`.
 
 Full package test from the repository root:
 

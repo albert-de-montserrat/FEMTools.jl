@@ -11,7 +11,9 @@ include(joinpath(@__DIR__, "dike_injection2D_adj_coverage.jl"))
 # Angle from the vertical; `main` takes the dip from the horizontal.
 angles_from_vertical = (0.0, 30.0, 60.0, 90.0)
 # Background strain rate [s⁻¹]: positive is extension, negative is compression.
-strain_rates = (-1.0e-15, 0.0, 1.0e-15)
+# The relaxation does not converge from an exactly zero wall velocity, so 1e-30
+# stands in for no background strain.
+strain_rates = (-1.0e-15, 1.0e-30, 1.0e-15)
 
 for angle in angles_from_vertical, ε̇_bg in strain_rates
     out_dir = joinpath(@__DIR__, "output_dike_coverage_scan",
