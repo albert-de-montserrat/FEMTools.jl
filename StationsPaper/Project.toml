@@ -1,0 +1,21 @@
+name = "StationsPaperFigures"
+uuid = "c1cebe93-4f33-4c44-a1ad-6e06d4609661"
+version = "0.1.0"
+
+[deps]
+ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+GeoMakie = "db073c08-6b98-4ee5-b6a4-5efafb3259c6"
+GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
+
+[compat]
+ArchGDAL = "0.10.12"
+CairoMakie = "0.15.16"
+DelimitedFiles = "1.9.1"
+Downloads = "1.7.0"
+GeoMakie = "0.7.18"
+GeometryBasics = "0.5.13"
+Rasters = "0.15.0"

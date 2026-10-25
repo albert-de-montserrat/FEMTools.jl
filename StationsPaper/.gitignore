@@ -1,0 +1,5 @@
+# Generated run output stays local until the experiment set is stable (README.md).
+output/
+figure_data/rasters/
+# Downloaded literature PDFs are copyrighted; keep them local.
+papers/*.pdf
