@@ -124,6 +124,9 @@ function station_information_demo(; impulse_dir = joinpath(@__DIR__, "..", "outp
     return result
 end
 
-station_information_demo(;
-    impulse_dir = length(ARGS) > 0 ? ARGS[1] : joinpath(@__DIR__, "..", "output", "impulse_response2D_3yr"),
-    out_dir = length(ARGS) > 1 ? ARGS[2] : joinpath(@__DIR__, "..", "output", "station_information2D"))
+# Run only as a script, so other drivers can include posterior_summary.
+if abspath(PROGRAM_FILE) == @__FILE__
+    station_information_demo(;
+        impulse_dir = length(ARGS) > 0 ? ARGS[1] : joinpath(@__DIR__, "..", "output", "impulse_response2D_3yr"),
+        out_dir = length(ARGS) > 1 ? ARGS[2] : joinpath(@__DIR__, "..", "output", "station_information2D"))
+end

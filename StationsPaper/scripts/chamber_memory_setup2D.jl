@@ -44,17 +44,21 @@ This CPU prototype has no heat transport or yielding; gravity and mesh advection
 options of `run_chamber_memory`.
 A positive `far_growth` (Triangle mesher only) coarsens the mesh linearly beyond three
 source depths from the chamber, for wide domains.
+`shell_bands > 1` splits the shell into that many equal-width radial bands, phases
+`3:(2 + shell_bands)` from the wall outward, by cell centroid (band edges inside the
+shell do not conform to the mesh); `run_chamber_memory` then takes one `η_shell` per band.
 """
 function build_chamber_memory_mesh(;
         domain = (40.0e3, 20.0e3), chamber_radius = 1.0e3, shell_radius = 2.0e3,
         center_depth = 4.0e3, max_area = 4.0e6, refinement = 8,
         surface_size = 1.0e3, station_x = (-8.0e3, -4.0e3, 0.0, 4.0e3, 8.0e3),
-        far_growth = 0.0, workgroup = 128,
+        far_growth = 0.0, shell_bands = 1, workgroup = 128,
     )
     Lx, depth = domain
     all(x -> isfinite(x) && x > 0, (Lx, depth, chamber_radius, shell_radius,
         center_depth, max_area, refinement, surface_size)) ||
         throw(ArgumentError("geometry and mesh controls must be finite and positive"))
+    shell_bands >= 1 || throw(ArgumentError("shell_bands must be positive"))
     chamber_radius < shell_radius || throw(ArgumentError("shell_radius must exceed chamber_radius"))
     !isempty(station_x) && all(x -> isfinite(x) && abs(x) < Lx / 2, station_x) ||
         throw(ArgumentError("stations must be nonempty, finite, and strictly inside the domain width"))
@@ -77,9 +81,10 @@ function build_chamber_memory_mesh(;
     cell_phase = map(axes(el2n, 2)) do e
         c = sum(coords[el2n[a, e]] for a in 1:3) / 3
         r = norm(c - SVector(0.0, -center_depth / L_c)) * L_c
-        r < chamber_radius ? 2 : r < shell_radius ? 3 : 1
+        r < chamber_radius ? 2 : r < shell_radius ?
+            3 + min(shell_bands - 1, floor(Int, shell_bands * (r - chamber_radius) / (shell_radius - chamber_radius))) : 1
     end
-    all(p -> p in cell_phase, 1:3) || throw(ArgumentError("mesh must resolve all three material regions"))
+    all(p -> p in cell_phase, 1:(2 + shell_bands)) || throw(ArgumentError("mesh must resolve every material region"))
     phases_v = repeat(reshape(cell_phase, 1, :), length(element_v), 1)
     phases_P = repeat(reshape(cell_phase, 1, :), length(element_P), 1)
     tol = sqrt(eps(Float64)) * max(Lx, depth) / L_c
@@ -101,7 +106,7 @@ function build_chamber_memory_mesh(;
         DoFsP, geo_P, NqP, chamber_area, source_weights, bc_vx, bc_vy, stations,
         station_x = [coords[n][1] * L_c for n in stations], L_c, t_c, σ_c, workgroup,
         geometry = (; domain, chamber_radius, shell_radius, center_depth, max_area, refinement, surface_size,
-            far_growth, mesher = CHAMBER_MESHER))
+            far_growth, shell_bands, mesher = CHAMBER_MESHER))
 end
 
 """
@@ -150,14 +155,28 @@ function check_chamber_history(history)
     return history
 end
 
+"""Tensile-cap Drucker-Prager parameters for every phase of `material` in solver units; the magma (phase 2) cannot yield."""
+function chamber_plasticity(p, material, σ_c, η_c)
+    nphases = length(material.η)
+    p.tensile_strength <= 0 || throw(ArgumentError("tensile_strength is compression-positive, so it must be ≤ 0"))
+    0 <= p.λ_fluid <= 1 || throw(ArgumentError("λ_fluid must lie in [0, 1]"))
+    # An unreachable magma cohesion rather than Inf: quadratic shape functions are
+    # negative at some quadrature points and would turn Inf into NaN.
+    C_magma = 1.0e12 / σ_c
+    per_phase(rock, magma) = ntuple(i -> i == 2 ? magma : rock, nphases)
+    return DruckerPragerCap(per_phase(deg2rad(p.friction), deg2rad(p.friction)),
+        per_phase(deg2rad(p.dilation), deg2rad(p.dilation)), per_phase(p.cohesion / σ_c, C_magma),
+        per_phase(p.tensile_strength / σ_c, -C_magma / 2), per_phase(p.η_vp / η_c, p.η_vp / η_c), material.K)
+end
+
 """Lithostatic pressure of `material`'s density at the pressure DoFs of `model`, in solver units; zero at the surface."""
 function chamber_lithostatic_pressure(model, material; ϵ = 1.0e-10)
     (; mesh, cell_phase, workgroup) = model
     coords, el2n = Array(mesh.coords), Array(mesh.el2n)
     mesh_T = Mesh(CPU(), coords, el2n, model.element_v; workgroup)
-    # A node takes the magma phase if any of its elements is magma, else the shell's.
+    # A node takes the magma phase if any of its elements is magma, else a shell band's.
     node_phase = ones(Int, length(coords))
-    for phase in (3, 2), e in findall(==(phase), cell_phase), a in axes(el2n, 1)
+    for phase in (maximum(cell_phase):-1:3..., 2), e in findall(==(phase), cell_phase), a in axes(el2n, 1)
         node_phase[el2n[a, e]] = phase
     end
     litho = LithostaticPressureDR(CPU(), mesh_T.nnodes, material.ρ0, material.α, material.K; ϵ)
@@ -181,6 +200,7 @@ end
 
 Advance the Maxwell chamber with finite elastic bulk storage; by default on a fixed
 mesh without gravity, where it is linear (see `gravity` and `advection` below).
+`η_shell` is one viscosity, or one per shell band of a mesh built with `shell_bands`.
 History has `time_edges` [s], interval-average `recharge_rate` [m²/s], and positive
 `withdrawal_area` [m²] removed in each interval. Returns station displacement [m]
 and pressure perturbation [Pa] including their zero initial sample, the final-time
@@ -217,15 +237,27 @@ pressure and stress histories travel with the material, the free surface deforms
 and corotates the stress history. The model's mesh is restored after the run.
 Either option makes the model weakly nonlinear; `pressure` stays the perturbation
 from the initial state. Neither works with `feeding`.
+
+`plasticity = (; friction, dilation, cohesion, tensile_strength, η_vp, λ_fluid)`
+(angles in degrees, SI otherwise, `tensile_strength ≤ 0`) makes the host and shell
+Drucker-Prager plastic with a tensile cap (`DruckerPragerCap`); the magma never
+yields. The yield test sees the effective pressure `P − Pf` with a fixed pore
+pressure `Pf = λ_fluid P_litho` of the initial lithostatic state: 0 is dry,
+about 0.37 hydrostatic, 1 lithostatic. It needs `gravity`. The model is then
+nonlinear in the source, so superposed responses no longer apply. `plastic_γ` and
+`plastic_θ` hold the maximum accumulated shear and volumetric plastic strain
+after each observed step.
 """
 function run_chamber_memory(model, history; spinup = nothing, feeding = nothing,
         η_shell = 3.0e17, η_host = 1.0e23,
         η_magma = 1.0e14, G_host = 3.0e10, G_magma = 1.0e8,
         K_host = 5.0e10, K_magma = 1.0e10,
-        gravity = false, advection = false, ρ_host = 2700.0, g_SI = 9.81,
+        gravity = false, advection = false, ρ_host = 2700.0, g_SI = 9.81, plasticity = nothing,
         ϵ_tol = 1.0e-10, iterMax = 100_000, verbose = false)
     isnothing(feeding) || !(gravity || advection) ||
         throw(ArgumentError("feeding superposes unit responses, so it needs the linear model (no gravity, no advection)"))
+    isnothing(plasticity) || gravity ||
+        throw(ArgumentError("plasticity needs gravity, for the lithostatic pressure that sets the yield strength"))
     (; time_edges, recharge_rate, withdrawal_area) = check_chamber_history(history)
     nsteps = length(time_edges) - 1
     isnothing(spinup) || check_chamber_history(spinup)
@@ -233,34 +265,53 @@ function run_chamber_memory(model, history; spinup = nothing, feeding = nothing,
     isnothing(feeding) || (feeding.conductivity >= 0 && isfinite(feeding.conductivity) &&
         all(isfinite, feeding.deep_pressure) && length(feeding.deep_pressure) in (1, nsteps)) ||
         throw(ArgumentError("feeding needs a finite nonnegative conductivity and finite deep_pressure, one value or one per interval"))
-    all(x -> isfinite(x) && x > 0, (η_shell, η_host, η_magma, G_host, G_magma, K_host, K_magma, ϵ_tol)) ||
+    all(x -> isfinite(x) && x > 0, (η_shell..., η_host, η_magma, G_host, G_magma, K_host, K_magma, ϵ_tol)) ||
         throw(ArgumentError("material parameters and tolerance must be finite and positive"))
     iterMax > 0 || throw(ArgumentError("iterMax must be positive"))
     (; mesh, phases_v, phases_P, L_c, t_c, σ_c, workgroup, chamber_cells) = model
+    # One viscosity per shell band (phases 3, 4, ...); the bands share the host's elastic moduli and density.
+    nbands = maximum(model.cell_phase) - 2
+    η_bands = η_shell isa Number ? ntuple(_ -> Float64(η_shell), nbands) : Tuple(Float64.(η_shell))
+    length(η_bands) == nbands ||
+        throw(DimensionMismatch("η_shell needs one viscosity per shell band ($nbands), got $(length(η_bands))"))
+    host_bands(value) = ntuple(_ -> value, nbands)
     η_c = σ_c * t_c
     ρ_c, g_c = σ_c * t_c^2 / L_c^2, L_c / t_c^2
     center_pressure = ρ_host * g_SI * model.geometry.center_depth
     ρ_magma = ρ_host * (1 + center_pressure / K_host) / (1 + center_pressure / K_magma)
     material = StokesMaterial(;
-        η = (η_host, η_magma, η_shell) ./ η_c,
+        η = (η_host, η_magma, η_bands...) ./ η_c,
         # finite_K explicitly selects K; ηb is retained only for compatible scaling paths.
-        ηb = (K_host, K_magma, K_host) ./ σ_c,
-        G = (G_host, G_magma, G_host) ./ σ_c,
-        K = (K_host, K_magma, K_host) ./ σ_c,
-        α = (0.0, 0.0, 0.0), ρ0 = gravity ? (ρ_host, ρ_magma, ρ_host) ./ ρ_c : (1.0, 1.0, 1.0),
+        ηb = (K_host, K_magma, host_bands(K_host)...) ./ σ_c,
+        G = (G_host, G_magma, host_bands(G_host)...) ./ σ_c,
+        K = (K_host, K_magma, host_bands(K_host)...) ./ σ_c,
+        α = (0.0, 0.0, host_bands(0.0)...),
+        ρ0 = gravity ? (ρ_host, ρ_magma, host_bands(ρ_host)...) ./ ρ_c : (1.0, 1.0, host_bands(1.0)...),
         g = gravity ? (0.0, -g_SI / g_c) : (0.0, 0.0), Tref = 0.0,
     )
     nq = length(model.element_v.integration_points.ω)
     # Initial pressure: lithostatic with gravity, zero without.
     P_initial = gravity ? chamber_lithostatic_pressure(model, material) : zeros(mesh.nnodesP)
+    plastic = isnothing(plasticity) ? nothing : chamber_plasticity(plasticity, material, σ_c, η_c)
     function fresh_state()
-        state = StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, material;
-            stress_size = (nq, mesh.nels), CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9)
+        state = isnothing(plastic) ?
+            StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, material;
+                stress_size = (nq, mesh.nels), CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9) :
+            StokesDR(CPU(), mesh.nnodes, mesh.nnodesP, material;
+                stress_size = (nq, mesh.nels), plastic_history_size = (nq, mesh.nels),
+                CFL_v = 0.99, CFL_P = 0.99, c_fact = 0.9)
         copyto!(state.P, P_initial)
         copyto!(state.P0, P_initial)
+        isnothing(plastic) || copyto!(state.Pf, plasticity.λ_fluid .* P_initial)
         return state
     end
     dr = fresh_state()
+    # With the cap, the continuity memory is the accepted corrected pressure at the
+    # velocity integration points, which the stress update writes into its last slot.
+    P_old = isnothing(plastic) ? nothing :
+        [sum(model.NqP[q][a] * P_initial[model.DoFsP[a, e]] for a in axes(model.DoFsP, 1)) for q in 1:nq, e in 1:mesh.nels]
+    P_corrected = isnothing(plastic) ? nothing : similar(P_old)
+    plastic_γ, plastic_θ = zeros(nsteps), zeros(nsteps)
     reference_coords = copy(Array(mesh.coords))
     corners = unique(vec(Array(mesh.el2n)[1:3, :]))
     γP = zeros(mesh.nnodesP)
@@ -282,12 +333,13 @@ function run_chamber_memory(model, history; spinup = nothing, feeding = nothing,
     integrate_P(P) = pressure_source_integral(P, model.DoFsP, model.geo_P, model.NqP, chamber_cells)
     area_nd = model.chamber_area / L_c^2
     mean_pressure(state) = integrate_P(state.P .- P_initial) / area_nd * σ_c
+    plastic_options = isnothing(plastic) ? (;) : (; plastic, P_old)
     function solve_step!(state, Δτ, area)
         assemble_viscosity_weighted_pressure_scaling!(γP, state, mesh, 100.0, Δτ; phases_v, workgroup)
         step_stats = solve_stokes_dyrel!(state, mesh, model.bc_vx, model.bc_vy, Δτ, γP;
             phases_v, phases_P, finite_K = true, Qq = model.source_weights,
             Q2D = area / L_c^2 / Δτ, ncheck = 50, ϵ_tol,
-            iterMax, total_iterMax = iterMax, rel_drop0 = 0.1, verbose, workgroup)
+            iterMax, total_iterMax = iterMax, rel_drop0 = 0.1, verbose, workgroup, plastic_options...)
         step_stats.converged || error("chamber step did not converge: $(step_stats.err_abs), $(step_stats.err_rel)")
         return step_stats
     end
@@ -349,7 +401,17 @@ function run_chamber_memory(model, history; spinup = nothing, feeding = nothing,
         elseif n == 0
             pressure[1] = mean_pressure(dr)
         end
-        update_stokes_current_stress!(dr, mesh, τ, Δτ; phases_v, workgroup)
+        if isnothing(plastic)
+            update_stokes_current_stress!(dr, mesh, τ, Δτ; phases_v, workgroup)
+        else
+            update_stokes_current_stress!(dr, mesh, (τ..., P_corrected), Δτ; phases_v, τ_old, plastic, workgroup)
+            commit_stokes_plastic_history!(dr, mesh, Δτ; phases_v, τ_old, plastic, workgroup)
+            copyto!(P_old, P_corrected)
+            if n >= 1
+                plastic_γ[n] = maximum(dr.plastic_history.γ)
+                plastic_θ[n] = maximum(abs, dr.plastic_history.θ)
+            end
+        end
         copyto!(dr.P0, dr.P)
         if advection
             # Corotate the stress history, then move the corner nodes with the
@@ -378,6 +440,7 @@ function run_chamber_memory(model, history; spinup = nothing, feeding = nothing,
         ux_field, uz_field, recharge_area, fed_area = fed_area[observed],
         withdrawal_area = copy(withdrawal_area),
         net_area = recharge_area .- withdrawal_area, expansion, storage, budget, stats, nels = mesh.nels,
+        plasticity, plastic_γ, plastic_θ,
         chamber_area = model.chamber_area, geometry = model.geometry,
         material = (; η_shell, η_host, η_magma, G_host, G_magma, K_host, K_magma), feeding,
         physics = (; gravity, advection, ρ_host, ρ_magma = gravity ? ρ_magma : nothing),

@@ -118,6 +118,10 @@ const CASES = Dict(
     "shallow" => (; mesh_options = merge(WIDE, (; center_depth = 3.0e3)), run_options = (;)),
     "thick_shell" => (; mesh_options = merge(WIDE, (; shell_radius = 3.0e3)), run_options = (;)),
     "soft_shell" => (; mesh_options = WIDE, run_options = (; η_shell = 1.0e17)),
+    # Thermal aureole: viscosity rising log-linearly from 1e17 Pa s at the wall to 1e20 Pa s
+    # at 3 km, in eight bands, so Maxwell times span 39 days to over a century.
+    "aureole" => (; mesh_options = merge(WIDE, (; shell_radius = 3.0e3, shell_bands = 8)),
+        run_options = (; η_shell = Tuple(10.0 .^ range(17.0, 20.0; length = 8)))),
 )
 
 # Reference physics (RESULTS.md result 15): gravity and a Lagrangian mesh.

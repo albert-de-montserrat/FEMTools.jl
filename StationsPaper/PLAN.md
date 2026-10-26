@@ -372,9 +372,11 @@ rule at real station positions. Do not split out a GRL letter now.
 5. Done: gravity and Lagrangian mesh in the chamber model (`RESULTS.md`
    result 15). Still linear (gates at 1e-4); near field −2%, far field at
    20 km −35%; ignoring it biases supply by under 0.1 `Q_ref` but is
-   detectable with far stations. Decide with the authors whether gravity +
-   advection becomes the reference model for the figures and the 3-D run
-   (it costs about twice the run time). Heat transport stays out.
+   detectable with far stations. Decided on 25 October 2026: gravity +
+   advection is the reference model for the figures and the 3-D run (it
+   costs about twice the run time). The fixed-mesh model without gravity
+   stays available as the `linear_` cases, with its outputs under
+   `output/linear/`. Heat transport stays out.
 
 Added on 25 October 2026 from the literature review (`LITERATURE_REVIEW.md`,
 section 8):
@@ -399,6 +401,72 @@ section 8):
 9. Optional mitigation for results 10 and 14: add a model-prediction
    covariance for shell viscosity (Duputel et al. 2014) and report how much
    of the long-period bias it removes.
+
+### Resume point (25 October 2026, afternoon; all jobs stopped by hand)
+
+Done on 25 October: gravity + advection is the reference (item 5); all 2-D
+impulse responses rerun with it (cases `eta_1.0e23`, `eta_1.5e17`,
+`eta_2.0e17`, `eta_4.5e17`, `eta_9.0e17`, `shallow`, `soft_shell`,
+`thick_shell`, new `aureole`); downstream scripts rerun. Tasks 6, 7, 8 done
+(`RESULTS.md` results 16–18). First 3-D run done (provisional result 19).
+Logs of every run are in `output/logs/`.
+
+Done in the afternoon session:
+
+- 3-D elastic-shell control run (`output/impulse_response3D_elastic_shell_365/`)
+  and `station_analysis3D.jl` rerun with it: Mogi is unbiased on elastic
+  truth in 3-D (logged in result 19). This run passes the superposition gate
+  (2.0e-5), so the Maxwell runs' 3.3e-4 comes from the viscous solve.
+- Figures 2–10 rerun with `scripts/figures2D.jl` (figure 10 ticks fixed).
+  Shared palette, theme, and `save_both` moved to `scripts/figures_style.jl`.
+- Draft figure 11 (`scripts/figures3D.jl`, written to
+  `output/station_analysis3D_365/fig11_svartsengi.{png,pdf}`): station map
+  coloured by window signal fraction, `H(t)/H(1)` per station, and degrees of
+  freedom by subset. It currently reads the 365-step response.
+- `impulse_response3D.jl`: new case `tight` (`ϵ_tol = 1e-11`; use it as
+  `linear_tight` or `tight`) and an optional 5th argument `pulse_rate`
+  (default 1.0 m³/s).
+- Plastic forward runs: 7 of 10 finished (`reference_H6`,
+  `tensile_dry_{H0,H1,H6}`, `tensile_hydrostatic_{H0,H1,H6}` in
+  `output/plastic_forward2D/`, about 85 min each with ten at once). Dry and
+  hydrostatic do yield, a little (max plastic γ 6e-5–1e-4); the source
+  signal at `x = 0` at the end (uplift minus `reference_none`) is 1.1–1.8%
+  larger than in the non-plastic reference. Not yet inverted.
+
+Shell note: when launching from Git Bash, set
+`JULIA_LOAD_PATH="@;@v#.#;@stdlib;$(pwd -W)/examples"` (Windows path). A
+`$PWD` path (`/c/...`) is not understood by julia, and every 2-D run then
+fails at `using Triangulate`.
+
+Continue here, in this order:
+
+1. **Finish plastic misspecification (2-D, user request).** Rerun the three
+   stopped lithostatic cases (stopped mid-run, no output):
+   `scripts/plastic_forward2D.jl tensile_lithostatic {H0,H1,H6}` (`-t 1`,
+   about 40 min each alone, 85 min with ten at once; lithostatic yields from
+   about 13 MPa overpressure, so expect the most plasticity here). Then run
+   `scripts/plastic_misspecification2D.jl` and log the result in `RESULTS.md`
+   (result 20). Its `reference` rows check the impulse-response prediction
+   against the forward runs.
+2. **3-D superposition gate (CUDA).** 40-step linear runs so far:
+   default `ϵ_tol = 1e-10` 3.3e-4 (3.0 s per step); `linear_tight`
+   (`ϵ_tol = 1e-11`) 1.43e-4 (5.9 s per step, gates in
+   `output/impulse_response3D_linear_tight_40/`). Still to test:
+   `impulse_response3D.jl output/impulse_response3D_linear_pulse100_40 40
+   linear_reference cuda 100` (stopped before the gates; the solver stops at
+   `min(err_abs, err_rel) < ϵ_tol`, so a larger pulse helps if the absolute
+   test is the one that ends it). Pick the cheapest setting below 1e-4; if
+   none reaches it, accept `tight` (1.4e-4, far below the noise) and state
+   the value in the paper.
+3. **3-D 1095-step run (CUDA, one job at a time).**
+   `impulse_response3D.jl output/impulse_response3D_1095 1095 <reference or
+   tight> cuda <pulse_rate>` (about 2.5 h at default tolerance, about 5 h with
+   `tight`), then `station_analysis3D.jl output/impulse_response3D_1095
+   output/station_analysis3D_1095` (add an elastic-shell 1095 run for the
+   Mogi control if the lead dependence is needed), then `figures3D.jl
+   output/impulse_response3D_1095 output/station_analysis3D_1095` for the
+   final figure 11. Update result 19 with the full 365-day window.
+4. Open from item 9: model-prediction covariance as a mitigation (optional).
 
 ## Literature positioning
 

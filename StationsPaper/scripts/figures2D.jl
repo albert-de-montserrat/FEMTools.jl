@@ -1,29 +1,16 @@
-# JULIA_LOAD_PATH="@;@v#.#;@stdlib;<repo>/examples" julia --project=. StationsPaper/scripts/figures2D.jl [impulse_dir] [information_dir] [recovery_dir] [viscosity_dir] [mogi_dir] [drainage_dir]
+# JULIA_LOAD_PATH="@;@v#.#;@stdlib;<repo>/examples" julia --project=. StationsPaper/scripts/figures2D.jl [impulse_dir] [information_dir] [recovery_dir] [viscosity_dir] [mogi_dir] [drainage_dir] [bias_dir] [reference_dir]
 # Draft paper figures from saved output only (no simulation): run
 # impulse_response2D.jl, station_information2D.jl, synthetic_recovery2D.jl,
-# viscosity_ambiguity2D.jl, mogi_comparison2D.jl, and drainage_recovery2D.jl
-# first (figures 6–8 are skipped without their output). Writes PNG and PDF
+# viscosity_ambiguity2D.jl, mogi_comparison2D.jl, drainage_recovery2D.jl, bias_sign2D.jl, and
+# reference_station2D.jl
+# first (figures 6–10 are skipped without their output). Writes PNG and PDF
 # into each input directory. All panels are synthetic 2-D plane-strain results.
 using CairoMakie
 CairoMakie.activate!()
 using Printf
 using Serialization
 
-# Reference palette (dataviz skill, references/palette.md): ordinal blue ramp for
-# station distance, categorical slots in fixed order for station subsets.
-const DISTANCE_RAMP = ("#104281", "#256abf", "#5598e7", "#86b6ef")
-const SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
-const INK, MUTED = "#0b0b0b", "#52514e"
-
-paper_theme() = Theme(; fontsize = 11, figure_padding = 8,
-    Axis = (; xgridvisible = false, ygridcolor = (:black, 0.08), spinewidth = 0.8,
-        xtickwidth = 0.8, ytickwidth = 0.8, titlealign = :left, titlesize = 11, titlefont = :regular),
-    Lines = (; linewidth = 2), Scatter = (; markersize = 9))
-
-function save_both(dir, name, fig)
-    foreach(ext -> save(joinpath(dir, name * ext), fig), (".png", ".pdf"))
-    return joinpath(dir, name * ".png")
-end
+include(joinpath(@__DIR__, "figures_style.jl"))
 
 """Impulse response by station distance: memory growth relative to the elastic step, and amplitude versus distance."""
 function impulse_figure(response; out_dir, distances = (0.0, 4.0e3, 8.0e3, 20.0e3))
@@ -241,8 +228,68 @@ function drainage_figure(drainage; out_dir, layout = "6 near + 6 far",
     return save_both(out_dir, "fig8_drainage", fig)
 end
 
+"""Sign of the elastic-Mogi supply bias: apparent/true with the exact compressibility factor, and the factor where it is unbiased."""
+function bias_sign_figure(sweep; out_dir)
+    (; rows) = sweep
+    # Shell viscosity in the distance ramp (soft to stiff); other mechanics in categorical slots.
+    styles = ("elastic shell" => (INK, :dash), "η_shell 1e17" => (DISTANCE_RAMP[4], :solid),
+        "η_shell 2e17" => (DISTANCE_RAMP[3], :solid), "η_shell 3e17 (reference)" => (DISTANCE_RAMP[2], :solid),
+        "η_shell 9e17" => (DISTANCE_RAMP[1], :solid), "shell to 3 km" => (SERIES[3], :solid),
+        "source at 3 km" => (SERIES[4], :solid), "aureole 1e17-1e20" => (SERIES[2], :solid))
+    fig = Figure(size = (760, 320))
+    ax = Axis(fig[1, 1]; xlabel = "supply already running at window start [days]",
+        ylabel = "Mogi / true window supply", title = "(a) exact factor 1 + G/K_magma")
+    bx = Axis(fig[1, 2]; xlabel = "supply already running at window start [days]",
+        ylabel = "assumed factor c for no bias", title = "(b) unbiased compressibility factor c*")
+    hlines!(ax, [1.0]; color = MUTED, linewidth = 0.8)
+    for (name, (color, linestyle)) in styles
+        r = filter(r -> r.truth_name == name, rows)
+        isempty(r) && continue
+        lead = getfield.(r, :lead)
+        scatterlines!(ax, lead, getfield.(r, :ratio_exact); color, linestyle, markersize = 6, label = name)
+        scatterlines!(bx, lead, getfield.(r, :c_crossover); color, linestyle, markersize = 6)
+    end
+    c_true = first(rows).c_true
+    hlines!(bx, [1.0, c_true]; color = MUTED, linewidth = 0.8, linestyle = :dot)
+    text!(bx, 0, 1.0; text = "c = 1: cavity change read as injected volume", fontsize = 8, color = MUTED,
+        align = (:left, :bottom))
+    text!(bx, 0, c_true; text = "exact c = $(round(c_true; digits = 2))", fontsize = 8, color = MUTED,
+        align = (:left, :top))
+    ylims!(bx, 0, 1.1c_true)
+    Legend(fig[1, 3], ax; framevisible = false, labelsize = 9)
+    return save_both(out_dir, "fig9_bias_sign", fig)
+end
+
+"""Reference stations: information added by one far station, the bias of differencing against it, and the 3-D Svartsengi distances."""
+function reference_figure(reference; out_dir)
+    (; profile, baseline_dof, svartsengi, depths) = reference
+    x = getfield.(profile, :x_ref) ./ 1.0e3
+    fig = Figure(size = (760, 320))
+    ax = Axis(fig[1, 1]; xlabel = "reference distance [km]", ylabel = "added degrees of freedom",
+        title = @sprintf("(a) joint estimation, 6 near (%.1f dof) + 1", baseline_dof))
+    scatterlines!(ax, x, getfield.(profile, :dof_gain); color = SERIES[1], markersize = 6)
+    bx = Axis(fig[1, 2]; xlabel = "distance from source [km]", ylabel = "fraction of epicentral signal",
+        yscale = log10, yticks = ([1.0, 0.3, 0.1, 0.03, 0.01], ["1", "0.3", "0.1", "0.03", "0.01"]),
+        title = "(b) signal at the reference = bias of differencing")
+    scatterlines!(bx, x, 1 .- getfield.(profile, :differencing_ratio); color = SERIES[1], markersize = 6,
+        label = "2-D: supply bias of differenced records")
+    r = range(0.0, 20.0; length = 200)
+    lines!(bx, r, (1 .+ (r ./ (first(depths) / 1.0e3)) .^ 2) .^ -1.5; color = SERIES[2],
+        label = @sprintf("3-D Mogi, %.1f km deep", first(depths) / 1.0e3))
+    scatter!(bx, [s.r for s in svartsengi] ./ 1.0e3, [first(s.fractions) for s in svartsengi];
+        color = SERIES[2], marker = :diamond, markersize = 8, label = "Svartsengi stations")
+    for s in svartsengi
+        s.r > 8.0e3 && text!(bx, s.r / 1.0e3, first(s.fractions); text = s.id, fontsize = 8, color = MUTED,
+            align = (:right, :top), offset = (-3, -3))
+    end
+    hlines!(bx, [0.05, 0.01]; color = MUTED, linewidth = 0.8, linestyle = :dot)
+    ylims!(bx, 5.0e-3, 1.2)
+    axislegend(bx; position = :lb, framevisible = false, labelsize = 8)
+    return save_both(out_dir, "fig10_reference_station", fig)
+end
+
 function figures_demo(; impulse_dir, information_dir, recovery_dir = nothing, viscosity_dir = nothing, mogi_dir = nothing,
-        drainage_dir = nothing)
+        drainage_dir = nothing, bias_dir = nothing, reference_dir = nothing)
     response = deserialize(joinpath(impulse_dir, "impulse_response.jls"))
     info = deserialize(joinpath(information_dir, "station_information.jls"))
     paths = with_theme(paper_theme()) do
@@ -256,6 +303,10 @@ function figures_demo(; impulse_dir, information_dir, recovery_dir = nothing, vi
             mogi_figure(deserialize(joinpath(mogi_dir, "mogi_comparison.jls")); out_dir = mogi_dir))
         isnothing(drainage_dir) || !isfile(joinpath(drainage_dir, "drainage_recovery.jls")) || push!(figures,
             drainage_figure(deserialize(joinpath(drainage_dir, "drainage_recovery.jls")); out_dir = drainage_dir))
+        isnothing(bias_dir) || !isfile(joinpath(bias_dir, "bias_sign.jls")) || push!(figures,
+            bias_sign_figure(deserialize(joinpath(bias_dir, "bias_sign.jls")); out_dir = bias_dir))
+        isnothing(reference_dir) || !isfile(joinpath(reference_dir, "reference_station.jls")) || push!(figures,
+            reference_figure(deserialize(joinpath(reference_dir, "reference_station.jls")); out_dir = reference_dir))
         figures
     end
     foreach(println, paths)
@@ -268,4 +319,6 @@ figures_demo(;
     recovery_dir = length(ARGS) > 2 ? ARGS[3] : joinpath(@__DIR__, "..", "output", "synthetic_recovery2D", "near6_far6"),
     viscosity_dir = length(ARGS) > 3 ? ARGS[4] : joinpath(@__DIR__, "..", "output", "viscosity_ambiguity2D"),
     mogi_dir = length(ARGS) > 4 ? ARGS[5] : joinpath(@__DIR__, "..", "output", "mogi_comparison2D"),
-    drainage_dir = length(ARGS) > 5 ? ARGS[6] : joinpath(@__DIR__, "..", "output", "drainage_recovery2D"))
+    drainage_dir = length(ARGS) > 5 ? ARGS[6] : joinpath(@__DIR__, "..", "output", "drainage_recovery2D"),
+    bias_dir = length(ARGS) > 6 ? ARGS[7] : joinpath(@__DIR__, "..", "output", "bias_sign2D"),
+    reference_dir = length(ARGS) > 7 ? ARGS[8] : joinpath(@__DIR__, "..", "output", "reference_station2D"))

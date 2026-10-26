@@ -5,6 +5,168 @@ and its saved output under `output/` (not committed). All results are
 synthetic, 2-D plane strain, with known mechanics, unless stated otherwise.
 Conventions are in [OBSERVATION_MODEL.md](OBSERVATION_MODEL.md).
 
+## 25 October 2026: first 3-D Svartsengi run (provisional)
+
+Scripts and output: `scripts/chamber_memory_setup3D.jl`,
+`scripts/impulse_response3D.jl` on CUDA (RTX 5070 Ti; mesh
+`output/svartsengi_mesh3D/svartsengi_mesh3D.jls`, 37946 T11 cells, 17
+stations), `scripts/station_analysis3D.jl`. Outputs
+`output/impulse_response3D_365/` (gravity + advection, 365 steps, 2.3 s per
+step; gates 2.0e-3 time step, 1.25e-4 shift, 3.7e-4 superposition),
+`output/impulse_response3D_linear_365/` (linear; 3.0 s per step; gates
+8.6e-4 / 2.9e-13 / 3.3e-4), `output/station_analysis3D_365/`. The 365-step
+response limits the analysis to a 182-day window with 183 days of
+pre-window, so numbers are not directly comparable with the 2-D ones.
+Gravity makes the 100 km column settle by 0.41 m in the first step; the
+source-free baseline removes it. The superposition gate is above 1e-4 in the
+linear model too (solver tolerance, PLAN.md resume point 3).
+
+### 19. The 2-D information results transfer to the 17 Svartsengi stations (provisional)
+
+- Station responses differ almost only in scale: σ₂/σ₁ = 3.7e-3 (2-D
+  5.9e-3). With white noise, the 12 stations within 5 km and all 17 resolve
+  the same 20.0 degrees of freedom.
+- Empirical noise: 12 near stations 19.7, plus VOGC and NYLA 21.5, all 17
+  22.2 degrees of freedom; far stations help less than in 2-D (+13% against
+  +26%), because the near stations already span 0.3–0.97 of the epicentral
+  signal.
+- Differencing against one station biases supply by its signal fraction:
+  NYLA −1.0%, VOGC −2.6%, GONH −8%, FEFC −16%, NAMC −17%, as the 3-D Mogi
+  estimate of result 16 predicted.
+- Mogi on Maxwell truth (all 17 stations, noise-free constant supply):
+  apparent/true 1.20 (supply starting at the window start) to 1.50 (supply
+  running 180 days before) with the exact factor `1 + 4G/(3K_magma) = 5`, and
+  0.24–0.30 with `c = 1`; `c*` = 3.3–4.2. The misfit is not detectable
+  (Δχ² 1–19).
+- Elastic-shell control (`output/impulse_response3D_elastic_shell_365/`,
+  `η_shell` 1e23 Pa s, gravity + advection; gates 7.4e-5 time step, 6.7e-5
+  shift, 2.0e-5 superposition): Mogi recovers supply exactly (1.00 with the
+  exact factor, `c*` = 4.98 against 5) at the true 4.0 km depth for every
+  lead, Δχ² 6.7. The 3-D over-report of 20–50% on Maxwell truth is
+  therefore crustal memory, not Mogi geometry or gravity. As in 2-D, the
+  Maxwell-truth over-report grows with the lead.
+- The elastic-shell run passes the superposition gate (2.0e-5) with the same
+  mesh, solver, and tolerance, so the 3.3e-4–3.7e-4 of the Maxwell runs
+  comes from the viscous stress-history solve, not from the mesh or gravity.
+
+## 25 October 2026: sign of the elastic bias and a broad relaxation spectrum (PLAN.md tasks 6 and 7)
+
+Scripts and output: `scripts/bias_sign2D.jl` (`output/bias_sign2D/`, draft
+figure 9) and `scripts/rheology_misspecification2D.jl`
+(`output/rheology_misspecification2D/`). New impulse responses, all with
+gravity + advection, 1095 steps, gates ≤ 4.2e-4 time step, ≤ 1.5e-5 shift,
+≤ 2.0e-4 superposition: `eta_1.0e23`, `eta_1.5e17`, `eta_2.0e17`,
+`eta_4.5e17`, `eta_9.0e17`, `shallow_3yr`, `soft_shell_3yr`,
+`thick_shell_3yr`, and `aureole_3yr`. The aureole is a new case: shell to
+3 km in eight bands, viscosity rising log-linearly from 1e17 Pa s at the wall
+to 1e20 Pa s (Maxwell times 39 days to 106 years); the bands are set by cell
+centroid (`shell_bands` in `chamber_memory_setup2D.jl`).
+
+### 17. The sign of the elastic bias is set by the assumed magma compressibility
+
+Noise-free constant supply that started `lead` days before a 365-day window,
+fitted by weighted least squares with a 2-D Mogi line source (depth from a grid
+search, 6 near + 6 far stations, empirical noise). Apparent over true window
+supply, with the cavity change converted to supply by a factor `c`:
+
+| truth | lead 0 d, c = 1 / exact | lead 730 d, c = 1 / exact | `c*` (unbiased), lead 0 / 730 d |
+|---|---|---|---|
+| elastic shell | 0.25 / 0.99 | 0.25 / 0.99 | 4.05 / 4.05 |
+| `η_shell` 1e17 | 0.40 / 1.62 | 0.47 / 1.86 | 2.47 / 2.15 |
+| `η_shell` 3e17 (reference) | 0.34 / 1.34 | 0.45 / 1.81 | 2.98 / 2.21 |
+| `η_shell` 9e17 | 0.29 / 1.15 | 0.38 / 1.51 | 3.48 / 2.64 |
+| source at 3 km | 0.34 / 1.37 | 0.48 / 1.92 | 2.91 / 2.08 |
+| shell to 3 km | 0.37 / 1.46 | 0.53 / 2.13 | 2.73 / 1.88 |
+| aureole 1e17–1e20 | 0.36 / 1.42 | 0.45 / 1.80 | 2.81 / 2.22 |
+
+(exact `c = 1 + G/K_magma = 4`.)
+
+- With the exact factor, Mogi is unbiased on elastic truth (0.99) and
+  over-reports on every viscoelastic truth, by 15% to 113%, more the longer
+  the supply has run and the softer or wider the shell.
+- Read with `c = 1` (cavity change taken as injected volume, as in Spang et al.
+  2026 and as in most published volume rates), the same fits under-report by
+  47–75%. This is the sign Spang et al. report.
+- The bias changes sign at `c*` = 1.9–3.5, below the true factor 4. A
+  compressibility correction smaller than `c*` gives an under-report and a
+  larger one an over-report. The two published signs are therefore not in
+  conflict: they compare against different references.
+- A wider weak zone (shell to 3 km, 1 km below the surface) increases the
+  over-report, so it does not reproduce Spang et al.'s deficit in this
+  model. Their deficit appears here only through compressibility.
+- Mogi's misfit Δχ² is 110–730 against a near-zero chamber-model misfit.
+  With gravity, the elastic-shell control also misfits (Δχ² 110, against
+  about 40 without gravity), because gravity changes the far-field shape.
+
+### 18. A single Maxwell time fits a broad spectrum detectably worse and biases long-period supply
+
+Aureole truth inverted with single-viscosity shells to 2 km (setup of result
+14: 7-day bins, 720 days of unknown pre-window bins, prior σ `Q_ref`, empirical
+noise), 6 near + 6 far stations, H0:
+
+| model `η_shell` [Pa s] | Δχ² | window-mean bias | apparent trend | pre-window bias |
+|---|---|---|---|---|
+| 1e17 | 66 | +0.11 | −0.51 | −0.64 |
+| 2e17 | 34 | +0.15 | −0.37 | −0.65 |
+| 3e17 | 24 | +0.16 | −0.26 | −0.52 |
+| 4.5e17 | 16 | +0.15 | −0.15 | −0.28 |
+| 9e17 | 17 | +0.10 | −0.00 | +0.43 |
+
+- No single viscosity fits: the best (4.5e17–9e17 Pa s) leaves Δχ² ≈ 16,
+  against Δχ² ≤ 3 for a factor-two viscosity error in result 14. A broad
+  spectrum is therefore detectable in principle with known noise, unlike a
+  wrong single viscosity.
+- The window-mean supply is too high by 10–16% for every model, and the
+  pre-window supply and the trend are biased by up to 0.65 and 0.5 `Q_ref`,
+  with a sign set by the chosen viscosity.
+- Week-scale changes (H1 step, H3 doubling) give the same biases as H0 to
+  0.03 `Q_ref`, so they are still recovered.
+- Six near stations alone give the same picture (Δχ² 12–58).
+- The impulse-response method itself holds for the aureole (gates 3.3e-4 /
+  1.4e-5 / 1.8e-4), as expected for any linear rheology.
+
+## 25 October 2026: reference stations (PLAN.md task 8)
+
+Gravity + advection is now the reference model (PLAN.md item 5); the
+fixed-mesh model without gravity is under `output/linear/`. Script and
+output: `scripts/reference_station2D.jl` (`output/reference_station2D/`,
+draft figure 10), from `impulse_response2D_3yr` (gravity + advection).
+Empirical noise, 7-day bins, known start, prior σ `Q_ref`.
+
+### 16. A reference station needs to be about 18 km from the Svartsengi source, unless the common mode is estimated jointly
+
+| `x_ref` | signal fraction | dof added to 6 near (joint) | differenced records, apparent / true supply |
+|---|---|---|---|
+| 4 km | 0.45 | 0.4 | 0.42 |
+| 6 km | 0.26 | 1.7 | 0.66 |
+| 8 km | 0.16 | 2.7 | 0.79 |
+| 10 km | 0.11 | 3.3 | 0.86 |
+| 14 km | 0.05 | 3.9 | 0.94 |
+| 20 km | 0.02 | 4.2 | 0.98 |
+
+(6 near stations alone: 32.7 degrees of freedom.)
+
+- Joint estimation (common mode in the noise covariance, as in result 7):
+  the added information grows steadily with distance and has no optimum
+  inside 20 km; three quarters of the 20 km gain is reached at 10 km. The
+  source signal at the reference does no harm, because the model accounts
+  for it.
+- Differencing against the reference (the usual way to remove the common
+  mode) reads its source signal as common mode. The supply bias is close to
+  the signal fraction (−14% at 10 km, −2% at 20 km), slightly larger because
+  the far response also has a different time shape.
+- 3-D Mogi point source at 4 km (4.35 km, the Parks et al. sill depth): the
+  vertical signal falls below 5% of the epicentral value beyond 10.1 km
+  (11.0 km) and below 1% beyond 18.1 km (19.7 km). Measured from the Parks et
+  al. (2025) source position, only NYLA (18.2 km, 1.0–1.2%) and VOGC
+  (13.8 km, 2.2–2.7%) of the 17 stations qualify; GONH (9.2 km) records
+  6–8%, and every other station more than 12%.
+- Consequence: in the Svartsengi network, differencing against any station
+  but NYLA biases supply by more than 2%. Estimate the common mode jointly,
+  or difference against NYLA. The 2-D plane-strain fractions decay more
+  slowly than in 3-D, so the 3-D run must confirm the numbers; gravity
+  reduces the far field further (result 15).
+
 ## 24 October 2026 (late night): gravity and finite deformation
 
 Scripts and output: `run_chamber_memory` options `gravity` and `advection`
